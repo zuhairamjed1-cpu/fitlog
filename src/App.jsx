@@ -29,7 +29,7 @@ async function callClaude({ system, userText, imageBase64, imageMediaType, maxTo
     : userText;
   const resp = await fetch("/api/chat", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: maxTokens, system, messages: [{ role: "user", content: userContent }] })
+    body: JSON.stringify({ model: "claude-haiku-4-5", max_tokens: maxTokens, system, messages: [{ role: "user", content: userContent }] })
   });
   const data = await resp.json();
   return data.content?.map(b => b.text || "").join("") || "";
@@ -372,7 +372,7 @@ Sports (last 14d): ${last14(data.sports).map(s => `${s.date}: ${s.sport} ${s.dur
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          model: "claude-haiku-4-5",
           max_tokens: 800,
           system: `You are an elite personal trainer and sports nutritionist. The user shares their real fitness tracking data with you. Give direct, specific, practical advice based on their actual data. Be concise — 2-4 short paragraphs or use bullet points for lists. Be encouraging but honest. Their goal: ${goals.goal}.`,
           messages: apiMsgs
