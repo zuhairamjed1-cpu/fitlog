@@ -1,26 +1,36 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 
-const TABS = ["Dashboard", "Sleep", "Diet", "Exercise", "Sports"];
+const TABS = ["Dashboard", "Sleep", "Diet", "Exercise", "Sports", "Water", "Trends"];
 const STORAGE_KEY = "fitlog_v5";
-const defaultData = { sleep: [], diet: [], exercise: [], sports: [] };
-const defaultGoals = { calories: 2500, protein: 180, carbs: 250, fat: 80, goal: "Build Muscle" };
+const defaultData = { sleep: [], diet: [], exercise: [], sports: [], weight: [], water: [], supplements: [] };
+const defaultGoals = { calories: 2500, protein: 180, carbs: 250, fat: 80, goal: "Build Muscle", waterGoalMl: 2500, weightUnit: "kg" };
 const fitnessGoals = ["Build Muscle", "Lose Fat", "Improve Endurance", "Maintain Weight", "Athletic Performance"];
 const mealTypes = ["Breakfast", "Lunch", "Dinner", "Snack"];
 const sportsOptions = ["Football","Basketball","Tennis","Swimming","Running","Cycling","Yoga","Boxing","Soccer","Volleyball","Badminton","Table Tennis","Golf","Martial Arts","Other"];
 const sleepQuality = ["Poor", "Fair", "Good", "Great", "Excellent"];
 const intensityLevels = ["Light", "Moderate", "Intense", "All-out"];
-const icons = { Dashboard: "◈", Sleep: "◐", Diet: "◉", Exercise: "◆", Sports: "◇" };
+const icons = { Dashboard: "◈", Sleep: "◐", Diet: "◉", Exercise: "◆", Sports: "◇", Water: "◊", Trends: "▦" };
 
 function loadData() {
-  try { const r = localStorage.getItem(STORAGE_KEY); return r ? JSON.parse(r) : defaultData; } catch { return defaultData; }
+  try {
+    const r = localStorage.getItem(STORAGE_KEY);
+    const parsed = r ? JSON.parse(r) : defaultData;
+    // Migration: ensure new arrays exist on old data
+    return { ...defaultData, ...parsed };
+  } catch { return defaultData; }
 }
 function loadGoals() {
-  try { const r = localStorage.getItem(STORAGE_KEY + "_goals"); return r ? JSON.parse(r) : defaultGoals; } catch { return defaultGoals; }
+  try {
+    const r = localStorage.getItem(STORAGE_KEY + "_goals");
+    const parsed = r ? JSON.parse(r) : defaultGoals;
+    return { ...defaultGoals, ...parsed };
+  } catch { return defaultGoals; }
 }
 function saveData(d) { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); }
 function saveGoals(g) { localStorage.setItem(STORAGE_KEY + "_goals", JSON.stringify(g)); }
 function getTodayStr() { return new Date().toISOString().split("T")[0]; }
 function formatDate(ds) { return new Date(ds + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }); }
+function daysAgo(n) { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().split("T")[0]; }
 
 // ─── CLAUDE API ───────────────────────────────────────────────────────────────
 async function callClaude({ system, userText, imageBase64, imageMediaType, maxTokens = 1000 }) {
@@ -56,6 +66,7 @@ async function analyzeAllData(data, goals) {
   const dietLines = last14(data.diet).map(d => `${d.date} ${d.meal}: ${d.food} — ${d.calories}kcal P:${d.protein}g C:${d.carbs}g F:${d.fat}g`).join("\n") || "No data";
   const exLines = last14(data.exercise).map(e => `${e.date}: ${e.label}\n${(e.text||"").slice(0,200)}`).join("\n\n") || "No data";
   const spLines = last14(data.sports).map(s => `${s.date}: ${s.sport} ${s.duration}min ${s.intensity} — ${s.calories}kcal`).join("\n") || "No data";
+  const wLines = last14(data.weight).map(w => `${w.date}: ${w.weight}${w.unit||"kg"}`).join("\n") || "No data";
 
   const system = `You are an elite personal trainer and sports nutritionist. Analyze real fitness data and give highly specific, actionable advice to maximize ${goals.goal}. Reference actual numbers from the data. Return ONLY valid JSON, no markdown:
 {
@@ -70,8 +81,598 @@ async function analyzeAllData(data, goals) {
   "priorityAction": "<The single most impactful thing to do this week>"
 }`;
 
-  const raw = await callClaude({ system, maxTokens: 2000, userText: `Goal: ${goals.goal}\nCalorie target: ${goals.calories}kcal\nMacros: P${goals.protein}g C${goals.carbs}g F${goals.fat}g\n\nSLEEP:\n${sleepLines}\n\nDIET:\n${dietLines}\n\nEXERCISE:\n${exLines}\n\nSPORTS:\n${spLines}` });
+  const raw = await callClaude({ system, maxTokens: 2000, userText: `Goal: ${goals.goal}\nCalorie target: ${goals.calories}kcal\nMacros: P${goals.protein}g C${goals.carbs}g F${goals.fat}g\n\nSLEEP:\n${sleepLines}\n\nDIET:\n${dietLines}\n\nEXERCISE:\n${exLines}\n\nSPORTS:\n${spLines}\n\nBODY WEIGHT:\n${wLines}` });
   return JSON.parse(raw.replace(/```json|```/g, "").trim());
+}
+
+// ─── DAILY AI INSIGHT ─────────────────────────────────────────────────────────
+async function generateDailyInsight(data, goals) {
+  const today = getTodayStr();
+  const yest = daysAgo(1);
+  const last7arr = arr => arr.filter(i => i.date >= daysAgo(6));
+  const yestSleep = data.sleep.find(s => s.date === yest);
+  const todayDiet = data.diet.filter(d => d.date === today);
+  const yestDiet = data.diet.filter(d => d.date === yest);
+  const last3Workouts = data.exercise.slice(0, 3).map(e => `${e.date}: ${e.label}`).join("; ") || "none";
+  const recentSports = data.sports.filter(s => s.date >= daysAgo(2)).map(s => `${s.date}: ${s.sport} ${s.intensity}`).join("; ") || "none";
+  const avgSleep7 = last7arr(data.sleep).length ? (last7arr(data.sleep).reduce((a,s)=>a+s.duration,0)/last7arr(data.sleep).length).toFixed(1) : "no data";
+  const recentWeights = data.weight.slice(0, 3).map(w => `${w.date}: ${w.weight}${w.unit||"kg"}`).join("; ") || "none";
+
+  const sys = `You are an elite fitness coach giving the user a SHORT daily insight (2-3 sentences max, conversational tone). Look at their recent data and tell them ONE specific thing they should do today. Should it be a rest day? Push hard? Eat more? Sleep earlier? Be specific to their data. Reference actual numbers. No JSON, just plain text. Their goal: ${goals.goal}.`;
+  const usr = `Today: ${new Date().toLocaleDateString("en-US",{weekday:"long"})}
+Goal: ${goals.goal} | Calorie target: ${goals.calories}
+Yesterday sleep: ${yestSleep ? `${yestSleep.duration}h (${yestSleep.quality})` : "not logged"}
+7-day avg sleep: ${avgSleep7}h
+Yesterday calories: ${yestDiet.reduce((a,d)=>a+d.calories,0) || "not logged"}kcal
+Today's meals so far: ${todayDiet.length ? todayDiet.map(d=>d.meal).join(", ") : "none yet"}
+Last 3 workouts: ${last3Workouts}
+Recent sports: ${recentSports}
+Recent weight: ${recentWeights}`;
+
+  return await callClaude({ system: sys, userText: usr, maxTokens: 250 });
+}
+
+// ─── MARKDOWN RENDERER (light) ───────────────────────────────────────────────
+// Handles: **bold**, *italic*, `code`, headers (#, ##), bullet lists (- or •), numbered lists, line breaks
+function renderMarkdown(text) {
+  if (!text) return null;
+  const lines = text.split("\n");
+  const blocks = [];
+  let listBuf = null; // {type:'ul'|'ol', items:[]}
+  const flushList = () => {
+    if (!listBuf) return;
+    blocks.push({ type: listBuf.type, items: listBuf.items });
+    listBuf = null;
+  };
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) { flushList(); blocks.push({ type: "br" }); continue; }
+    const bullet = line.match(/^[-•]\s+(.+)$/);
+    const numbered = line.match(/^\d+\.\s+(.+)$/);
+    const h2 = line.match(/^##\s+(.+)$/);
+    const h1 = line.match(/^#\s+(.+)$/);
+    if (bullet) {
+      if (!listBuf || listBuf.type !== "ul") { flushList(); listBuf = { type: "ul", items: [] }; }
+      listBuf.items.push(bullet[1]);
+    } else if (numbered) {
+      if (!listBuf || listBuf.type !== "ol") { flushList(); listBuf = { type: "ol", items: [] }; }
+      listBuf.items.push(numbered[1]);
+    } else if (h1) {
+      flushList(); blocks.push({ type: "h1", text: h1[1] });
+    } else if (h2) {
+      flushList(); blocks.push({ type: "h2", text: h2[1] });
+    } else {
+      flushList(); blocks.push({ type: "p", text: line });
+    }
+  }
+  flushList();
+
+  // Inline formatter: **bold**, *italic*, `code`
+  const inline = (s, baseKey) => {
+    // Pattern: split by **bold**, *italic*, `code` while preserving order
+    const parts = [];
+    let i = 0;
+    const re = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g;
+    let m, last = 0;
+    while ((m = re.exec(s)) !== null) {
+      if (m.index > last) parts.push({ t: "text", v: s.slice(last, m.index) });
+      const tok = m[0];
+      if (tok.startsWith("**")) parts.push({ t: "b", v: tok.slice(2, -2) });
+      else if (tok.startsWith("`")) parts.push({ t: "code", v: tok.slice(1, -1) });
+      else parts.push({ t: "i", v: tok.slice(1, -1) });
+      last = m.index + tok.length;
+    }
+    if (last < s.length) parts.push({ t: "text", v: s.slice(last) });
+    return parts.map((p, idx) => {
+      const k = `${baseKey}-${idx}`;
+      if (p.t === "b") return <strong key={k}>{p.v}</strong>;
+      if (p.t === "i") return <em key={k}>{p.v}</em>;
+      if (p.t === "code") return <code key={k} className="md-code">{p.v}</code>;
+      return <span key={k}>{p.v}</span>;
+    });
+  };
+
+  return blocks.map((b, i) => {
+    if (b.type === "br") return null;
+    if (b.type === "h1") return <h4 key={i} className="md-h1">{inline(b.text, `h1${i}`)}</h4>;
+    if (b.type === "h2") return <h5 key={i} className="md-h2">{inline(b.text, `h2${i}`)}</h5>;
+    if (b.type === "p") return <p key={i} className="md-p">{inline(b.text, `p${i}`)}</p>;
+    if (b.type === "ul") return <ul key={i} className="md-ul">{b.items.map((it, j) => <li key={j}>{inline(it, `ul${i}${j}`)}</li>)}</ul>;
+    if (b.type === "ol") return <ol key={i} className="md-ol">{b.items.map((it, j) => <li key={j}>{inline(it, `ol${i}${j}`)}</li>)}</ol>;
+    return null;
+  });
+}
+
+// ─── WATER TAB ────────────────────────────────────────────────────────────────
+function WaterTab({ data, goals, onAddWater, onDeleteWater, onAddSupp, onDeleteSupp }) {
+  const today = getTodayStr();
+  const todayWater = (data.water || []).filter(w => w.date === today);
+  const todaySupps = (data.supplements || []).filter(s => s.date === today);
+  const totalMl = todayWater.reduce((a, w) => a + w.ml, 0);
+  const goalMl = goals.waterGoalMl || 2500;
+  const pct = Math.min(100, Math.round((totalMl / goalMl) * 100));
+
+  const [unit, setUnit] = useState("glass"); // 'glass' (250ml) or 'liter'
+  const [customMl, setCustomMl] = useState("250");
+  const [suppName, setSuppName] = useState("");
+  const [suppDose, setSuppDose] = useState("");
+
+  function quickAdd(ml) {
+    onAddWater({ id: Date.now(), date: today, ml, ts: Date.now() });
+  }
+
+  function customAdd() {
+    let ml = 0;
+    if (unit === "glass") ml = Number(customMl) || 0;
+    else ml = Math.round((Number(customMl) || 0) * 1000);
+    if (ml > 0) quickAdd(ml);
+  }
+
+  function addSupp() {
+    if (!suppName.trim()) return;
+    onAddSupp({ id: Date.now(), date: today, name: suppName.trim(), dose: suppDose.trim(), ts: Date.now() });
+    setSuppName(""); setSuppDose("");
+  }
+
+  // Past 7 days hydration summary
+  const past7 = Array.from({ length: 7 }, (_, i) => {
+    const d = daysAgo(6 - i);
+    const ml = (data.water || []).filter(w => w.date === d).reduce((a, w) => a + w.ml, 0);
+    return { date: d, ml, pct: Math.min(100, Math.round((ml / goalMl) * 100)) };
+  });
+
+  return (
+    <div>
+      {/* HERO RING */}
+      <div className="form-card" style={{ textAlign: "center" }}>
+        <h3 className="form-title" style={{ justifyContent: "center" }}>Today's Hydration</h3>
+        <div className="water-hero">
+          <svg width="160" height="160" style={{ transform: "rotate(-90deg)" }}>
+            <circle cx="80" cy="80" r="68" fill="none" stroke="var(--surface2)" strokeWidth="12" />
+            <circle cx="80" cy="80" r="68" fill="none" stroke="#6ee7f7" strokeWidth="12"
+              strokeDasharray={`${(pct / 100) * 427.3} 427.3`} strokeLinecap="round"
+              style={{ transition: "stroke-dasharray .8s cubic-bezier(.4,0,.2,1)", filter: "drop-shadow(0 0 8px #6ee7f788)" }} />
+          </svg>
+          <div className="water-hero-text">
+            <div className="water-hero-ml">{totalMl}<span>ml</span></div>
+            <div className="water-hero-goal">of {goalMl}ml · {pct}%</div>
+          </div>
+        </div>
+        <div className="water-quick">
+          <button className="water-q-btn" onClick={() => quickAdd(250)}>+ Glass <span>250ml</span></button>
+          <button className="water-q-btn" onClick={() => quickAdd(500)}>+ Bottle <span>500ml</span></button>
+          <button className="water-q-btn" onClick={() => quickAdd(1000)}>+ 1L <span>1000ml</span></button>
+        </div>
+      </div>
+
+      {/* CUSTOM ADD */}
+      <div className="form-card">
+        <h3 className="form-title" style={{ fontSize: "1rem" }}>Log custom amount</h3>
+        <div className="mode-toggle" style={{ marginBottom: 12 }}>
+          <button className={`mode-btn ${unit === "glass" ? "active" : ""}`} onClick={() => { setUnit("glass"); setCustomMl("250"); }}>Milliliters</button>
+          <button className={`mode-btn ${unit === "liter" ? "active" : ""}`} onClick={() => { setUnit("liter"); setCustomMl("0.5"); }}>Liters</button>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input type="number" value={customMl} onChange={e => setCustomMl(e.target.value)} step={unit === "liter" ? "0.1" : "50"} placeholder={unit === "liter" ? "0.5" : "250"} />
+          <button className="btn-primary" onClick={customAdd} style={{ flex: 0, padding: "10px 20px" }}>+ Add</button>
+        </div>
+      </div>
+
+      {/* TODAY'S WATER LOG */}
+      {todayWater.length > 0 && (
+        <div className="form-card">
+          <div className="db-card-hd"><span className="db-card-title">Today's water log</span><span className="db-card-badge">{todayWater.length} entries</span></div>
+          <div className="water-entries">
+            {todayWater.map(w => {
+              const t = new Date(w.ts || Date.now());
+              return (
+                <div key={w.id} className="water-entry">
+                  <span className="water-entry-time">{t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                  <span className="water-entry-ml">{w.ml}ml</span>
+                  <button className="water-entry-x" onClick={() => onDeleteWater(w.id)}>×</button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* PAST 7 DAYS */}
+      <div className="form-card">
+        <div className="db-card-hd"><span className="db-card-title">Past 7 days</span></div>
+        <div className="water-week">
+          {past7.map(d => (
+            <div key={d.date} className="water-week-day">
+              <div className="water-week-bar-wrap">
+                <div className="water-week-bar" style={{ height: `${d.pct}%`, background: d.pct >= 100 ? "#a5f3b4" : d.pct >= 60 ? "#6ee7f7" : "#f9e27e" }} />
+              </div>
+              <div className="water-week-label">{new Date(d.date + "T00:00:00").toLocaleDateString("en-US", { weekday: "short" }).slice(0,1)}</div>
+              <div className="water-week-ml">{d.ml >= 1000 ? (d.ml/1000).toFixed(1)+"L" : d.ml+"ml"}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* SUPPLEMENTS */}
+      <div className="form-card">
+        <h3 className="form-title">Log Supplement</h3>
+        <div className="form-grid" style={{ marginBottom: 12 }}>
+          <label>Name<input type="text" value={suppName} onChange={e => setSuppName(e.target.value)} placeholder="e.g. Creatine, Multivit, Whey" /></label>
+          <label>Dose / Notes<input type="text" value={suppDose} onChange={e => setSuppDose(e.target.value)} placeholder="5g, 1 capsule, etc." /></label>
+        </div>
+        <button className="btn-primary" onClick={addSupp} disabled={!suppName.trim()}>+ Log Supplement</button>
+
+        {todaySupps.length > 0 && (
+          <>
+            <div className="db-card-hd" style={{ marginTop: 18, marginBottom: 10 }}><span style={{ fontSize: ".82rem", color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".05em" }}>Today's supplements</span></div>
+            <div className="supp-list">
+              {todaySupps.map(s => {
+                const t = new Date(s.ts || Date.now());
+                return (
+                  <div key={s.id} className="supp-entry">
+                    <div className="supp-entry-main">
+                      <div className="supp-entry-name">{s.name}</div>
+                      {s.dose && <div className="supp-entry-dose">{s.dose}</div>}
+                    </div>
+                    <span className="supp-entry-time">{t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                    <button className="water-entry-x" onClick={() => onDeleteSupp(s.id)}>×</button>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── TRENDS TAB ───────────────────────────────────────────────────────────────
+function MiniChart({ points, color, height = 60, fillBelow = true, showGoal = null, formatY }) {
+  if (!points || points.length === 0) return <div className="chart-empty">No data yet</div>;
+  const W = 320, H = height;
+  const padX = 4, padY = 6;
+  const vals = points.map(p => p.value);
+  const validVals = vals.filter(v => v != null);
+  if (validVals.length === 0) return <div className="chart-empty">No data yet</div>;
+  let min = Math.min(...validVals);
+  let max = Math.max(...validVals);
+  if (showGoal != null) { min = Math.min(min, showGoal); max = Math.max(max, showGoal); }
+  if (max === min) max = min + 1;
+  const range = max - min;
+  // Add 10% padding to top/bottom
+  min -= range * 0.1; max += range * 0.1;
+  const sx = i => padX + (i / Math.max(1, points.length - 1)) * (W - 2 * padX);
+  const sy = v => H - padY - ((v - min) / (max - min)) * (H - 2 * padY);
+
+  const validPoints = points.map((p, i) => ({ ...p, _x: sx(i), _y: p.value != null ? sy(p.value) : null }));
+  const segments = []; // continuous segments of valid points
+  let cur = [];
+  for (const p of validPoints) {
+    if (p._y != null) cur.push(p);
+    else if (cur.length) { segments.push(cur); cur = []; }
+  }
+  if (cur.length) segments.push(cur);
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="mini-chart">
+      {showGoal != null && (
+        <line x1={padX} x2={W - padX} y1={sy(showGoal)} y2={sy(showGoal)} stroke="var(--muted)" strokeWidth="1" strokeDasharray="3 3" opacity=".5" />
+      )}
+      {segments.map((seg, si) => {
+        const path = seg.map((p, i) => `${i === 0 ? "M" : "L"}${p._x.toFixed(1)},${p._y.toFixed(1)}`).join(" ");
+        const area = seg.length > 1 ? `${path} L${seg[seg.length-1]._x.toFixed(1)},${H - padY} L${seg[0]._x.toFixed(1)},${H - padY} Z` : null;
+        return (
+          <g key={si}>
+            {fillBelow && area && <path d={area} fill={color} opacity=".12" />}
+            <path d={path} stroke={color} strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            {seg.map((p, i) => <circle key={i} cx={p._x} cy={p._y} r="2.4" fill={color} />)}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function TrendsTab({ data, goals }) {
+  const [range, setRange] = useState(14); // 7, 14, 30
+  const [showWeightForm, setShowWeightForm] = useState(false);
+  const [wt, setWt] = useState("");
+  const [wtDate, setWtDate] = useState(getTodayStr());
+
+  // Build date series
+  const series = useMemo(() => {
+    const dates = Array.from({ length: range }, (_, i) => daysAgo(range - 1 - i));
+    return dates;
+  }, [range]);
+
+  // Sleep series (hours)
+  const sleepSeries = series.map(d => {
+    const s = data.sleep.find(x => x.date === d);
+    return { label: d, value: s ? s.duration : null };
+  });
+  const avgSleep = (() => {
+    const vals = sleepSeries.map(p => p.value).filter(v => v != null);
+    return vals.length ? +(vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(1) : null;
+  })();
+  const sleepDebt = (() => {
+    let debt = 0;
+    for (const p of sleepSeries) if (p.value != null) debt += (8 - p.value);
+    return Math.round(debt * 10) / 10;
+  })();
+
+  // Calorie series
+  const calorieSeries = series.map(d => {
+    const day = data.diet.filter(x => x.date === d);
+    return { label: d, value: day.length ? day.reduce((a, m) => a + (m.calories || 0), 0) : null };
+  });
+  const proteinSeries = series.map(d => {
+    const day = data.diet.filter(x => x.date === d);
+    return { label: d, value: day.length ? day.reduce((a, m) => a + (m.protein || 0), 0) : null };
+  });
+  const avgCal = (() => {
+    const vals = calorieSeries.map(p => p.value).filter(v => v != null);
+    return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : null;
+  })();
+  const proteinHitDays = proteinSeries.filter(p => p.value != null && p.value >= goals.protein).length;
+  const proteinLoggedDays = proteinSeries.filter(p => p.value != null).length;
+
+  // Workout volume series (workouts per day count)
+  const workoutSeries = series.map(d => {
+    const ex = data.exercise.filter(x => x.date === d).length;
+    const sp = data.sports.filter(x => x.date === d).length;
+    return { label: d, value: ex + sp || 0 };
+  });
+  const totalWorkouts = workoutSeries.reduce((a, p) => a + p.value, 0);
+
+  // Weight series
+  const weightSeries = series.map(d => {
+    const w = data.weight.find(x => x.date === d);
+    return { label: d, value: w ? w.weight : null };
+  });
+  const weightChange = (() => {
+    const filled = weightSeries.filter(p => p.value != null);
+    if (filled.length < 2) return null;
+    return +(filled[filled.length - 1].value - filled[0].value).toFixed(1);
+  })();
+
+  // Water series
+  const waterSeries = series.map(d => {
+    const ml = (data.water || []).filter(x => x.date === d).reduce((a, w) => a + w.ml, 0);
+    return { label: d, value: ml || null };
+  });
+
+  // Sleep × workout correlation: avg workout count on good vs poor sleep nights
+  const corr = (() => {
+    const days = series.map(d => {
+      const s = data.sleep.find(x => x.date === d);
+      const wk = data.exercise.filter(x => x.date === d).length + data.sports.filter(x => x.date === d).length;
+      return s ? { sleep: s.duration, workouts: wk } : null;
+    }).filter(Boolean);
+    if (days.length < 4) return null;
+    const good = days.filter(d => d.sleep >= 7);
+    const poor = days.filter(d => d.sleep < 7);
+    if (!good.length || !poor.length) return null;
+    return {
+      goodAvg: +(good.reduce((a, d) => a + d.workouts, 0) / good.length).toFixed(2),
+      poorAvg: +(poor.reduce((a, d) => a + d.workouts, 0) / poor.length).toFixed(2),
+      goodN: good.length, poorN: poor.length,
+    };
+  })();
+
+  return (
+    <div>
+      {/* Range toggle */}
+      <div className="trends-range">
+        {[7, 14, 30].map(r => (
+          <button key={r} className={`mode-btn ${range === r ? "active" : ""}`} onClick={() => setRange(r)}>{r} days</button>
+        ))}
+      </div>
+
+      {/* SLEEP */}
+      <div className="form-card">
+        <div className="trend-card-hd">
+          <span className="db-card-title">😴 Sleep</span>
+          <div className="trend-card-stats">
+            <span>Avg <strong style={{ color: "#6ee7f7" }}>{avgSleep != null ? `${avgSleep}h` : "—"}</strong></span>
+            <span>Debt <strong style={{ color: sleepDebt > 5 ? "#f97b6e" : sleepDebt > 0 ? "#f9e27e" : "#a5f3b4" }}>{sleepDebt > 0 ? `+${sleepDebt}h` : sleepDebt < 0 ? `${sleepDebt}h` : "0h"}</strong></span>
+          </div>
+        </div>
+        <MiniChart points={sleepSeries} color="#6ee7f7" showGoal={8} />
+        <div className="trend-note">Target: 8h/night. {sleepDebt > 5 ? "You're significantly under-rested — prioritize sleep this week." : sleepDebt > 0 ? "Small deficit — manageable." : "On track."}</div>
+      </div>
+
+      {/* CALORIES */}
+      <div className="form-card">
+        <div className="trend-card-hd">
+          <span className="db-card-title">🍎 Calories</span>
+          <div className="trend-card-stats">
+            <span>Avg <strong style={{ color: "#f9e27e" }}>{avgCal != null ? `${avgCal}` : "—"}</strong></span>
+            <span>Target <strong style={{ color: "var(--muted)" }}>{goals.calories}</strong></span>
+          </div>
+        </div>
+        <MiniChart points={calorieSeries} color="#f9e27e" showGoal={goals.calories} />
+      </div>
+
+      {/* PROTEIN */}
+      <div className="form-card">
+        <div className="trend-card-hd">
+          <span className="db-card-title">🥩 Protein</span>
+          <div className="trend-card-stats">
+            <span>Hit rate <strong style={{ color: proteinHitDays >= proteinLoggedDays * 0.7 ? "#a5f3b4" : "#f9e27e" }}>{proteinLoggedDays ? `${proteinHitDays}/${proteinLoggedDays} days` : "—"}</strong></span>
+          </div>
+        </div>
+        <MiniChart points={proteinSeries} color="#c4b5fd" showGoal={goals.protein} />
+      </div>
+
+      {/* WORKOUTS */}
+      <div className="form-card">
+        <div className="trend-card-hd">
+          <span className="db-card-title">💪 Workouts</span>
+          <div className="trend-card-stats">
+            <span><strong style={{ color: "#f97b6e" }}>{totalWorkouts}</strong> total · last {range}d</span>
+          </div>
+        </div>
+        <div className="trend-bars">
+          {workoutSeries.map((p, i) => (
+            <div key={i} className="trend-bar-col" title={`${p.label}: ${p.value} workout${p.value === 1 ? "" : "s"}`}>
+              <div className="trend-bar" style={{ height: `${Math.min(100, p.value * 33)}%`, background: p.value > 0 ? "#f97b6e" : "transparent", border: p.value === 0 ? "1px dashed var(--border)" : "none" }} />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* BODY WEIGHT */}
+      <div className="form-card">
+        <div className="trend-card-hd">
+          <span className="db-card-title">⚖ Body Weight</span>
+          <div className="trend-card-stats">
+            {weightChange != null && (
+              <span>Change <strong style={{ color: weightChange === 0 ? "var(--muted)" : (goals.goal === "Lose Fat" ? (weightChange < 0 ? "#a5f3b4" : "#f9e27e") : (weightChange > 0 ? "#a5f3b4" : "#f9e27e")) }}>{weightChange > 0 ? "+" : ""}{weightChange}{goals.weightUnit || "kg"}</strong></span>
+            )}
+          </div>
+        </div>
+        <MiniChart points={weightSeries} color="#a5f3b4" />
+        <button className="btn-ai" style={{ marginTop: 14 }} onClick={() => setShowWeightForm(s => !s)}>{showWeightForm ? "Cancel" : "+ Log weight"}</button>
+        {showWeightForm && (
+          <div style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "flex-end" }}>
+            <label style={{ flex: 1 }}>Date<input type="date" value={wtDate} onChange={e => setWtDate(e.target.value)} /></label>
+            <label style={{ flex: 1 }}>Weight ({goals.weightUnit || "kg"})<input type="number" step="0.1" value={wt} onChange={e => setWt(e.target.value)} placeholder="75.5" /></label>
+            <button className="btn-primary" style={{ flex: 0, padding: "10px 16px" }} onClick={() => {
+              if (!wt) return;
+              const event = new CustomEvent("fitlog-add-weight", { detail: { id: Date.now(), date: wtDate, weight: parseFloat(wt), unit: goals.weightUnit || "kg" } });
+              window.dispatchEvent(event);
+              setWt(""); setShowWeightForm(false);
+            }}>Save</button>
+          </div>
+        )}
+      </div>
+
+      {/* WATER */}
+      <div className="form-card">
+        <div className="trend-card-hd">
+          <span className="db-card-title">💧 Water</span>
+          <div className="trend-card-stats">
+            <span>Target <strong style={{ color: "#6ee7f7" }}>{goals.waterGoalMl}ml</strong></span>
+          </div>
+        </div>
+        <MiniChart points={waterSeries} color="#4db8cc" showGoal={goals.waterGoalMl} formatY={v => `${(v/1000).toFixed(1)}L`} />
+      </div>
+
+      {/* SLEEP-PERFORMANCE CORRELATION */}
+      {corr && (
+        <div className="form-card insight-card">
+          <div className="db-card-hd"><span className="db-card-title">🔬 Sleep ↔ Training</span></div>
+          <p style={{ fontSize: ".88rem", lineHeight: 1.6, color: "var(--text)", marginBottom: 8 }}>
+            On nights you slept <strong>7+ hours</strong> ({corr.goodN} days), you averaged <strong style={{ color: "#a5f3b4" }}>{corr.goodAvg}</strong> workout{corr.goodAvg === 1 ? "" : "s"}/day.
+            On nights under 7 hours ({corr.poorN} days), you averaged <strong style={{ color: "#f97b6e" }}>{corr.poorAvg}</strong>.
+          </p>
+          <p style={{ fontSize: ".78rem", color: "var(--muted)", lineHeight: 1.5 }}>
+            {corr.goodAvg > corr.poorAvg
+              ? "👉 Better sleep correlates with more training. Prioritize rest."
+              : corr.goodAvg < corr.poorAvg
+              ? "👉 Interesting — you train more on less sleep. Could be motivation peaks, but watch for burnout."
+              : "👉 No strong difference yet. Keep logging."}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── DAILY INSIGHT CARD ───────────────────────────────────────────────────────
+function DailyInsightCard({ data, goals }) {
+  const today = getTodayStr();
+  const cachedKey = STORAGE_KEY + "_insight_" + today;
+  const [insight, setInsight] = useState(() => localStorage.getItem(cachedKey) || "");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function generate() {
+    setLoading(true); setError("");
+    try {
+      const txt = await generateDailyInsight(data, goals);
+      setInsight(txt);
+      localStorage.setItem(cachedKey, txt);
+    } catch { setError("Couldn't generate insight. Try again."); }
+    setLoading(false);
+  }
+
+  function refresh() {
+    localStorage.removeItem(cachedKey);
+    setInsight("");
+    generate();
+  }
+
+  return (
+    <div className="db-card insight-card">
+      <div className="db-card-hd">
+        <span className="db-card-title">✦ Today's Insight</span>
+        {insight && <button className="chat-clear-btn" onClick={refresh} disabled={loading}>↻ Refresh</button>}
+      </div>
+      {!insight && !loading && (
+        <>
+          <p style={{ fontSize: ".85rem", color: "var(--muted)", lineHeight: 1.6, marginBottom: 12 }}>
+            Get a quick AI take on what you should focus on today based on your recent data.
+          </p>
+          <button className="btn-ai" onClick={generate}>✦ Generate insight</button>
+        </>
+      )}
+      {loading && <div className="loading-text" style={{ color: "var(--accent)", fontSize: ".88rem" }}><span className="spinner-dot" />Thinking…</div>}
+      {error && <div className="error-msg">{error}</div>}
+      {insight && !loading && (
+        <div className="md-content insight-text">{renderMarkdown(insight)}</div>
+      )}
+    </div>
+  );
+}
+
+// ─── BODY WEIGHT QUICK LOG ────────────────────────────────────────────────────
+function BodyWeightQuickCard({ data, goals, onAddWeight }) {
+  const [show, setShow] = useState(false);
+  const [val, setVal] = useState("");
+  const sorted = [...data.weight].sort((a, b) => (a.date > b.date ? -1 : 1));
+  const latest = sorted[0];
+  const prev = sorted[1];
+  const unit = goals.weightUnit || "kg";
+  const todayLogged = data.weight.some(w => w.date === getTodayStr());
+
+  function save() {
+    if (!val) return;
+    onAddWeight({ id: Date.now(), date: getTodayStr(), weight: parseFloat(val), unit });
+    setVal(""); setShow(false);
+  }
+
+  return (
+    <div className="db-card weight-card">
+      <div className="db-card-hd">
+        <span className="db-card-title">⚖ Weight</span>
+        {!todayLogged && !show && <button className="chat-clear-btn" onClick={() => setShow(true)}>+ Log today</button>}
+        {todayLogged && <span style={{ fontSize: ".72rem", color: "var(--sports)" }}>✓ Logged today</span>}
+      </div>
+      {latest ? (
+        <div className="weight-display">
+          <div className="weight-main">{latest.weight}<span>{latest.unit || unit}</span></div>
+          {prev && (
+            <div className="weight-delta" style={{ color: latest.weight === prev.weight ? "var(--muted)" : (goals.goal === "Lose Fat" ? (latest.weight < prev.weight ? "#a5f3b4" : "#f9e27e") : (latest.weight > prev.weight ? "#a5f3b4" : "#f9e27e")) }}>
+              {latest.weight > prev.weight ? "▲" : latest.weight < prev.weight ? "▼" : "—"} {Math.abs(latest.weight - prev.weight).toFixed(1)}{unit} vs last
+            </div>
+          )}
+          <div className="weight-date">{formatDate(latest.date)}</div>
+        </div>
+      ) : (
+        <div className="db-empty" style={{ padding: 10 }}>No weight logged yet</div>
+      )}
+      {show && (
+        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+          <input type="number" step="0.1" value={val} onChange={e => setVal(e.target.value)} placeholder={`weight in ${unit}`} autoFocus onKeyDown={e => e.key === "Enter" && save()} />
+          <button className="btn-primary" style={{ flex: 0, padding: "10px 16px" }} onClick={save} disabled={!val}>Save</button>
+          <button className="btn-secondary" onClick={() => { setShow(false); setVal(""); }}>×</button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ─── SLEEP FORM ───────────────────────────────────────────────────────────────
@@ -308,6 +909,9 @@ function SettingsSection({ data, goals, onSaveGoals, onClearAll, onImport }) {
   const exportDiet = () => download(`fitlog-diet-${getTodayStr()}.csv`, arrayToCSV(data.diet, ["date","meal","food","calories","protein","carbs","fat","notes"]));
   const exportExercise = () => download(`fitlog-workouts-${getTodayStr()}.csv`, arrayToCSV(data.exercise, ["date","label","text"]));
   const exportSports = () => download(`fitlog-sports-${getTodayStr()}.csv`, arrayToCSV(data.sports, ["date","sport","duration","intensity","calories","result","opponent","score","notes"]));
+  const exportWeight = () => download(`fitlog-weight-${getTodayStr()}.csv`, arrayToCSV(data.weight || [], ["date","weight","unit"]));
+  const exportWater = () => download(`fitlog-water-${getTodayStr()}.csv`, arrayToCSV((data.water || []).map(w => ({ ...w, time: w.ts ? new Date(w.ts).toISOString() : "" })), ["date","time","ml"]));
+  const exportSupps = () => download(`fitlog-supplements-${getTodayStr()}.csv`, arrayToCSV((data.supplements || []).map(s => ({ ...s, time: s.ts ? new Date(s.ts).toISOString() : "" })), ["date","time","name","dose"]));
   const exportChat = () => {
     try {
       const msgs = JSON.parse(localStorage.getItem(STORAGE_KEY + "_chat") || "[]");
@@ -320,7 +924,10 @@ function SettingsSection({ data, goals, onSaveGoals, onClearAll, onImport }) {
     setTimeout(() => data.diet.length && exportDiet(), 200);
     setTimeout(() => data.exercise.length && exportExercise(), 400);
     setTimeout(() => data.sports.length && exportSports(), 600);
-    setTimeout(() => exportChat(), 800);
+    setTimeout(() => (data.weight || []).length && exportWeight(), 800);
+    setTimeout(() => (data.water || []).length && exportWater(), 1000);
+    setTimeout(() => (data.supplements || []).length && exportSupps(), 1200);
+    setTimeout(() => exportChat(), 1400);
   };
   const exportJSON = () => {
     const all = { exportedAt: new Date().toISOString(), goals, data, chat: JSON.parse(localStorage.getItem(STORAGE_KEY + "_chat") || "[]") };
@@ -345,10 +952,10 @@ function SettingsSection({ data, goals, onSaveGoals, onClearAll, onImport }) {
     e.target.value = ""; // reset so same file can be re-uploaded
   }
 
-  const counts = { sleep: data.sleep.length, diet: data.diet.length, exercise: data.exercise.length, sports: data.sports.length };
+  const counts = { sleep: data.sleep.length, diet: data.diet.length, exercise: data.exercise.length, sports: data.sports.length, weight: (data.weight || []).length, water: (data.water || []).length, supplements: (data.supplements || []).length };
   let chatCount = 0;
   try { chatCount = JSON.parse(localStorage.getItem(STORAGE_KEY + "_chat") || "[]").length; } catch {}
-  const totalEntries = counts.sleep + counts.diet + counts.exercise + counts.sports;
+  const totalEntries = counts.sleep + counts.diet + counts.exercise + counts.sports + counts.weight + counts.water + counts.supplements;
 
   return (
     <div className="dash-section">
@@ -398,6 +1005,20 @@ function SettingsSection({ data, goals, onSaveGoals, onClearAll, onImport }) {
                 <span><span className="ldot mfat-d" />F {fPct}%</span>
                 <span style={{ marginLeft: "auto", color: Math.abs(total - form.calories) > 50 ? "#f9e27e" : "var(--muted)" }}>{total} / {form.calories} kcal</span>
               </div>
+
+              <div style={{ borderTop: "1px solid var(--border)", margin: "18px 0 14px" }} />
+              <div className="form-grid">
+                <label>Daily Water Goal (ml)
+                  <input type="number" step="100" value={form.waterGoalMl} onChange={e => setG("waterGoalMl", Number(e.target.value))} />
+                </label>
+                <label>Weight Unit
+                  <select value={form.weightUnit} onChange={e => setG("weightUnit", e.target.value)}>
+                    <option value="kg">kg</option>
+                    <option value="lb">lb</option>
+                  </select>
+                </label>
+              </div>
+
               <button className="btn-primary" style={{ marginTop: 14 }} onClick={() => { onSaveGoals(form); setSaved(true); setTimeout(() => setSaved(false), 2000); }}>
                 {saved ? "✓ Saved!" : "Save Goals"}
               </button>
@@ -430,6 +1051,21 @@ function SettingsSection({ data, goals, onSaveGoals, onClearAll, onImport }) {
                   <span className="export-icon" style={{ color: "var(--sports)" }}>◇</span>
                   <span className="export-name">Sports</span>
                   <span className="export-count">{counts.sports} entries</span>
+                </button>
+                <button className="export-btn" onClick={exportWater} disabled={!counts.water}>
+                  <span className="export-icon" style={{ color: "#4db8cc" }}>◊</span>
+                  <span className="export-name">Water</span>
+                  <span className="export-count">{counts.water} entries</span>
+                </button>
+                <button className="export-btn" onClick={exportSupps} disabled={!counts.supplements}>
+                  <span className="export-icon" style={{ color: "#c4b5fd" }}>⊕</span>
+                  <span className="export-name">Supplements</span>
+                  <span className="export-count">{counts.supplements} entries</span>
+                </button>
+                <button className="export-btn" onClick={exportWeight} disabled={!counts.weight}>
+                  <span className="export-icon" style={{ color: "#a5f3b4" }}>⚖</span>
+                  <span className="export-name">Weight</span>
+                  <span className="export-count">{counts.weight} entries</span>
                 </button>
                 <button className="export-btn" onClick={exportChat} disabled={chatCount <= 1}>
                   <span className="export-icon" style={{ color: "var(--accent)" }}>✦</span>
@@ -528,26 +1164,65 @@ function AICoachSection({ data, goals }) {
   function buildContext() {
     const cut = new Date(); cut.setDate(cut.getDate() - 14);
     const last14 = arr => arr.filter(i => new Date(i.date + "T00:00:00") >= cut);
+    const today = getTodayStr();
+    const todayWaterMl = (data.water || []).filter(w => w.date === today).reduce((a, w) => a + w.ml, 0);
+    const todaySupps = (data.supplements || []).filter(s => s.date === today);
+    const recentWeights = (data.weight || []).slice(0, 5);
     return `User goal: ${goals.goal}
-Calorie target: ${goals.calories}kcal | Protein: ${goals.protein}g | Carbs: ${goals.carbs}g | Fat: ${goals.fat}g
+Calorie target: ${goals.calories}kcal | Protein: ${goals.protein}g | Carbs: ${goals.carbs}g | Fat: ${goals.fat}g | Water goal: ${goals.waterGoalMl}ml
 
 Sleep (last 14d): ${last14(data.sleep).map(s => `${s.date}: ${s.duration}h (${s.quality})`).join(", ") || "none"}
 Diet (last 14d): ${last14(data.diet).map(d => `${d.date} ${d.meal}: ${d.food} ${d.calories}kcal P${d.protein}g`).join(" | ") || "none"}
 Workouts (last 14d): ${last14(data.exercise).map(e => `${e.date}: ${e.label}`).join(", ") || "none"}
-Sports (last 14d): ${last14(data.sports).map(s => `${s.date}: ${s.sport} ${s.duration}min ${s.intensity}`).join(", ") || "none"}`;
+Sports (last 14d): ${last14(data.sports).map(s => `${s.date}: ${s.sport} ${s.duration}min ${s.intensity}`).join(", ") || "none"}
+Body weight (recent): ${recentWeights.map(w => `${w.date}: ${w.weight}${w.unit||"kg"}`).join(", ") || "none"}
+Today's water: ${todayWaterMl}ml / ${goals.waterGoalMl}ml
+Today's supplements: ${todaySupps.map(s => s.name).join(", ") || "none yet"}`;
+  }
+
+  // Summarize old conversation chunks to preserve long-term memory without burning tokens.
+  // Triggers when there are >20 messages: it asks Claude to compress everything older
+  // than the last 20 into a single "previous conversation summary" assistant message.
+  async function maybeCompactMemory(updatedMessages) {
+    if (updatedMessages.length < 22) return updatedMessages; // 1 greeting + 21+ chat
+    // Check if a summary already exists
+    if (updatedMessages.some(m => m.summary)) {
+      // Replace summary if more than 30 unsummarized messages since
+      const summaryIdx = updatedMessages.findIndex(m => m.summary);
+      const afterSummary = updatedMessages.length - summaryIdx - 1;
+      if (afterSummary < 30) return updatedMessages;
+    }
+    const toSummarize = updatedMessages.slice(1, updatedMessages.length - 20);
+    const transcript = toSummarize.map(m => `${m.role.toUpperCase()}: ${m.text}`).join("\n\n");
+    try {
+      const sumText = await callClaude({
+        system: "Summarize the following coaching conversation in 4-6 bullet points capturing: (1) what the user is working on, (2) advice the coach has given that's still relevant, (3) preferences or constraints the user has mentioned, (4) progress made. Be specific. No preamble.",
+        userText: transcript,
+        maxTokens: 400
+      });
+      const greeting = updatedMessages[0];
+      const summaryMsg = { role: "assistant", summary: true, text: `📝 *Previous conversation summary:*\n\n${sumText}`, ts: Date.now() };
+      const recent = updatedMessages.slice(-20);
+      return [greeting, summaryMsg, ...recent];
+    } catch {
+      return updatedMessages; // if summarization fails, just continue with full history
+    }
   }
 
   async function sendMessage() {
     const q = input.trim();
     if (!q || chatLoading) return;
     setInput("");
-    const updated = [...messages, { role: "user", text: q, ts: Date.now() }];
+    let updated = [...messages, { role: "user", text: q, ts: Date.now() }];
     setMessages(updated);
     setChatLoading(true);
     try {
-      // Send full conversation history (skip the initial greeting). The coach now has memory.
-      // Cap at last 40 messages to control token costs as history grows.
-      const recentHistory = updated.slice(1).slice(-40);
+      // Compact if needed (replaces old chunk with a summary message)
+      updated = await maybeCompactMemory(updated);
+      setMessages(updated);
+
+      // Build messages for API: skip the initial greeting, include the summary if present
+      const recentHistory = updated.slice(1);
       const apiMsgs = recentHistory.map(m => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.text }));
       // Inject latest fitness data into the most recent user message so context stays fresh
       const lastUserIdx = apiMsgs.map(m => m.role).lastIndexOf("user");
@@ -560,7 +1235,7 @@ Sports (last 14d): ${last14(data.sports).map(s => `${s.date}: ${s.sport} ${s.dur
         body: JSON.stringify({
           model: "claude-haiku-4-5",
           max_tokens: 800,
-          system: `You are an elite personal trainer and sports nutritionist. The user shares their real fitness tracking data with you AND you have access to your full conversation history with them, so reference past discussions naturally when relevant ("like we talked about last week...", "you mentioned earlier that..."). Give direct, specific, practical advice. Be concise — 2-4 short paragraphs or bullet points. Be encouraging but honest. Their goal: ${goals.goal}.`,
+          system: `You are an elite personal trainer and sports nutritionist. The user shares real fitness tracking data with you AND you have access to your full conversation history (including a summary of older chats). Reference past discussions naturally when relevant ("like we talked about last week..."). Give direct, specific, practical advice referencing their actual numbers. Use markdown: **bold** for key points, bullet lists for steps. Be concise — 2-4 short paragraphs. Be encouraging but honest. Their goal: ${goals.goal}.`,
           messages: apiMsgs
         })
       });
@@ -568,7 +1243,7 @@ Sports (last 14d): ${last14(data.sports).map(s => `${s.date}: ${s.sport} ${s.dur
       const reply = res.content?.map(b => b.text || "").join("") || "Sorry, try again.";
       setMessages(prev => [...prev, { role: "assistant", text: reply, ts: Date.now() }]);
     } catch {
-      setMessages(prev => [...prev, { role: "assistant", text: "Something went wrong. Please try again.", ts: Date.now() }]);
+      setMessages(prev => [...prev, { role: "assistant", text: "Something went wrong. Please try again." }]);
     }
     setChatLoading(false);
   }
@@ -622,11 +1297,7 @@ Sports (last 14d): ${last14(data.sports).map(s => `${s.date}: ${s.sport} ${s.dur
                   <div key={i} className={`coach-msg ${m.role}`}>
                     {m.role === "assistant" && <div className="coach-avatar">✦</div>}
                     <div className="coach-bubble">
-                      {m.text.split("\n").filter((l, li, arr) => l || (li > 0 && arr[li-1])).map((line, j) => (
-                        line.startsWith("• ") || line.startsWith("- ") || line.match(/^\d+\./)
-                          ? <p key={j} style={{ margin: "3px 0", paddingLeft: 4 }}>{line}</p>
-                          : <p key={j} style={{ margin: j > 0 && line ? "7px 0 0" : 0 }}>{line}</p>
-                      ))}
+                      <div className="md-content">{renderMarkdown(m.text)}</div>
                     </div>
                   </div>
                 ))}
@@ -756,6 +1427,8 @@ function Dashboard({ data, goals, onSaveGoals, onClearAll, onImport }) {
   const todayCarbs = todayDiet.reduce((a, m) => a + (m.carbs || 0), 0);
   const todayFat = todayDiet.reduce((a, m) => a + (m.fat || 0), 0);
   const todayCalOut = todaySports.reduce((a, e) => a + (e.calories || 0), 0);
+  const todayWaterMl = (data.water || []).filter(w => w.date === today).reduce((a, w) => a + w.ml, 0);
+  const waterPct = goals.waterGoalMl > 0 ? Math.min(100, Math.round((todayWaterMl / goals.waterGoalMl) * 100)) : 0;
   const totalWorkouts = last7(data.exercise).length + last7(data.sports).length;
   const calPct = goals.calories > 0 ? Math.min(100, Math.round((todayCalIn / goals.calories) * 100)) : 0;
   const prtPct = goals.protein > 0 ? Math.min(100, Math.round((todayProtein / goals.protein) * 100)) : 0;
@@ -791,14 +1464,20 @@ function Dashboard({ data, goals, onSaveGoals, onClearAll, onImport }) {
           <div className="db-rings">
             <RingChart pct={calPct} color="#f9e27e" value={todayCalIn || "—"} unit="" label="Calories" />
             <RingChart pct={prtPct} color="#c4b5fd" value={todayProtein || "—"} unit={todayProtein ? "g" : ""} label="Protein" />
+            <RingChart pct={waterPct} color="#4db8cc" value={todayWaterMl ? (todayWaterMl >= 1000 ? (todayWaterMl/1000).toFixed(1) : todayWaterMl) : "—"} unit={todayWaterMl ? (todayWaterMl >= 1000 ? "L" : "ml") : ""} label="Water" />
             <RingChart pct={sleepPct} color="#6ee7f7" value={avgSleep || "—"} unit={avgSleep ? "h" : ""} label="Avg Sleep" />
-            <RingChart pct={Math.min(100, Math.round((totalWorkouts / 7) * 100))} color="#a5f3b4" value={totalWorkouts || "—"} unit="" label="Workouts" />
           </div>
         </div>
       </div>
 
+      {/* DAILY INSIGHT */}
+      <DailyInsightCard data={data} goals={goals} />
+
       {/* AI COACH */}
       <AICoachSection data={data} goals={goals} />
+
+      {/* BODY WEIGHT */}
+      <BodyWeightQuickCard data={data} goals={goals} onAddWeight={(e) => window.dispatchEvent(new CustomEvent("fitlog-add-weight", { detail: e }))} />
 
       {/* NUTRITION CARD */}
       {todayCalIn > 0 && (
@@ -913,20 +1592,26 @@ export default function FitnessTracker() {
   const [goals, setGoals] = useState(loadGoals);
   useEffect(() => { saveData(data); }, [data]);
   useEffect(() => { saveGoals(goals); }, [goals]);
-  const addEntry = type => entry => setData(d => ({ ...d, [type]: [entry, ...d[type]] }));
-  const deleteEntry = type => id => setData(d => ({ ...d, [type]: d[type].filter(e => e.id !== id) }));
+  const addEntry = type => entry => setData(d => ({ ...d, [type]: [entry, ...(d[type] || [])] }));
+  const deleteEntry = type => id => setData(d => ({ ...d, [type]: (d[type] || []).filter(e => e.id !== id) }));
   const clearAllData = () => {
     setData(defaultData);
     localStorage.removeItem(STORAGE_KEY + "_chat");
-    // Trigger a reload so the AI Coach's loaded messages reset
     setTimeout(() => window.location.reload(), 100);
   };
   const importData = (backup) => {
-    if (backup.data) setData(backup.data);
-    if (backup.goals) setGoals(backup.goals);
+    if (backup.data) setData({ ...defaultData, ...backup.data });
+    if (backup.goals) setGoals({ ...defaultGoals, ...backup.goals });
     if (backup.chat) localStorage.setItem(STORAGE_KEY + "_chat", JSON.stringify(backup.chat));
     setTimeout(() => window.location.reload(), 100);
   };
+
+  // Allow Trends tab's inline weight form to add a weight entry without prop drilling
+  useEffect(() => {
+    const handler = (e) => addEntry("weight")(e.detail);
+    window.addEventListener("fitlog-add-weight", handler);
+    return () => window.removeEventListener("fitlog-add-weight", handler);
+  }, []);
 
   return (
     <>
@@ -1124,6 +1809,75 @@ export default function FitnessTracker() {
         .data-action > div:first-child { flex:1; }
         .data-action-title { font-size:.88rem; font-weight:500; color:var(--text); margin-bottom:3px; }
         .data-action-desc { font-size:.75rem; color:var(--muted); line-height:1.5; }
+
+        /* ── MARKDOWN ── */
+        .md-content > *:first-child { margin-top:0; }
+        .md-content > *:last-child { margin-bottom:0; }
+        .md-p { margin:7px 0 0; line-height:1.55; }
+        .md-h1 { font-family:'DM Serif Display',serif; font-size:1.05rem; color:var(--text); margin:14px 0 6px; }
+        .md-h2 { font-family:'DM Serif Display',serif; font-size:.95rem; color:var(--text); margin:12px 0 4px; }
+        .md-ul, .md-ol { margin:6px 0; padding-left:20px; }
+        .md-ul li, .md-ol li { margin:4px 0; line-height:1.5; }
+        .md-ul { list-style:none; padding-left:0; }
+        .md-ul li { position:relative; padding-left:16px; }
+        .md-ul li::before { content:"→"; position:absolute; left:0; color:var(--accent); font-weight:700; }
+        .md-code { background:var(--surface2); border:1px solid var(--border); border-radius:4px; padding:1px 6px; font-size:.82em; font-family:monospace; }
+
+        /* ── DAILY INSIGHT ── */
+        .insight-card { border:1px solid rgba(110,231,247,.2); background:linear-gradient(135deg,rgba(110,231,247,.04),rgba(165,243,180,.03)); }
+        .insight-text { font-size:.88rem; line-height:1.6; color:var(--text); }
+
+        /* ── BODY WEIGHT CARD ── */
+        .weight-card { }
+        .weight-display { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; }
+        .weight-main { font-family:'DM Serif Display',serif; font-size:2rem; color:#a5f3b4; line-height:1; }
+        .weight-main span { font-family:'DM Sans',sans-serif; font-size:.9rem; color:var(--muted); margin-left:4px; }
+        .weight-delta { font-size:.82rem; font-weight:500; }
+        .weight-date { font-size:.72rem; color:var(--muted); margin-left:auto; }
+
+        /* ── WATER TAB ── */
+        .water-hero { position:relative; width:160px; height:160px; margin:14px auto 18px; }
+        .water-hero svg { position:absolute; inset:0; }
+        .water-hero-text { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; }
+        .water-hero-ml { font-family:'DM Serif Display',serif; font-size:2rem; color:#6ee7f7; line-height:1; }
+        .water-hero-ml span { font-family:'DM Sans',sans-serif; font-size:.8rem; color:var(--muted); margin-left:3px; }
+        .water-hero-goal { font-size:.75rem; color:var(--muted); margin-top:4px; }
+        .water-quick { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+        .water-q-btn { background:rgba(110,231,247,.06); border:1px solid rgba(110,231,247,.2); color:var(--text); border-radius:10px; padding:12px 8px; cursor:pointer; font-family:'DM Sans',sans-serif; font-size:.84rem; font-weight:500; display:flex; flex-direction:column; gap:3px; transition:all .2s; }
+        .water-q-btn:hover { background:rgba(110,231,247,.12); transform:translateY(-1px); }
+        .water-q-btn span { font-size:.7rem; color:var(--muted); font-weight:400; }
+        .water-entries { display:flex; flex-direction:column; gap:6px; }
+        .water-entry { display:flex; align-items:center; gap:12px; padding:9px 12px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; }
+        .water-entry-time { font-size:.78rem; color:var(--muted); min-width:56px; }
+        .water-entry-ml { flex:1; font-weight:500; color:#6ee7f7; }
+        .water-entry-x { background:transparent; border:none; color:var(--muted); cursor:pointer; font-size:1.2rem; line-height:1; padding:0 4px; transition:color .2s; }
+        .water-entry-x:hover { color:var(--exercise); }
+        .water-week { display:grid; grid-template-columns:repeat(7,1fr); gap:5px; align-items:end; }
+        .water-week-day { display:flex; flex-direction:column; align-items:center; gap:4px; }
+        .water-week-bar-wrap { width:100%; height:80px; background:var(--surface2); border-radius:5px; position:relative; overflow:hidden; display:flex; align-items:flex-end; }
+        .water-week-bar { width:100%; border-radius:4px; min-height:3px; transition:height .6s ease, background .3s; }
+        .water-week-label { font-size:.7rem; color:var(--muted); }
+        .water-week-ml { font-size:.65rem; color:var(--text); font-weight:500; }
+
+        /* ── SUPPLEMENTS ── */
+        .supp-list { display:flex; flex-direction:column; gap:6px; }
+        .supp-entry { display:flex; align-items:center; gap:10px; padding:10px 12px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; }
+        .supp-entry-main { flex:1; }
+        .supp-entry-name { font-size:.88rem; color:var(--text); font-weight:500; }
+        .supp-entry-dose { font-size:.72rem; color:var(--muted); margin-top:2px; }
+        .supp-entry-time { font-size:.72rem; color:var(--muted); }
+
+        /* ── TRENDS ── */
+        .trends-range { display:flex; gap:6px; margin-bottom:18px; }
+        .trend-card-hd { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; gap:12px; flex-wrap:wrap; }
+        .trend-card-stats { display:flex; gap:14px; font-size:.76rem; color:var(--muted); }
+        .trend-card-stats strong { font-weight:600; }
+        .mini-chart { width:100%; height:80px; display:block; }
+        .chart-empty { color:var(--muted); font-size:.82rem; text-align:center; padding:20px; font-style:italic; }
+        .trend-note { font-size:.75rem; color:var(--muted); margin-top:10px; line-height:1.5; }
+        .trend-bars { display:grid; grid-template-columns:repeat(auto-fit, minmax(8px, 1fr)); gap:3px; height:60px; align-items:end; padding:0 4px; }
+        .trend-bar-col { height:100%; display:flex; align-items:flex-end; }
+        .trend-bar { width:100%; min-height:4px; border-radius:3px; transition:height .6s ease; }
         .export-icon { font-size:1.3rem; }
         .export-name { font-size:.84rem; font-weight:500; }
         .export-count { font-size:.68rem; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
@@ -1235,6 +1989,19 @@ export default function FitnessTracker() {
               </div>
             </>
           )}
+
+          {activeTab === "Water" && (
+            <WaterTab
+              data={data}
+              goals={goals}
+              onAddWater={addEntry("water")}
+              onDeleteWater={deleteEntry("water")}
+              onAddSupp={addEntry("supplements")}
+              onDeleteSupp={deleteEntry("supplements")}
+            />
+          )}
+
+          {activeTab === "Trends" && <TrendsTab data={data} goals={goals} />}
         </div>
       </div>
     </>
