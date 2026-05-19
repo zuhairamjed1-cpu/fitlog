@@ -29,7 +29,7 @@ async function callClaude({ system, userText, imageBase64, imageMediaType, maxTo
     : userText;
   const resp = await fetch("/api/chat", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "claude-haiku-4-5", max_tokens: maxTokens, system, messages: [{ role: "user", content: userContent }] })
+    body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: maxTokens, system, messages: [{ role: "user", content: userContent }] })
   });
   const data = await resp.json();
   return data.content?.map(b => b.text || "").join("") || "";
@@ -263,12 +263,17 @@ function StatCard({ label, value, unit, color, sub }) {
   );
 }
 
-// ─── GOALS SECTION (inline in dashboard) ─────────────────────────────────────
-function GoalsSection({ goals, onSave }) {
+// ─── SETTINGS SECTION ─────────────────────────────────────────────────────────
+function SettingsSection({ data, goals, onSaveGoals, onClearAll, onImport }) {
   const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState("goals"); // goals | export | data
+
+  // ─── Goals state ──
   const [form, setForm] = useState(goals);
   const [saved, setSaved] = useState(false);
-  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const setG = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  useEffect(() => { setForm(goals); }, [goals]);
 
   function autoCalc(calories, goal) {
     if (goal === "Build Muscle") return { protein: Math.round(calories * .30 / 4), carbs: Math.round(calories * .45 / 4), fat: Math.round(calories * .25 / 9) };
@@ -277,43 +282,207 @@ function GoalsSection({ goals, onSave }) {
     if (goal === "Athletic Performance") return { protein: Math.round(calories * .25 / 4), carbs: Math.round(calories * .50 / 4), fat: Math.round(calories * .25 / 9) };
     return { protein: Math.round(calories * .25 / 4), carbs: Math.round(calories * .45 / 4), fat: Math.round(calories * .30 / 9) };
   }
-
   const total = form.protein * 4 + form.carbs * 4 + form.fat * 9;
   const pPct = Math.round((form.protein * 4 / total) * 100);
   const cPct = Math.round((form.carbs * 4 / total) * 100);
   const fPct = Math.round((form.fat * 9 / total) * 100);
 
+  // ─── Export helpers ──
+  function escapeCSV(v) {
+    if (v == null) return "";
+    const s = String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  }
+  function arrayToCSV(rows, headers) {
+    return [headers.join(","), ...rows.map(r => headers.map(h => escapeCSV(r[h])).join(","))].join("\n");
+  }
+  function download(filename, content, mime = "text/csv") {
+    const blob = new Blob([content], { type: `${mime};charset=utf-8;` });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+  const exportSleep = () => download(`fitlog-sleep-${getTodayStr()}.csv`, arrayToCSV(data.sleep, ["date","duration_hours","bedtime","wakeTime","quality","notes"]));
+  const exportDiet = () => download(`fitlog-diet-${getTodayStr()}.csv`, arrayToCSV(data.diet, ["date","meal","food","calories","protein","carbs","fat","notes"]));
+  const exportExercise = () => download(`fitlog-workouts-${getTodayStr()}.csv`, arrayToCSV(data.exercise, ["date","label","text"]));
+  const exportSports = () => download(`fitlog-sports-${getTodayStr()}.csv`, arrayToCSV(data.sports, ["date","sport","duration","intensity","calories","result","opponent","score","notes"]));
+  const exportChat = () => {
+    try {
+      const msgs = JSON.parse(localStorage.getItem(STORAGE_KEY + "_chat") || "[]");
+      const rows = msgs.map(m => ({ timestamp: m.ts ? new Date(m.ts).toISOString() : "", role: m.role, text: m.text }));
+      download(`fitlog-chat-${getTodayStr()}.csv`, arrayToCSV(rows, ["timestamp","role","text"]));
+    } catch { alert("Could not export chat."); }
+  };
+  const exportAll = () => {
+    if (data.sleep.length) exportSleep();
+    setTimeout(() => data.diet.length && exportDiet(), 200);
+    setTimeout(() => data.exercise.length && exportExercise(), 400);
+    setTimeout(() => data.sports.length && exportSports(), 600);
+    setTimeout(() => exportChat(), 800);
+  };
+  const exportJSON = () => {
+    const all = { exportedAt: new Date().toISOString(), goals, data, chat: JSON.parse(localStorage.getItem(STORAGE_KEY + "_chat") || "[]") };
+    download(`fitlog-backup-${getTodayStr()}.json`, JSON.stringify(all, null, 2), "application/json");
+  };
+
+  // ─── Import / Clear ──
+  const fileRef = useRef();
+  function handleImportFile(e) {
+    const file = e.target.files[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const parsed = JSON.parse(ev.target.result);
+        if (!parsed.data || !parsed.goals) throw new Error("Invalid backup");
+        if (!confirm("This will REPLACE all your current data with the backup. Continue?")) return;
+        onImport(parsed);
+        alert("Backup restored successfully!");
+      } catch { alert("Couldn't read that file. Make sure it's a fitlog JSON backup."); }
+    };
+    reader.readAsText(file);
+    e.target.value = ""; // reset so same file can be re-uploaded
+  }
+
+  const counts = { sleep: data.sleep.length, diet: data.diet.length, exercise: data.exercise.length, sports: data.sports.length };
+  let chatCount = 0;
+  try { chatCount = JSON.parse(localStorage.getItem(STORAGE_KEY + "_chat") || "[]").length; } catch {}
+  const totalEntries = counts.sleep + counts.diet + counts.exercise + counts.sports;
+
   return (
     <div className="dash-section">
       <button className="dash-section-toggle" onClick={() => setOpen(o => !o)}>
-        <span className="dash-section-label">⊙ Goals & Nutrition Targets</span>
+        <span className="dash-section-label">⚙ Settings</span>
         <span className="dash-section-meta">{goals.goal} · {goals.calories} kcal</span>
         <span className="dash-chevron">{open ? "▲" : "▼"}</span>
       </button>
       {open && (
-        <div className="dash-section-body">
-          <div className="form-grid" style={{ marginBottom: 12 }}>
-            <label>Primary Goal
-              <select value={form.goal} onChange={e => set("goal", e.target.value)}>
-                {fitnessGoals.map(g => <option key={g}>{g}</option>)}
-              </select>
-            </label>
-            <label>Daily Calories
-              <input type="number" value={form.calories} onChange={e => set("calories", Number(e.target.value))} />
-            </label>
+        <div style={{ borderTop: "1px solid var(--border)" }}>
+          <div className="settings-tabs">
+            <button className={`settings-tab ${tab === "goals" ? "active" : ""}`} onClick={() => setTab("goals")}>⊙ Goals</button>
+            <button className={`settings-tab ${tab === "export" ? "active" : ""}`} onClick={() => setTab("export")}>⬇ Export</button>
+            <button className={`settings-tab ${tab === "data" ? "active" : ""}`} onClick={() => setTab("data")}>⌗ Data</button>
           </div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-            <span style={{ fontSize: "0.82rem", color: "var(--text)", fontWeight: 500 }}>Macros</span>
-            <button className="btn-secondary" style={{ padding: "5px 11px", fontSize: "0.73rem" }} onClick={() => setForm(f => ({ ...f, ...autoCalc(f.calories, f.goal) }))}>✦ Auto for {form.goal}</button>
-          </div>
-          <div className="form-grid" style={{ gridTemplateColumns: "1fr 1fr 1fr", marginBottom: 12 }}>
-            <label>Protein (g)<input type="number" value={form.protein} onChange={e => set("protein", Number(e.target.value))} /></label>
-            <label>Carbs (g)<input type="number" value={form.carbs} onChange={e => set("carbs", Number(e.target.value))} /></label>
-            <label>Fat (g)<input type="number" value={form.fat} onChange={e => set("fat", Number(e.target.value))} /></label>
-          </div>
-          <div className="macro-bar"><div className="macro-bar-seg mprot" style={{ width: `${pPct}%` }} /><div className="macro-bar-seg mcarb" style={{ width: `${cPct}%` }} /><div className="macro-bar-seg mfat" style={{ width: `${fPct}%` }} /></div>
-          <div className="macro-legend"><span><span className="ldot mprot-d" />P {pPct}%</span><span><span className="ldot mcarb-d" />C {cPct}%</span><span><span className="ldot mfat-d" />F {fPct}%</span><span style={{ marginLeft: "auto", color: Math.abs(total - form.calories) > 50 ? "#f9e27e" : "var(--muted)" }}>{total} / {form.calories} kcal</span></div>
-          <button className="btn-primary" style={{ marginTop: 14 }} onClick={() => { onSave(form); setSaved(true); setTimeout(() => setSaved(false), 2000); }}>{saved ? "✓ Saved!" : "Save Goals"}</button>
+
+          {/* ── GOALS TAB ── */}
+          {tab === "goals" && (
+            <div className="settings-body">
+              <div className="form-grid" style={{ marginBottom: 12 }}>
+                <label>Primary Goal
+                  <select value={form.goal} onChange={e => setG("goal", e.target.value)}>
+                    {fitnessGoals.map(g => <option key={g}>{g}</option>)}
+                  </select>
+                </label>
+                <label>Daily Calories
+                  <input type="number" value={form.calories} onChange={e => setG("calories", Number(e.target.value))} />
+                </label>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <span style={{ fontSize: ".82rem", color: "var(--text)", fontWeight: 500 }}>Macros</span>
+                <button className="btn-secondary" style={{ padding: "5px 11px", fontSize: ".73rem" }} onClick={() => setForm(f => ({ ...f, ...autoCalc(f.calories, f.goal) }))}>✦ Auto for {form.goal}</button>
+              </div>
+              <div className="form-grid" style={{ gridTemplateColumns: "1fr 1fr 1fr", marginBottom: 12 }}>
+                <label>Protein (g)<input type="number" value={form.protein} onChange={e => setG("protein", Number(e.target.value))} /></label>
+                <label>Carbs (g)<input type="number" value={form.carbs} onChange={e => setG("carbs", Number(e.target.value))} /></label>
+                <label>Fat (g)<input type="number" value={form.fat} onChange={e => setG("fat", Number(e.target.value))} /></label>
+              </div>
+              <div className="macro-bar">
+                <div className="macro-bar-seg mprot" style={{ width: `${pPct}%` }} />
+                <div className="macro-bar-seg mcarb" style={{ width: `${cPct}%` }} />
+                <div className="macro-bar-seg mfat" style={{ width: `${fPct}%` }} />
+              </div>
+              <div className="macro-legend">
+                <span><span className="ldot mprot-d" />P {pPct}%</span>
+                <span><span className="ldot mcarb-d" />C {cPct}%</span>
+                <span><span className="ldot mfat-d" />F {fPct}%</span>
+                <span style={{ marginLeft: "auto", color: Math.abs(total - form.calories) > 50 ? "#f9e27e" : "var(--muted)" }}>{total} / {form.calories} kcal</span>
+              </div>
+              <button className="btn-primary" style={{ marginTop: 14 }} onClick={() => { onSaveGoals(form); setSaved(true); setTimeout(() => setSaved(false), 2000); }}>
+                {saved ? "✓ Saved!" : "Save Goals"}
+              </button>
+            </div>
+          )}
+
+          {/* ── EXPORT TAB ── */}
+          {tab === "export" && (
+            <div className="settings-body">
+              <p style={{ fontSize: ".85rem", color: "var(--muted)", marginBottom: 14, lineHeight: 1.6 }}>
+                Download your tracked data and chat history. Open CSV files in Excel, Google Sheets, or Numbers.
+              </p>
+              <div className="export-grid">
+                <button className="export-btn" onClick={exportSleep} disabled={!counts.sleep}>
+                  <span className="export-icon" style={{ color: "var(--sleep)" }}>◐</span>
+                  <span className="export-name">Sleep</span>
+                  <span className="export-count">{counts.sleep} entries</span>
+                </button>
+                <button className="export-btn" onClick={exportDiet} disabled={!counts.diet}>
+                  <span className="export-icon" style={{ color: "var(--diet)" }}>◉</span>
+                  <span className="export-name">Diet</span>
+                  <span className="export-count">{counts.diet} entries</span>
+                </button>
+                <button className="export-btn" onClick={exportExercise} disabled={!counts.exercise}>
+                  <span className="export-icon" style={{ color: "var(--exercise)" }}>◆</span>
+                  <span className="export-name">Workouts</span>
+                  <span className="export-count">{counts.exercise} entries</span>
+                </button>
+                <button className="export-btn" onClick={exportSports} disabled={!counts.sports}>
+                  <span className="export-icon" style={{ color: "var(--sports)" }}>◇</span>
+                  <span className="export-name">Sports</span>
+                  <span className="export-count">{counts.sports} entries</span>
+                </button>
+                <button className="export-btn" onClick={exportChat} disabled={chatCount <= 1}>
+                  <span className="export-icon" style={{ color: "var(--accent)" }}>✦</span>
+                  <span className="export-name">AI Chat</span>
+                  <span className="export-count">{Math.max(0, chatCount - 1)} messages</span>
+                </button>
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+                <button className="btn-primary" onClick={exportAll}>⬇ All as CSV</button>
+                <button className="btn-secondary" onClick={exportJSON}>JSON Backup</button>
+              </div>
+              <p style={{ fontSize: ".75rem", color: "var(--muted)", marginTop: 12, lineHeight: 1.5 }}>
+                <strong style={{ color: "var(--text)" }}>JSON Backup</strong> includes everything (goals, data, chat) and can be used to restore in the Data tab.
+              </p>
+            </div>
+          )}
+
+          {/* ── DATA TAB ── */}
+          {tab === "data" && (
+            <div className="settings-body">
+              <div className="data-stats">
+                <div className="data-stat"><span className="data-stat-num">{totalEntries}</span><span className="data-stat-lbl">Total Entries</span></div>
+                <div className="data-stat"><span className="data-stat-num">{Math.max(0, chatCount - 1)}</span><span className="data-stat-lbl">Chat Messages</span></div>
+              </div>
+
+              <div className="data-action">
+                <div>
+                  <div className="data-action-title">📥 Restore from Backup</div>
+                  <div className="data-action-desc">Load a previously exported fitlog JSON file. This replaces all current data.</div>
+                </div>
+                <button className="btn-secondary" onClick={() => fileRef.current.click()}>Choose File</button>
+                <input ref={fileRef} type="file" accept=".json,application/json" style={{ display: "none" }} onChange={handleImportFile} />
+              </div>
+
+              <div className="data-action danger">
+                <div>
+                  <div className="data-action-title" style={{ color: "var(--exercise)" }}>⚠ Clear All Data</div>
+                  <div className="data-action-desc">Permanently delete all sleep, diet, workouts, sports, and chat history. Goals remain.</div>
+                </div>
+                <button className="btn-delete" onClick={() => {
+                  if (confirm("Delete ALL tracked data and chat history? This can't be undone.")) {
+                    if (confirm("Are you absolutely sure? Consider exporting a backup first.")) {
+                      onClearAll();
+                    }
+                  }
+                }} style={{ margin: 0 }}>Clear Everything</button>
+              </div>
+
+              <p style={{ fontSize: ".72rem", color: "var(--muted)", marginTop: 14, lineHeight: 1.6 }}>
+                Your data lives in your browser's storage on this device only. No cloud sync. Export a JSON backup regularly if you care about keeping it.
+              </p>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -321,19 +490,33 @@ function GoalsSection({ goals, onSave }) {
 }
 
 // ─── AI COACH SECTION ────────────────────────────────────────────────────────
+const COACH_INITIAL_MSG = {
+  role: "assistant",
+  text: "Hey! I'm your AI coach. Ask me anything — best exercises for your goal, how to improve your sleep, what to eat before a workout, whether you should rest today. I'll use your actual logged data AND remember our past conversations to give you the best answer. 💪"
+};
+
+function loadMessages() {
+  try {
+    const r = localStorage.getItem(STORAGE_KEY + "_chat");
+    const parsed = r ? JSON.parse(r) : null;
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed : [COACH_INITIAL_MSG];
+  } catch { return [COACH_INITIAL_MSG]; }
+}
+function saveMessages(m) { localStorage.setItem(STORAGE_KEY + "_chat", JSON.stringify(m)); }
+
 function AICoachSection({ data, goals }) {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState("chat");
   const [loading, setLoading] = useState(false);
   const [analysis, setAnalysis] = useState(null);
   const [analysisError, setAnalysisError] = useState("");
-  const [messages, setMessages] = useState([{
-    role: "assistant",
-    text: "Hey! I'm your AI coach. Ask me anything — best exercises for your goal, how to improve your sleep, what to eat before a workout, whether you should rest today. I'll use your actual logged data to give you the best answer. 💪"
-  }]);
+  const [messages, setMessages] = useState(loadMessages);
   const [input, setInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
   const chatEndRef = useRef(null);
+
+  // Persist messages whenever they change
+  useEffect(() => { saveMessages(messages); }, [messages]);
 
   const hasData = data.sleep.length > 0 || data.diet.length > 0 || data.exercise.length > 0 || data.sports.length > 0;
   const statusColor = { good: "#a5f3b4", warning: "#f9e27e", critical: "#f97b6e" };
@@ -358,15 +541,18 @@ Sports (last 14d): ${last14(data.sports).map(s => `${s.date}: ${s.sport} ${s.dur
     const q = input.trim();
     if (!q || chatLoading) return;
     setInput("");
-    const updated = [...messages, { role: "user", text: q }];
+    const updated = [...messages, { role: "user", text: q, ts: Date.now() }];
     setMessages(updated);
     setChatLoading(true);
     try {
-      // Build full conversation for API, injecting context into system
-      const apiMsgs = updated.slice(1).map(m => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.text }));
-      // Prepend context to first user message
-      if (apiMsgs[0] && apiMsgs[0].role === "user") {
-        apiMsgs[0] = { role: "user", content: `[My fitness data]\n${buildContext()}\n\n[My question]\n${apiMsgs[0].content}` };
+      // Send full conversation history (skip the initial greeting). The coach now has memory.
+      // Cap at last 40 messages to control token costs as history grows.
+      const recentHistory = updated.slice(1).slice(-40);
+      const apiMsgs = recentHistory.map(m => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.text }));
+      // Inject latest fitness data into the most recent user message so context stays fresh
+      const lastUserIdx = apiMsgs.map(m => m.role).lastIndexOf("user");
+      if (lastUserIdx >= 0) {
+        apiMsgs[lastUserIdx] = { role: "user", content: `[Current fitness data]\n${buildContext()}\n\n[My question]\n${apiMsgs[lastUserIdx].content}` };
       }
       const resp = await fetch("/api/chat", {
         method: "POST",
@@ -374,17 +560,23 @@ Sports (last 14d): ${last14(data.sports).map(s => `${s.date}: ${s.sport} ${s.dur
         body: JSON.stringify({
           model: "claude-haiku-4-5",
           max_tokens: 800,
-          system: `You are an elite personal trainer and sports nutritionist. The user shares their real fitness tracking data with you. Give direct, specific, practical advice based on their actual data. Be concise — 2-4 short paragraphs or use bullet points for lists. Be encouraging but honest. Their goal: ${goals.goal}.`,
+          system: `You are an elite personal trainer and sports nutritionist. The user shares their real fitness tracking data with you AND you have access to your full conversation history with them, so reference past discussions naturally when relevant ("like we talked about last week...", "you mentioned earlier that..."). Give direct, specific, practical advice. Be concise — 2-4 short paragraphs or bullet points. Be encouraging but honest. Their goal: ${goals.goal}.`,
           messages: apiMsgs
         })
       });
       const res = await resp.json();
       const reply = res.content?.map(b => b.text || "").join("") || "Sorry, try again.";
-      setMessages(prev => [...prev, { role: "assistant", text: reply }]);
+      setMessages(prev => [...prev, { role: "assistant", text: reply, ts: Date.now() }]);
     } catch {
-      setMessages(prev => [...prev, { role: "assistant", text: "Something went wrong. Please try again." }]);
+      setMessages(prev => [...prev, { role: "assistant", text: "Something went wrong. Please try again.", ts: Date.now() }]);
     }
     setChatLoading(false);
+  }
+
+  function clearChat() {
+    if (confirm("Clear all chat history? This can't be undone.")) {
+      setMessages([COACH_INITIAL_MSG]);
+    }
   }
 
   async function runAnalysis() {
@@ -419,6 +611,12 @@ Sports (last 14d): ${last14(data.sports).map(s => `${s.date}: ${s.sport} ${s.dur
 
           {tab === "chat" && (
             <div className="coach-chat-wrap">
+              <div className="chat-info-bar">
+                <span className="chat-info-label">{messages.length - 1} messages · saved on this device</span>
+                {messages.length > 1 && (
+                  <button className="chat-clear-btn" onClick={clearChat}>Clear chat</button>
+                )}
+              </div>
               <div className="coach-messages">
                 {messages.map((m, i) => (
                   <div key={i} className={`coach-msg ${m.role}`}>
@@ -543,7 +741,7 @@ function RingChart({ pct, color, size = 88, stroke = 8, label, value, unit }) {
 }
 
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
-function Dashboard({ data, goals, onSaveGoals }) {
+function Dashboard({ data, goals, onSaveGoals, onClearAll, onImport }) {
   const today = getTodayStr();
   const now = new Date();
   const last7 = arr => arr.filter(i => (now - new Date(i.date + "T00:00:00")) / 86400000 <= 7);
@@ -674,8 +872,8 @@ function Dashboard({ data, goals, onSaveGoals }) {
         }
       </div>
 
-      {/* GOALS */}
-      <GoalsSection goals={goals} onSave={onSaveGoals} />
+      {/* SETTINGS (Goals · Export · Data) */}
+      <SettingsSection data={data} goals={goals} onSaveGoals={onSaveGoals} onClearAll={onClearAll} onImport={onImport} />
 
       {/* RECENT FEED */}
       <div className="db-card">
@@ -717,6 +915,18 @@ export default function FitnessTracker() {
   useEffect(() => { saveGoals(goals); }, [goals]);
   const addEntry = type => entry => setData(d => ({ ...d, [type]: [entry, ...d[type]] }));
   const deleteEntry = type => id => setData(d => ({ ...d, [type]: d[type].filter(e => e.id !== id) }));
+  const clearAllData = () => {
+    setData(defaultData);
+    localStorage.removeItem(STORAGE_KEY + "_chat");
+    // Trigger a reload so the AI Coach's loaded messages reset
+    setTimeout(() => window.location.reload(), 100);
+  };
+  const importData = (backup) => {
+    if (backup.data) setData(backup.data);
+    if (backup.goals) setGoals(backup.goals);
+    if (backup.chat) localStorage.setItem(STORAGE_KEY + "_chat", JSON.stringify(backup.chat));
+    setTimeout(() => window.location.reload(), 100);
+  };
 
   return (
     <>
@@ -886,6 +1096,37 @@ export default function FitnessTracker() {
 
         /* AI COACH TABS */
         .coach-tabs { display:flex; border-bottom:1px solid var(--border); }
+        .chat-info-bar { display:flex; justify-content:space-between; align-items:center; padding:8px 16px; border-bottom:1px solid var(--border); background:rgba(110,231,247,.03); }
+        .chat-info-label { font-size:.72rem; color:var(--muted); }
+        .chat-clear-btn { background:transparent; border:1px solid var(--border); color:var(--muted); font-family:'DM Sans',sans-serif; font-size:.7rem; padding:4px 10px; border-radius:14px; cursor:pointer; transition:all .2s; }
+        .chat-clear-btn:hover { color:var(--exercise); border-color:rgba(249,123,110,.4); }
+
+        /* EXPORT */
+        .export-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:8px; }
+        .export-btn { background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:14px 10px; display:flex; flex-direction:column; align-items:center; gap:4px; cursor:pointer; transition:all .2s; color:var(--text); font-family:'DM Sans',sans-serif; }
+        .export-btn:hover:not(:disabled) { border-color:var(--accent); transform:translateY(-1px); }
+        .export-btn:disabled { opacity:.4; cursor:not-allowed; }
+
+        /* SETTINGS */
+        .settings-tabs { display:flex; border-bottom:1px solid var(--border); }
+        .settings-tab { flex:1; padding:11px 6px; background:transparent; border:none; color:var(--muted); font-family:'DM Sans',sans-serif; font-size:.78rem; font-weight:500; cursor:pointer; transition:all .2s; border-bottom:2px solid transparent; margin-bottom:-1px; }
+        .settings-tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+        .settings-tab:hover:not(.active) { color:var(--text); }
+        .settings-body { padding:18px; }
+
+        /* DATA TAB */
+        .data-stats { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:18px; }
+        .data-stat { background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:14px; text-align:center; }
+        .data-stat-num { display:block; font-family:'DM Serif Display',serif; font-size:1.6rem; color:var(--accent); line-height:1; margin-bottom:4px; }
+        .data-stat-lbl { display:block; font-size:.7rem; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
+        .data-action { display:flex; align-items:center; gap:12px; padding:14px; background:var(--surface2); border:1px solid var(--border); border-radius:10px; margin-bottom:10px; }
+        .data-action.danger { border-color:rgba(249,123,110,.2); background:rgba(249,123,110,.04); }
+        .data-action > div:first-child { flex:1; }
+        .data-action-title { font-size:.88rem; font-weight:500; color:var(--text); margin-bottom:3px; }
+        .data-action-desc { font-size:.75rem; color:var(--muted); line-height:1.5; }
+        .export-icon { font-size:1.3rem; }
+        .export-name { font-size:.84rem; font-weight:500; }
+        .export-count { font-size:.68rem; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
         .coach-tab { flex:1; padding:11px; background:transparent; border:none; color:var(--muted); font-family:'DM Sans',sans-serif; font-size:.82rem; font-weight:500; cursor:pointer; transition:all .2s; border-bottom:2px solid transparent; margin-bottom:-1px; }
         .coach-tab.active { color:var(--accent); border-bottom-color:var(--accent); }
         .coach-tab:hover:not(.active) { color:var(--text); }
@@ -958,7 +1199,7 @@ export default function FitnessTracker() {
         </nav>
 
         <div className="tab-content">
-          {activeTab === "Dashboard" && <Dashboard data={data} goals={goals} onSaveGoals={setGoals} />}
+          {activeTab === "Dashboard" && <Dashboard data={data} goals={goals} onSaveGoals={setGoals} onClearAll={clearAllData} onImport={importData} />}
 
           {activeTab === "Sleep" && (
             <>
