@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 
-const TABS = ["Dashboard", "Sleep", "Diet", "Exercise", "Sports", "Water", "Trends"];
+// ─── CONFIG ───────────────────────────────────────────────────────────────────
+const TABS = ["Home", "Log", "History", "Coach", "Settings"];
 const STORAGE_KEY = "fitlog_v5";
 const defaultData = { sleep: [], diet: [], exercise: [], sports: [], weight: [], water: [], supplements: [] };
 const defaultGoals = { calories: 2500, protein: 180, carbs: 250, fat: 80, goal: "Build Muscle", waterGoalMl: 2500, weightUnit: "kg" };
@@ -9,37 +10,38 @@ const mealTypes = ["Breakfast", "Lunch", "Dinner", "Snack"];
 const sportsOptions = ["Football","Basketball","Tennis","Swimming","Running","Cycling","Yoga","Boxing","Soccer","Volleyball","Badminton","Table Tennis","Golf","Martial Arts","Other"];
 const sleepQuality = ["Poor", "Fair", "Good", "Great", "Excellent"];
 const intensityLevels = ["Light", "Moderate", "Intense", "All-out"];
-const icons = { Dashboard: "◈", Sleep: "◐", Diet: "◉", Exercise: "◆", Sports: "◇", Water: "◊", Trends: "▦" };
 
+const TYPE_DOT = { sleep: "#6ee7f7", diet: "#f9c97e", exercise: "#f47e6e", sports: "#8fd989", water: "#5cc8df", weight: "#b4a8e8", supplements: "#b4a8e8" };
+const TYPE_ICON = { sleep: "◐", diet: "◉", exercise: "◆", sports: "◇", water: "◊", weight: "⚖", supplements: "⊕" };
+
+// ─── STORAGE ──────────────────────────────────────────────────────────────────
 function loadData() {
-  try {
-    const r = localStorage.getItem(STORAGE_KEY);
-    const parsed = r ? JSON.parse(r) : defaultData;
-    // Migration: ensure new arrays exist on old data
-    return { ...defaultData, ...parsed };
-  } catch { return defaultData; }
+  try { const r = localStorage.getItem(STORAGE_KEY); const p = r ? JSON.parse(r) : defaultData; return { ...defaultData, ...p }; }
+  catch { return defaultData; }
 }
 function loadGoals() {
-  try {
-    const r = localStorage.getItem(STORAGE_KEY + "_goals");
-    const parsed = r ? JSON.parse(r) : defaultGoals;
-    return { ...defaultGoals, ...parsed };
-  } catch { return defaultGoals; }
+  try { const r = localStorage.getItem(STORAGE_KEY + "_goals"); const p = r ? JSON.parse(r) : defaultGoals; return { ...defaultGoals, ...p }; }
+  catch { return defaultGoals; }
 }
-function saveData(d) { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); }
-function saveGoals(g) { localStorage.setItem(STORAGE_KEY + "_goals", JSON.stringify(g)); }
-function getTodayStr() { return new Date().toISOString().split("T")[0]; }
-function formatDate(ds) { return new Date(ds + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }); }
-function daysAgo(n) { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().split("T")[0]; }
+const saveData = d => localStorage.setItem(STORAGE_KEY, JSON.stringify(d));
+const saveGoals = g => localStorage.setItem(STORAGE_KEY + "_goals", JSON.stringify(g));
+const getTodayStr = () => new Date().toISOString().split("T")[0];
+const formatDate = ds => new Date(ds + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+const formatShortDate = ds => new Date(ds + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" });
+const daysAgo = n => { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().split("T")[0]; };
 
 // ─── CLAUDE API ───────────────────────────────────────────────────────────────
-async function callClaude({ system, userText, imageBase64, imageMediaType, maxTokens = 1000 }) {
-  const userContent = imageBase64
-    ? [{ type: "image", source: { type: "base64", media_type: imageMediaType, data: imageBase64 } }, { type: "text", text: userText }]
-    : userText;
+async function callClaude({ system, userText, imageBase64, imageMediaType, maxTokens = 1000, conversationMessages }) {
+  const apiMessages = conversationMessages || [{
+    role: "user",
+    content: imageBase64
+      ? [{ type: "image", source: { type: "base64", media_type: imageMediaType, data: imageBase64 } }, { type: "text", text: userText }]
+      : userText
+  }];
   const resp = await fetch("/api/chat", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: maxTokens, system, messages: [{ role: "user", content: userContent }] })
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "claude-haiku-4-5", max_tokens: maxTokens, system, messages: apiMessages })
   });
   const data = await resp.json();
   return data.content?.map(b => b.text || "").join("") || "";
@@ -47,14 +49,21 @@ async function callClaude({ system, userText, imageBase64, imageMediaType, maxTo
 
 async function estimateSportsCalories(sport, duration, intensity, weight) {
   try {
-    const raw = await callClaude({ system: "Sports science expert. Valid JSON only, no markdown.", userText: `Estimate calories: sport="${sport}", ${duration} min, intensity="${intensity}", ${weight}kg. JSON: {"calories":<number>,"note":"<1 sentence>"}` });
+    const raw = await callClaude({
+      system: "Sports science expert. Valid JSON only, no markdown.",
+      userText: `Estimate calories: sport="${sport}", ${duration} min, intensity="${intensity}", ${weight}kg. JSON: {"calories":<number>,"note":"<1 sentence>"}`
+    });
     return JSON.parse(raw.replace(/```json|```/g, "").trim());
   } catch { return { calories: 0, note: "Could not estimate." }; }
 }
 
 async function analyzeFoodAI(description, imageBase64, imageMediaType) {
   try {
-    const raw = await callClaude({ system: `Nutritionist. Return ONLY JSON: {"food":"<name>","calories":<n>,"protein":<n>,"carbs":<n>,"fat":<n>,"notes":"<brief>"}. No markdown.`, userText: description ? `Analyze nutrition: "${description}"` : "Analyze the food in this image.", imageBase64, imageMediaType });
+    const raw = await callClaude({
+      system: `Nutritionist. Return ONLY JSON: {"food":"<name>","calories":<n>,"protein":<n>,"carbs":<n>,"fat":<n>,"notes":"<brief>"}. Numbers only for macros. No markdown.`,
+      userText: description ? `Analyze nutrition: "${description}"` : "Analyze the food in this image.",
+      imageBase64, imageMediaType
+    });
     return JSON.parse(raw.replace(/```json|```/g, "").trim());
   } catch { return null; }
 }
@@ -63,98 +72,67 @@ async function analyzeAllData(data, goals) {
   const cut = new Date(); cut.setDate(cut.getDate() - 14);
   const last14 = arr => arr.filter(i => new Date(i.date + "T00:00:00") >= cut);
   const sleepLines = last14(data.sleep).map(s => `${s.date}: ${s.duration}h (${s.quality})`).join("\n") || "No data";
-  const dietLines = last14(data.diet).map(d => `${d.date} ${d.meal}: ${d.food} — ${d.calories}kcal P:${d.protein}g C:${d.carbs}g F:${d.fat}g`).join("\n") || "No data";
+  const dietLines = last14(data.diet).map(d => `${d.date} ${d.meal}: ${d.food} — ${d.calories}kcal P:${d.protein}g`).join("\n") || "No data";
   const exLines = last14(data.exercise).map(e => `${e.date}: ${e.label}\n${(e.text||"").slice(0,200)}`).join("\n\n") || "No data";
-  const spLines = last14(data.sports).map(s => `${s.date}: ${s.sport} ${s.duration}min ${s.intensity} — ${s.calories}kcal`).join("\n") || "No data";
+  const spLines = last14(data.sports).map(s => `${s.date}: ${s.sport} ${s.duration}min ${s.intensity}`).join("\n") || "No data";
   const wLines = last14(data.weight).map(w => `${w.date}: ${w.weight}${w.unit||"kg"}`).join("\n") || "No data";
 
-  const system = `You are an elite personal trainer and sports nutritionist. Analyze real fitness data and give highly specific, actionable advice to maximize ${goals.goal}. Reference actual numbers from the data. Return ONLY valid JSON, no markdown:
-{
-  "overallScore": <1-10>,
-  "summary": "<2-3 sentence assessment>",
-  "sections": [
-    {"category":"Sleep & Recovery","score":<1-10>,"status":"good|warning|critical","insight":"<specific observation with their numbers>","tips":["<actionable tip>","<tip>","<tip>"]},
-    {"category":"Nutrition","score":<1-10>,"status":"good|warning|critical","insight":"<specific>","tips":["<tip>","<tip>","<tip>"]},
-    {"category":"Training","score":<1-10>,"status":"good|warning|critical","insight":"<specific>","tips":["<tip>","<tip>","<tip>"]},
-    {"category":"Calorie Balance","score":<1-10>,"status":"good|warning|critical","insight":"<specific>","tips":["<tip>","<tip>","<tip>"]}
-  ],
-  "priorityAction": "<The single most impactful thing to do this week>"
-}`;
+  const system = `You are an elite personal trainer and sports nutritionist. Analyze real fitness data and give specific, actionable advice for ${goals.goal}. Return ONLY JSON:
+{"overallScore":<1-10>,"summary":"<2-3 sentences>","sections":[{"category":"Sleep & Recovery","score":<1-10>,"status":"good|warning|critical","insight":"<specific>","tips":["<tip>","<tip>","<tip>"]},{"category":"Nutrition","score":<1-10>,"status":"good|warning|critical","insight":"<specific>","tips":["<tip>","<tip>","<tip>"]},{"category":"Training","score":<1-10>,"status":"good|warning|critical","insight":"<specific>","tips":["<tip>","<tip>","<tip>"]},{"category":"Calorie Balance","score":<1-10>,"status":"good|warning|critical","insight":"<specific>","tips":["<tip>","<tip>","<tip>"]}],"priorityAction":"<one impactful thing>"}`;
 
-  const raw = await callClaude({ system, maxTokens: 2000, userText: `Goal: ${goals.goal}\nCalorie target: ${goals.calories}kcal\nMacros: P${goals.protein}g C${goals.carbs}g F${goals.fat}g\n\nSLEEP:\n${sleepLines}\n\nDIET:\n${dietLines}\n\nEXERCISE:\n${exLines}\n\nSPORTS:\n${spLines}\n\nBODY WEIGHT:\n${wLines}` });
+  const raw = await callClaude({ system, maxTokens: 2000, userText: `Goal: ${goals.goal}\nCalorie target: ${goals.calories}kcal\nMacros: P${goals.protein}g C${goals.carbs}g F${goals.fat}g\n\nSLEEP:\n${sleepLines}\n\nDIET:\n${dietLines}\n\nEXERCISE:\n${exLines}\n\nSPORTS:\n${spLines}\n\nWEIGHT:\n${wLines}` });
   return JSON.parse(raw.replace(/```json|```/g, "").trim());
 }
 
-// ─── DAILY AI INSIGHT ─────────────────────────────────────────────────────────
 async function generateDailyInsight(data, goals) {
-  const today = getTodayStr();
-  const yest = daysAgo(1);
-  const last7arr = arr => arr.filter(i => i.date >= daysAgo(6));
+  const today = getTodayStr(), yest = daysAgo(1);
+  const last7 = arr => arr.filter(i => i.date >= daysAgo(6));
   const yestSleep = data.sleep.find(s => s.date === yest);
   const todayDiet = data.diet.filter(d => d.date === today);
   const yestDiet = data.diet.filter(d => d.date === yest);
-  const last3Workouts = data.exercise.slice(0, 3).map(e => `${e.date}: ${e.label}`).join("; ") || "none";
-  const recentSports = data.sports.filter(s => s.date >= daysAgo(2)).map(s => `${s.date}: ${s.sport} ${s.intensity}`).join("; ") || "none";
-  const avgSleep7 = last7arr(data.sleep).length ? (last7arr(data.sleep).reduce((a,s)=>a+s.duration,0)/last7arr(data.sleep).length).toFixed(1) : "no data";
-  const recentWeights = data.weight.slice(0, 3).map(w => `${w.date}: ${w.weight}${w.unit||"kg"}`).join("; ") || "none";
+  const last3 = data.exercise.slice(0, 3).map(e => `${e.date}: ${e.label}`).join("; ") || "none";
+  const recentSp = data.sports.filter(s => s.date >= daysAgo(2)).map(s => `${s.date}: ${s.sport} ${s.intensity}`).join("; ") || "none";
+  const avg = last7(data.sleep).length ? (last7(data.sleep).reduce((a,s)=>a+s.duration,0)/last7(data.sleep).length).toFixed(1) : "—";
+  const w = data.weight.slice(0, 3).map(w => `${w.date}: ${w.weight}${w.unit||"kg"}`).join("; ") || "none";
 
-  const sys = `You are an elite fitness coach giving the user a SHORT daily insight (2-3 sentences max, conversational tone). Look at their recent data and tell them ONE specific thing they should do today. Should it be a rest day? Push hard? Eat more? Sleep earlier? Be specific to their data. Reference actual numbers. No JSON, just plain text. Their goal: ${goals.goal}.`;
-  const usr = `Today: ${new Date().toLocaleDateString("en-US",{weekday:"long"})}
+  return await callClaude({
+    system: `Elite fitness coach. Give the user ONE specific insight for today in 2-3 conversational sentences. Reference their real numbers. Plain text, no markdown headers. Goal: ${goals.goal}.`,
+    userText: `Today: ${new Date().toLocaleDateString("en-US",{weekday:"long"})}
 Goal: ${goals.goal} | Calorie target: ${goals.calories}
 Yesterday sleep: ${yestSleep ? `${yestSleep.duration}h (${yestSleep.quality})` : "not logged"}
-7-day avg sleep: ${avgSleep7}h
+7-day avg sleep: ${avg}h
 Yesterday calories: ${yestDiet.reduce((a,d)=>a+d.calories,0) || "not logged"}kcal
-Today's meals so far: ${todayDiet.length ? todayDiet.map(d=>d.meal).join(", ") : "none yet"}
-Last 3 workouts: ${last3Workouts}
-Recent sports: ${recentSports}
-Recent weight: ${recentWeights}`;
-
-  return await callClaude({ system: sys, userText: usr, maxTokens: 250 });
+Today's meals: ${todayDiet.length ? todayDiet.map(d=>d.meal).join(", ") : "none yet"}
+Last 3 workouts: ${last3}
+Recent sports: ${recentSp}
+Recent weight: ${w}`,
+    maxTokens: 250
+  });
 }
 
-// ─── MARKDOWN RENDERER (light) ───────────────────────────────────────────────
-// Handles: **bold**, *italic*, `code`, headers (#, ##), bullet lists (- or •), numbered lists, line breaks
+// ─── MARKDOWN ─────────────────────────────────────────────────────────────────
 function renderMarkdown(text) {
   if (!text) return null;
   const lines = text.split("\n");
   const blocks = [];
-  let listBuf = null; // {type:'ul'|'ol', items:[]}
-  const flushList = () => {
-    if (!listBuf) return;
-    blocks.push({ type: listBuf.type, items: listBuf.items });
-    listBuf = null;
-  };
-
+  let buf = null;
+  const flush = () => { if (buf) { blocks.push({ type: buf.type, items: buf.items }); buf = null; } };
   for (const raw of lines) {
     const line = raw.trim();
-    if (!line) { flushList(); blocks.push({ type: "br" }); continue; }
-    const bullet = line.match(/^[-•]\s+(.+)$/);
-    const numbered = line.match(/^\d+\.\s+(.+)$/);
+    if (!line) { flush(); continue; }
+    const b = line.match(/^[-•]\s+(.+)$/);
+    const n = line.match(/^\d+\.\s+(.+)$/);
     const h2 = line.match(/^##\s+(.+)$/);
     const h1 = line.match(/^#\s+(.+)$/);
-    if (bullet) {
-      if (!listBuf || listBuf.type !== "ul") { flushList(); listBuf = { type: "ul", items: [] }; }
-      listBuf.items.push(bullet[1]);
-    } else if (numbered) {
-      if (!listBuf || listBuf.type !== "ol") { flushList(); listBuf = { type: "ol", items: [] }; }
-      listBuf.items.push(numbered[1]);
-    } else if (h1) {
-      flushList(); blocks.push({ type: "h1", text: h1[1] });
-    } else if (h2) {
-      flushList(); blocks.push({ type: "h2", text: h2[1] });
-    } else {
-      flushList(); blocks.push({ type: "p", text: line });
-    }
+    if (b) { if (!buf || buf.type !== "ul") { flush(); buf = { type: "ul", items: [] }; } buf.items.push(b[1]); }
+    else if (n) { if (!buf || buf.type !== "ol") { flush(); buf = { type: "ol", items: [] }; } buf.items.push(n[1]); }
+    else if (h1) { flush(); blocks.push({ type: "h1", text: h1[1] }); }
+    else if (h2) { flush(); blocks.push({ type: "h2", text: h2[1] }); }
+    else { flush(); blocks.push({ type: "p", text: line }); }
   }
-  flushList();
-
-  // Inline formatter: **bold**, *italic*, `code`
-  const inline = (s, baseKey) => {
-    // Pattern: split by **bold**, *italic*, `code` while preserving order
-    const parts = [];
-    let i = 0;
-    const re = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g;
-    let m, last = 0;
+  flush();
+  const inline = (s, key) => {
+    const parts = []; let last = 0; const re = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g; let m;
     while ((m = re.exec(s)) !== null) {
       if (m.index > last) parts.push({ t: "text", v: s.slice(last, m.index) });
       const tok = m[0];
@@ -164,17 +142,15 @@ function renderMarkdown(text) {
       last = m.index + tok.length;
     }
     if (last < s.length) parts.push({ t: "text", v: s.slice(last) });
-    return parts.map((p, idx) => {
-      const k = `${baseKey}-${idx}`;
+    return parts.map((p, i) => {
+      const k = `${key}-${i}`;
       if (p.t === "b") return <strong key={k}>{p.v}</strong>;
       if (p.t === "i") return <em key={k}>{p.v}</em>;
       if (p.t === "code") return <code key={k} className="md-code">{p.v}</code>;
       return <span key={k}>{p.v}</span>;
     });
   };
-
   return blocks.map((b, i) => {
-    if (b.type === "br") return null;
     if (b.type === "h1") return <h4 key={i} className="md-h1">{inline(b.text, `h1${i}`)}</h4>;
     if (b.type === "h2") return <h5 key={i} className="md-h2">{inline(b.text, `h2${i}`)}</h5>;
     if (b.type === "p") return <p key={i} className="md-p">{inline(b.text, `p${i}`)}</p>;
@@ -184,190 +160,58 @@ function renderMarkdown(text) {
   });
 }
 
-// ─── WATER TAB ────────────────────────────────────────────────────────────────
-function WaterTab({ data, goals, onAddWater, onDeleteWater, onAddSupp, onDeleteSupp }) {
-  const today = getTodayStr();
-  const todayWater = (data.water || []).filter(w => w.date === today);
-  const todaySupps = (data.supplements || []).filter(s => s.date === today);
-  const totalMl = todayWater.reduce((a, w) => a + w.ml, 0);
-  const goalMl = goals.waterGoalMl || 2500;
-  const pct = Math.min(100, Math.round((totalMl / goalMl) * 100));
-
-  const [unit, setUnit] = useState("glass"); // 'glass' (250ml) or 'liter'
-  const [customMl, setCustomMl] = useState("250");
-  const [suppName, setSuppName] = useState("");
-  const [suppDose, setSuppDose] = useState("");
-
-  function quickAdd(ml) {
-    onAddWater({ id: Date.now(), date: today, ml, ts: Date.now() });
-  }
-
-  function customAdd() {
-    let ml = 0;
-    if (unit === "glass") ml = Number(customMl) || 0;
-    else ml = Math.round((Number(customMl) || 0) * 1000);
-    if (ml > 0) quickAdd(ml);
-  }
-
-  function addSupp() {
-    if (!suppName.trim()) return;
-    onAddSupp({ id: Date.now(), date: today, name: suppName.trim(), dose: suppDose.trim(), ts: Date.now() });
-    setSuppName(""); setSuppDose("");
-  }
-
-  // Past 7 days hydration summary
-  const past7 = Array.from({ length: 7 }, (_, i) => {
-    const d = daysAgo(6 - i);
-    const ml = (data.water || []).filter(w => w.date === d).reduce((a, w) => a + w.ml, 0);
-    return { date: d, ml, pct: Math.min(100, Math.round((ml / goalMl) * 100)) };
-  });
-
+// ─── PRIMITIVES ───────────────────────────────────────────────────────────────
+function Ring({ pct, label, value, unit, big }) {
+  const size = big ? 130 : 88, stroke = big ? 9 : 7;
+  const r = (size - stroke) / 2, circ = 2 * Math.PI * r;
+  const filled = Math.min(1, pct / 100) * circ;
   return (
-    <div>
-      {/* HERO RING */}
-      <div className="form-card" style={{ textAlign: "center" }}>
-        <h3 className="form-title" style={{ justifyContent: "center" }}>Today's Hydration</h3>
-        <div className="water-hero">
-          <svg width="160" height="160" style={{ transform: "rotate(-90deg)" }}>
-            <circle cx="80" cy="80" r="68" fill="none" stroke="var(--surface2)" strokeWidth="12" />
-            <circle cx="80" cy="80" r="68" fill="none" stroke="#6ee7f7" strokeWidth="12"
-              strokeDasharray={`${(pct / 100) * 427.3} 427.3`} strokeLinecap="round"
-              style={{ transition: "stroke-dasharray .8s cubic-bezier(.4,0,.2,1)", filter: "drop-shadow(0 0 8px #6ee7f788)" }} />
-          </svg>
-          <div className="water-hero-text">
-            <div className="water-hero-ml">{totalMl}<span>ml</span></div>
-            <div className="water-hero-goal">of {goalMl}ml · {pct}%</div>
-          </div>
-        </div>
-        <div className="water-quick">
-          <button className="water-q-btn" onClick={() => quickAdd(250)}>+ Glass <span>250ml</span></button>
-          <button className="water-q-btn" onClick={() => quickAdd(500)}>+ Bottle <span>500ml</span></button>
-          <button className="water-q-btn" onClick={() => quickAdd(1000)}>+ 1L <span>1000ml</span></button>
-        </div>
+    <div className="ring">
+      <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="var(--track)" strokeWidth={stroke} />
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="var(--accent)" strokeWidth={stroke}
+          strokeDasharray={`${filled} ${circ}`} strokeLinecap="round"
+          style={{ transition: "stroke-dasharray .8s cubic-bezier(.4,0,.2,1)" }} />
+      </svg>
+      <div className="ring-center">
+        <div className={`ring-val ${big ? "big" : ""}`}>{value}<span className="ring-unit">{unit}</span></div>
       </div>
-
-      {/* CUSTOM ADD */}
-      <div className="form-card">
-        <h3 className="form-title" style={{ fontSize: "1rem" }}>Log custom amount</h3>
-        <div className="mode-toggle" style={{ marginBottom: 12 }}>
-          <button className={`mode-btn ${unit === "glass" ? "active" : ""}`} onClick={() => { setUnit("glass"); setCustomMl("250"); }}>Milliliters</button>
-          <button className={`mode-btn ${unit === "liter" ? "active" : ""}`} onClick={() => { setUnit("liter"); setCustomMl("0.5"); }}>Liters</button>
-        </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <input type="number" value={customMl} onChange={e => setCustomMl(e.target.value)} step={unit === "liter" ? "0.1" : "50"} placeholder={unit === "liter" ? "0.5" : "250"} />
-          <button className="btn-primary" onClick={customAdd} style={{ flex: 0, padding: "10px 20px" }}>+ Add</button>
-        </div>
-      </div>
-
-      {/* TODAY'S WATER LOG */}
-      {todayWater.length > 0 && (
-        <div className="form-card">
-          <div className="db-card-hd"><span className="db-card-title">Today's water log</span><span className="db-card-badge">{todayWater.length} entries</span></div>
-          <div className="water-entries">
-            {todayWater.map(w => {
-              const t = new Date(w.ts || Date.now());
-              return (
-                <div key={w.id} className="water-entry">
-                  <span className="water-entry-time">{t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-                  <span className="water-entry-ml">{w.ml}ml</span>
-                  <button className="water-entry-x" onClick={() => onDeleteWater(w.id)}>×</button>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* PAST 7 DAYS */}
-      <div className="form-card">
-        <div className="db-card-hd"><span className="db-card-title">Past 7 days</span></div>
-        <div className="water-week">
-          {past7.map(d => (
-            <div key={d.date} className="water-week-day">
-              <div className="water-week-bar-wrap">
-                <div className="water-week-bar" style={{ height: `${d.pct}%`, background: d.pct >= 100 ? "#a5f3b4" : d.pct >= 60 ? "#6ee7f7" : "#f9e27e" }} />
-              </div>
-              <div className="water-week-label">{new Date(d.date + "T00:00:00").toLocaleDateString("en-US", { weekday: "short" }).slice(0,1)}</div>
-              <div className="water-week-ml">{d.ml >= 1000 ? (d.ml/1000).toFixed(1)+"L" : d.ml+"ml"}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* SUPPLEMENTS */}
-      <div className="form-card">
-        <h3 className="form-title">Log Supplement</h3>
-        <div className="form-grid" style={{ marginBottom: 12 }}>
-          <label>Name<input type="text" value={suppName} onChange={e => setSuppName(e.target.value)} placeholder="e.g. Creatine, Multivit, Whey" /></label>
-          <label>Dose / Notes<input type="text" value={suppDose} onChange={e => setSuppDose(e.target.value)} placeholder="5g, 1 capsule, etc." /></label>
-        </div>
-        <button className="btn-primary" onClick={addSupp} disabled={!suppName.trim()}>+ Log Supplement</button>
-
-        {todaySupps.length > 0 && (
-          <>
-            <div className="db-card-hd" style={{ marginTop: 18, marginBottom: 10 }}><span style={{ fontSize: ".82rem", color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".05em" }}>Today's supplements</span></div>
-            <div className="supp-list">
-              {todaySupps.map(s => {
-                const t = new Date(s.ts || Date.now());
-                return (
-                  <div key={s.id} className="supp-entry">
-                    <div className="supp-entry-main">
-                      <div className="supp-entry-name">{s.name}</div>
-                      {s.dose && <div className="supp-entry-dose">{s.dose}</div>}
-                    </div>
-                    <span className="supp-entry-time">{t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-                    <button className="water-entry-x" onClick={() => onDeleteSupp(s.id)}>×</button>
-                  </div>
-                );
-              })}
-            </div>
-          </>
-        )}
-      </div>
+      <div className="ring-label">{label}</div>
     </div>
   );
 }
 
-// ─── TRENDS TAB ───────────────────────────────────────────────────────────────
-function MiniChart({ points, color, height = 60, fillBelow = true, showGoal = null, formatY }) {
-  if (!points || points.length === 0) return <div className="chart-empty">No data yet</div>;
-  const W = 320, H = height;
-  const padX = 4, padY = 6;
-  const vals = points.map(p => p.value);
-  const validVals = vals.filter(v => v != null);
-  if (validVals.length === 0) return <div className="chart-empty">No data yet</div>;
-  let min = Math.min(...validVals);
-  let max = Math.max(...validVals);
+function MiniChart({ points, height = 70, showGoal = null }) {
+  if (!points || points.length === 0) return <div className="muted-center">No data</div>;
+  const W = 320, H = height, padX = 4, padY = 8;
+  const vals = points.map(p => p.value).filter(v => v != null);
+  if (vals.length === 0) return <div className="muted-center">Not enough data</div>;
+  let min = Math.min(...vals), max = Math.max(...vals);
   if (showGoal != null) { min = Math.min(min, showGoal); max = Math.max(max, showGoal); }
   if (max === min) max = min + 1;
-  const range = max - min;
-  // Add 10% padding to top/bottom
-  min -= range * 0.1; max += range * 0.1;
+  const range = max - min; min -= range * 0.1; max += range * 0.1;
   const sx = i => padX + (i / Math.max(1, points.length - 1)) * (W - 2 * padX);
   const sy = v => H - padY - ((v - min) / (max - min)) * (H - 2 * padY);
-
-  const validPoints = points.map((p, i) => ({ ...p, _x: sx(i), _y: p.value != null ? sy(p.value) : null }));
-  const segments = []; // continuous segments of valid points
+  const segments = [];
   let cur = [];
-  for (const p of validPoints) {
-    if (p._y != null) cur.push(p);
+  points.forEach((p, i) => {
+    if (p.value != null) cur.push({ x: sx(i), y: sy(p.value) });
     else if (cur.length) { segments.push(cur); cur = []; }
-  }
+  });
   if (cur.length) segments.push(cur);
-
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="mini-chart">
+    <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="chart">
       {showGoal != null && (
-        <line x1={padX} x2={W - padX} y1={sy(showGoal)} y2={sy(showGoal)} stroke="var(--muted)" strokeWidth="1" strokeDasharray="3 3" opacity=".5" />
+        <line x1={padX} x2={W - padX} y1={sy(showGoal)} y2={sy(showGoal)} stroke="var(--muted)" strokeWidth="1" strokeDasharray="3 3" opacity=".35" />
       )}
       {segments.map((seg, si) => {
-        const path = seg.map((p, i) => `${i === 0 ? "M" : "L"}${p._x.toFixed(1)},${p._y.toFixed(1)}`).join(" ");
-        const area = seg.length > 1 ? `${path} L${seg[seg.length-1]._x.toFixed(1)},${H - padY} L${seg[0]._x.toFixed(1)},${H - padY} Z` : null;
+        const path = seg.map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
+        const area = seg.length > 1 ? `${path} L${seg[seg.length-1].x.toFixed(1)},${H - padY} L${seg[0].x.toFixed(1)},${H - padY} Z` : null;
         return (
           <g key={si}>
-            {fillBelow && area && <path d={area} fill={color} opacity=".12" />}
-            <path d={path} stroke={color} strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-            {seg.map((p, i) => <circle key={i} cx={p._x} cy={p._y} r="2.4" fill={color} />)}
+            {area && <path d={area} fill="var(--accent)" opacity=".08" />}
+            <path d={path} stroke="var(--accent)" strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            {seg.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r="2" fill="var(--accent)" />)}
           </g>
         );
       })}
@@ -375,1635 +219,1517 @@ function MiniChart({ points, color, height = 60, fillBelow = true, showGoal = nu
   );
 }
 
-function TrendsTab({ data, goals }) {
-  const [range, setRange] = useState(14); // 7, 14, 30
-  const [showWeightForm, setShowWeightForm] = useState(false);
+function Card({ title, sub, action, children, className = "" }) {
+  return (
+    <section className={`card ${className}`}>
+      {(title || action) && (
+        <header className="card-hd">
+          <div>
+            {title && <h3 className="card-title">{title}</h3>}
+            {sub && <p className="card-sub">{sub}</p>}
+          </div>
+          {action}
+        </header>
+      )}
+      {children}
+    </section>
+  );
+}
+
+function Empty({ icon = "✦", title, hint, action }) {
+  return (
+    <div className="empty">
+      <div className="empty-icon">{icon}</div>
+      <div className="empty-title">{title}</div>
+      {hint && <div className="empty-hint">{hint}</div>}
+      {action}
+    </div>
+  );
+}
+
+// ─── HOME TAB ─────────────────────────────────────────────────────────────────
+function HomeTab({ data, goals, onAddWater, onAddWeight, onNav }) {
+  const today = getTodayStr();
+  const now = new Date();
+  const hr = now.getHours();
+  const greeting = hr < 5 ? "Still up?" : hr < 12 ? "Good morning" : hr < 17 ? "Good afternoon" : hr < 21 ? "Good evening" : "Good night";
+
+  const todayDiet = data.diet.filter(d => d.date === today);
+  const todayCal = todayDiet.reduce((a, m) => a + m.calories, 0);
+  const todayProtein = todayDiet.reduce((a, m) => a + (m.protein || 0), 0);
+  const todayWaterMl = data.water.filter(w => w.date === today).reduce((a, w) => a + w.ml, 0);
+  const todaySleep = data.sleep.find(s => s.date === today);
+  const todayWorkout = data.exercise.find(e => e.date === today);
+  const todaySport = data.sports.find(s => s.date === today);
+  const todaySupps = data.supplements.filter(s => s.date === today);
+
+  const calPct = Math.min(100, Math.round((todayCal / goals.calories) * 100));
+  const prtPct = Math.min(100, Math.round((todayProtein / goals.protein) * 100));
+  const waterPct = Math.min(100, Math.round((todayWaterMl / goals.waterGoalMl) * 100));
+
+  const sortedWeight = [...data.weight].sort((a, b) => a.date < b.date ? 1 : -1);
+  const latestWeight = sortedWeight[0];
+  const prevWeight = sortedWeight[1];
+  const todayHasWeight = data.weight.some(w => w.date === today);
+
+  // Daily insight
+  const insightKey = STORAGE_KEY + "_insight_" + today;
+  const [insight, setInsight] = useState(() => localStorage.getItem(insightKey) || "");
+  const [insLoading, setInsLoading] = useState(false);
+
+  async function getInsight() {
+    setInsLoading(true);
+    try {
+      const t = await generateDailyInsight(data, goals);
+      setInsight(t); localStorage.setItem(insightKey, t);
+    } catch {}
+    setInsLoading(false);
+  }
+
+  const [showWeight, setShowWeight] = useState(false);
   const [wt, setWt] = useState("");
-  const [wtDate, setWtDate] = useState(getTodayStr());
 
-  // Build date series
-  const series = useMemo(() => {
-    const dates = Array.from({ length: range }, (_, i) => daysAgo(range - 1 - i));
-    return dates;
-  }, [range]);
+  return (
+    <div className="stack">
+      {/* GREETING */}
+      <div className="greeting">
+        <p className="greeting-date">{now.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}</p>
+        <h1 className="greeting-h">{greeting}</h1>
+        <p className="greeting-goal">{goals.goal}</p>
+      </div>
 
-  // Sleep series (hours)
-  const sleepSeries = series.map(d => {
-    const s = data.sleep.find(x => x.date === d);
-    return { label: d, value: s ? s.duration : null };
-  });
-  const avgSleep = (() => {
-    const vals = sleepSeries.map(p => p.value).filter(v => v != null);
-    return vals.length ? +(vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(1) : null;
+      {/* PRIMARY RINGS — 3 only, all today */}
+      <Card>
+        <div className="rings-row">
+          <Ring pct={calPct} label="Calories" value={todayCal || "—"} unit="" big />
+          <Ring pct={prtPct} label="Protein" value={todayProtein || "—"} unit={todayProtein ? "g" : ""} big />
+          <Ring pct={waterPct} label="Water" value={todayWaterMl ? (todayWaterMl >= 1000 ? (todayWaterMl/1000).toFixed(1) : todayWaterMl) : "—"} unit={todayWaterMl ? (todayWaterMl >= 1000 ? "L" : "ml") : ""} big />
+        </div>
+        <div className="ring-targets">
+          <span>{todayCal}/{goals.calories} kcal</span>
+          <span>{todayProtein}/{goals.protein}g protein</span>
+          <span>{todayWaterMl}/{goals.waterGoalMl}ml</span>
+        </div>
+      </Card>
+
+      {/* QUICK ACTIONS */}
+      <div className="quick-actions">
+        <button className="qa qa-primary" onClick={() => onNav("Log", "diet")}>
+          <span className="qa-icon">◉</span><span>Log meal</span>
+        </button>
+        <button className="qa" onClick={() => onAddWater({ id: Date.now(), date: today, ml: 250, ts: Date.now() })}>
+          <span className="qa-icon">◊</span><span>+ 250ml water</span>
+        </button>
+        <button className="qa" onClick={() => onNav("Log", "exercise")}>
+          <span className="qa-icon">◆</span><span>Log workout</span>
+        </button>
+        <button className="qa" onClick={() => onNav("Coach")}>
+          <span className="qa-icon">✦</span><span>Ask coach</span>
+        </button>
+      </div>
+
+      {/* AI INSIGHT */}
+      <Card title="✦ Today's insight" action={insight && <button className="link-btn" onClick={() => { localStorage.removeItem(insightKey); setInsight(""); getInsight(); }} disabled={insLoading}>Refresh</button>}>
+        {!insight && !insLoading && (
+          <button className="btn-ghost full" onClick={getInsight}>Generate insight from your data</button>
+        )}
+        {insLoading && <div className="loading-row"><span className="spinner" />Thinking…</div>}
+        {insight && !insLoading && <div className="md insight">{renderMarkdown(insight)}</div>}
+      </Card>
+
+      {/* TODAY LOGGED */}
+      <Card title="Today" sub={todayDiet.length || todaySleep || todayWorkout || todaySport ? null : "Nothing logged yet"}>
+        {(todaySleep || todayDiet.length > 0 || todayWorkout || todaySport || todaySupps.length > 0) && (
+          <div className="today-items">
+            {todaySleep && <div className="today-item"><span className="today-dot" style={{ background: TYPE_DOT.sleep }} /><span className="today-text">{todaySleep.duration}h sleep · {todaySleep.quality.toLowerCase()}</span></div>}
+            {todayDiet.map(m => <div key={m.id} className="today-item"><span className="today-dot" style={{ background: TYPE_DOT.diet }} /><span className="today-text">{m.meal} · {m.calories} kcal · {m.food.slice(0, 30)}{m.food.length > 30 ? "…" : ""}</span></div>)}
+            {todayWorkout && <div className="today-item"><span className="today-dot" style={{ background: TYPE_DOT.exercise }} /><span className="today-text">Workout · {todayWorkout.label}</span></div>}
+            {todaySport && <div className="today-item"><span className="today-dot" style={{ background: TYPE_DOT.sports }} /><span className="today-text">{todaySport.sport} · {todaySport.duration}min</span></div>}
+            {todaySupps.length > 0 && <div className="today-item"><span className="today-dot" style={{ background: TYPE_DOT.supplements }} /><span className="today-text">{todaySupps.length} supplement{todaySupps.length === 1 ? "" : "s"} · {todaySupps.map(s => s.name).join(", ")}</span></div>}
+          </div>
+        )}
+      </Card>
+
+      {/* WEIGHT */}
+      <Card title="⚖ Weight" action={!todayHasWeight && !showWeight ? <button className="link-btn" onClick={() => setShowWeight(true)}>+ Log today</button> : todayHasWeight ? <span className="muted-tag">✓ logged</span> : null}>
+        {latestWeight ? (
+          <div className="weight-row">
+            <div className="weight-big">{latestWeight.weight}<span>{latestWeight.unit || goals.weightUnit}</span></div>
+            <div className="weight-meta">
+              {prevWeight && (() => {
+                const diff = latestWeight.weight - prevWeight.weight;
+                if (diff === 0) return <span className="muted">no change</span>;
+                const goodDir = (goals.goal === "Lose Fat") ? diff < 0 : (goals.goal === "Build Muscle") ? diff > 0 : null;
+                const cls = goodDir === null ? "" : goodDir ? "good" : "warn";
+                return <span className={`weight-diff ${cls}`}>{diff > 0 ? "+" : ""}{diff.toFixed(1)}{latestWeight.unit || goals.weightUnit} since last</span>;
+              })()}
+              <span className="muted">{formatDate(latestWeight.date)}</span>
+            </div>
+          </div>
+        ) : (
+          <Empty icon="⚖" title="No weight logged" hint="Log it daily to track your progress" />
+        )}
+        {showWeight && (
+          <div className="inline-form">
+            <input type="number" step="0.1" value={wt} onChange={e => setWt(e.target.value)} placeholder={`weight in ${goals.weightUnit}`} autoFocus />
+            <button className="btn" onClick={() => { if (wt) { onAddWeight({ id: Date.now(), date: today, weight: parseFloat(wt), unit: goals.weightUnit }); setWt(""); setShowWeight(false); } }} disabled={!wt}>Save</button>
+            <button className="btn-ghost" onClick={() => { setShowWeight(false); setWt(""); }}>Cancel</button>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+// ─── LOG TAB ──────────────────────────────────────────────────────────────────
+const LOG_SUBTABS = [
+  { key: "diet", label: "Meal", icon: "◉" },
+  { key: "sleep", label: "Sleep", icon: "◐" },
+  { key: "exercise", label: "Workout", icon: "◆" },
+  { key: "sports", label: "Sport", icon: "◇" },
+  { key: "water", label: "Water", icon: "◊" },
+  { key: "supplement", label: "Supplement", icon: "⊕" },
+];
+
+function LogTab({ data, goals, addEntry, deleteEntry, initialSub }) {
+  const [sub, setSub] = useState(initialSub || "diet");
+  useEffect(() => { if (initialSub) setSub(initialSub); }, [initialSub]);
+
+  return (
+    <div className="stack">
+      <div className="subtabs">
+        {LOG_SUBTABS.map(t => (
+          <button key={t.key} className={`subtab ${sub === t.key ? "active" : ""}`} onClick={() => setSub(t.key)}>
+            <span className="subtab-icon">{t.icon}</span>{t.label}
+          </button>
+        ))}
+      </div>
+
+      {sub === "diet" && <DietForm onAdd={addEntry("diet")} />}
+      {sub === "sleep" && <SleepForm onAdd={addEntry("sleep")} />}
+      {sub === "exercise" && <ExerciseForm onAdd={addEntry("exercise")} />}
+      {sub === "sports" && <SportsForm onAdd={addEntry("sports")} />}
+      {sub === "water" && <WaterForm data={data} goals={goals} onAdd={addEntry("water")} onDelete={deleteEntry("water")} />}
+      {sub === "supplement" && <SupplementForm data={data} onAdd={addEntry("supplements")} onDelete={deleteEntry("supplements")} />}
+    </div>
+  );
+}
+
+// ─── SLEEP FORM ──
+function SleepForm({ onAdd }) {
+  const [form, setForm] = useState({ date: getTodayStr(), bedtime: "22:30", wakeTime: "06:30", quality: "Good", notes: "" });
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const dur = (() => {
+    const [bh, bm] = form.bedtime.split(":").map(Number), [wh, wm] = form.wakeTime.split(":").map(Number);
+    let m = (wh * 60 + wm) - (bh * 60 + bm); if (m < 0) m += 1440; return (m / 60).toFixed(1);
   })();
-  const sleepDebt = (() => {
-    let debt = 0;
-    for (const p of sleepSeries) if (p.value != null) debt += (8 - p.value);
-    return Math.round(debt * 10) / 10;
-  })();
+  return (
+    <Card title="Log sleep">
+      <div className="field-grid">
+        <label>Date<input type="date" value={form.date} onChange={e => set("date", e.target.value)} /></label>
+        <label>Quality<select value={form.quality} onChange={e => set("quality", e.target.value)}>{sleepQuality.map(q => <option key={q}>{q}</option>)}</select></label>
+        <label>Bedtime<input type="time" value={form.bedtime} onChange={e => set("bedtime", e.target.value)} /></label>
+        <label>Wake time<input type="time" value={form.wakeTime} onChange={e => set("wakeTime", e.target.value)} /></label>
+      </div>
+      <div className="duration-pill"><span>{dur}h</span> sleep</div>
+      <label>Notes<textarea value={form.notes} onChange={e => set("notes", e.target.value)} placeholder="How did you sleep?" rows={2} /></label>
+      <button className="btn full" onClick={() => onAdd({ ...form, duration: parseFloat(dur), id: Date.now() })}>Save sleep</button>
+    </Card>
+  );
+}
 
-  // Calorie series
-  const calorieSeries = series.map(d => {
-    const day = data.diet.filter(x => x.date === d);
-    return { label: d, value: day.length ? day.reduce((a, m) => a + (m.calories || 0), 0) : null };
-  });
-  const proteinSeries = series.map(d => {
-    const day = data.diet.filter(x => x.date === d);
-    return { label: d, value: day.length ? day.reduce((a, m) => a + (m.protein || 0), 0) : null };
-  });
-  const avgCal = (() => {
-    const vals = calorieSeries.map(p => p.value).filter(v => v != null);
-    return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : null;
-  })();
-  const proteinHitDays = proteinSeries.filter(p => p.value != null && p.value >= goals.protein).length;
-  const proteinLoggedDays = proteinSeries.filter(p => p.value != null).length;
+// ─── DIET FORM ──
+function DietForm({ onAdd }) {
+  const [date, setDate] = useState(getTodayStr());
+  const [meal, setMeal] = useState("Breakfast");
+  const [text, setText] = useState("");
+  const [file, setFile] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [mode, setMode] = useState("text");
+  const [analyzing, setAnalyzing] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState("");
+  const fileRef = useRef();
 
-  // Workout volume series (workouts per day count)
-  const workoutSeries = series.map(d => {
-    const ex = data.exercise.filter(x => x.date === d).length;
-    const sp = data.sports.filter(x => x.date === d).length;
-    return { label: d, value: ex + sp || 0 };
-  });
-  const totalWorkouts = workoutSeries.reduce((a, p) => a + p.value, 0);
+  async function analyze() {
+    if (mode === "text" && !text.trim()) return;
+    if (mode === "image" && !file) return;
+    setAnalyzing(true); setError(""); setResult(null);
+    try {
+      let b64 = null, mt = null;
+      if (mode === "image" && file) {
+        b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.onerror = rej; r.readAsDataURL(file); });
+        mt = file.type;
+      }
+      const r = await analyzeFoodAI(mode === "text" ? text : "", b64, mt);
+      if (r) setResult(r); else setError("Couldn't analyze that. Try again or be more specific.");
+    } catch { setError("Network issue. Try again."); }
+    setAnalyzing(false);
+  }
 
-  // Weight series
-  const weightSeries = series.map(d => {
-    const w = data.weight.find(x => x.date === d);
-    return { label: d, value: w ? w.weight : null };
-  });
-  const weightChange = (() => {
-    const filled = weightSeries.filter(p => p.value != null);
-    if (filled.length < 2) return null;
-    return +(filled[filled.length - 1].value - filled[0].value).toFixed(1);
-  })();
+  function save() {
+    if (!result) return;
+    onAdd({ date, meal, food: result.food, calories: result.calories, protein: result.protein, carbs: result.carbs, fat: result.fat, notes: result.notes || "", id: Date.now() });
+    setResult(null); setText(""); setFile(null); setPreview(null); setError("");
+  }
 
-  // Water series
-  const waterSeries = series.map(d => {
-    const ml = (data.water || []).filter(x => x.date === d).reduce((a, w) => a + w.ml, 0);
-    return { label: d, value: ml || null };
-  });
+  return (
+    <Card title="Log meal" sub="Describe what you ate or upload a photo">
+      <div className="field-grid">
+        <label>Date<input type="date" value={date} onChange={e => setDate(e.target.value)} /></label>
+        <label>Meal<select value={meal} onChange={e => setMeal(e.target.value)}>{mealTypes.map(m => <option key={m}>{m}</option>)}</select></label>
+      </div>
 
-  // Sleep × workout correlation: avg workout count on good vs poor sleep nights
+      <div className="seg">
+        <button className={`seg-btn ${mode === "text" ? "active" : ""}`} onClick={() => { setMode("text"); setResult(null); setError(""); }}>✎ Describe</button>
+        <button className={`seg-btn ${mode === "image" ? "active" : ""}`} onClick={() => { setMode("image"); setResult(null); setError(""); }}>⊞ Photo</button>
+      </div>
+
+      {mode === "text" && !result && (
+        <label>What did you eat?<textarea value={text} onChange={e => setText(e.target.value)} placeholder='"2 eggs, toast, glass of OJ"' rows={3} /></label>
+      )}
+
+      {mode === "image" && !result && (
+        <div className="upload" onClick={() => fileRef.current.click()}>
+          {preview ? <img src={preview} alt="" className="upload-img" /> : <><div className="upload-icon">⊞</div><div>Tap to upload a photo</div></>}
+          <input ref={fileRef} type="file" accept="image/*" hidden onChange={e => { const f = e.target.files[0]; if (!f) return; setFile(f); setResult(null); setError(""); const r = new FileReader(); r.onload = ev => setPreview(ev.target.result); r.readAsDataURL(f); }} />
+        </div>
+      )}
+
+      {!result && (
+        <button className="btn full" onClick={analyze} disabled={analyzing || (mode === "text" ? !text.trim() : !file)}>
+          {analyzing ? <><span className="spinner" />Analyzing…</> : "✦ Analyze with AI"}
+        </button>
+      )}
+
+      {error && <div className="err">{error}</div>}
+
+      {result && (
+        <div className="ai-card">
+          <div className="ai-card-label">AI analysis</div>
+          <div className="ai-card-name">{result.food}</div>
+          <div className="macros">
+            <div className="macro"><span className="macro-v">{result.calories}</span><span className="macro-l">kcal</span></div>
+            <div className="macro"><span className="macro-v">{result.protein}g</span><span className="macro-l">protein</span></div>
+            <div className="macro"><span className="macro-v">{result.carbs}g</span><span className="macro-l">carbs</span></div>
+            <div className="macro"><span className="macro-v">{result.fat}g</span><span className="macro-l">fat</span></div>
+          </div>
+          {result.notes && <p className="ai-card-note">{result.notes}</p>}
+          <div className="row">
+            <button className="btn flex" onClick={save}>+ Add to log</button>
+            <button className="btn-ghost" onClick={() => { setResult(null); }}>Redo</button>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ─── EXERCISE (paste from Strong) ──
+function ExerciseForm({ onAdd }) {
+  const [date, setDate] = useState(getTodayStr());
+  const [label, setLabel] = useState("");
+  const [text, setText] = useState("");
+  return (
+    <Card title="Log workout" sub="Paste from Strong, or write your own">
+      <div className="field-grid">
+        <label>Date<input type="date" value={date} onChange={e => setDate(e.target.value)} /></label>
+        <label>Label<input type="text" value={label} onChange={e => setLabel(e.target.value)} placeholder="e.g. Push Day A" /></label>
+      </div>
+      <label>Workout details
+        <textarea value={text} onChange={e => setText(e.target.value)} rows={9}
+          placeholder={"Push Day A\n1h 12m\n\nBench Press (Barbell)\nSet 1: 60 kg × 10\nSet 2: 80 kg × 8"}
+          style={{ fontFamily: "ui-monospace, monospace", fontSize: "0.84rem" }} />
+      </label>
+      <button className="btn full" onClick={() => { if (!text.trim()) return; onAdd({ id: Date.now(), date, label: label.trim() || "Workout", text: text.trim() }); setText(""); setLabel(""); }} disabled={!text.trim()}>Save workout</button>
+    </Card>
+  );
+}
+
+// ─── SPORTS ──
+function SportsForm({ onAdd }) {
+  const [form, setForm] = useState({ date: getTodayStr(), sport: "Basketball", duration: "60", intensity: "Moderate", result: "", opponent: "", score: "", notes: "" });
+  const [weight, setWeight] = useState("75");
+  const [est, setEst] = useState(null);
+  const [estimating, setEstimating] = useState(false);
+  const set = (k, v) => { setForm(f => ({ ...f, [k]: v })); setEst(null); };
+
+  return (
+    <Card title="Log sport">
+      <div className="field-grid">
+        <label>Date<input type="date" value={form.date} onChange={e => set("date", e.target.value)} /></label>
+        <label>Sport<select value={form.sport} onChange={e => set("sport", e.target.value)}>{sportsOptions.map(s => <option key={s}>{s}</option>)}</select></label>
+        <label>Duration (min)<input type="number" value={form.duration} onChange={e => set("duration", e.target.value)} /></label>
+        <label>Intensity<select value={form.intensity} onChange={e => set("intensity", e.target.value)}>{intensityLevels.map(l => <option key={l}>{l}</option>)}</select></label>
+        <label>Your weight (kg)<input type="number" value={weight} onChange={e => { setWeight(e.target.value); setEst(null); }} /></label>
+        <label>Result<select value={form.result} onChange={e => set("result", e.target.value)}><option value="">—</option><option>Win</option><option>Loss</option><option>Draw</option><option>Practice</option></select></label>
+        <label>Opponent<input type="text" value={form.opponent} onChange={e => set("opponent", e.target.value)} placeholder="Optional" /></label>
+        <label>Score<input type="text" value={form.score} onChange={e => set("score", e.target.value)} placeholder="Optional" /></label>
+      </div>
+      <label>Notes<textarea value={form.notes} onChange={e => set("notes", e.target.value)} rows={2} placeholder="How did it go?" /></label>
+
+      {!est && (
+        <button className="btn-ghost full" onClick={async () => {
+          if (!form.duration) return;
+          setEstimating(true);
+          const r = await estimateSportsCalories(form.sport, +form.duration, form.intensity, +weight || 75);
+          setEst(r); setEstimating(false);
+        }} disabled={estimating || !form.duration}>
+          {estimating ? <><span className="spinner" />Estimating…</> : "✦ Estimate calories with AI"}
+        </button>
+      )}
+
+      {est && (
+        <div className="ai-card">
+          <div className="ai-card-label">AI estimate</div>
+          <div className="ai-card-big">{est.calories}<span> kcal</span></div>
+          <p className="ai-card-note">{est.note}</p>
+          <div className="row">
+            <button className="btn flex" onClick={() => { onAdd({ ...form, id: Date.now(), duration: +form.duration || 0, calories: est.calories }); setForm(f => ({ ...f, opponent: "", score: "", result: "", notes: "" })); setEst(null); }}>+ Save sport</button>
+            <button className="btn-ghost" onClick={() => setEst(null)}>Redo</button>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ─── WATER ──
+function WaterForm({ data, goals, onAdd, onDelete }) {
+  const today = getTodayStr();
+  const todayWater = data.water.filter(w => w.date === today);
+  const totalMl = todayWater.reduce((a, w) => a + w.ml, 0);
+  const pct = Math.min(100, Math.round((totalMl / goals.waterGoalMl) * 100));
+  const [custom, setCustom] = useState("");
+  const [unit, setUnit] = useState("ml");
+
+  const add = ml => onAdd({ id: Date.now(), date: today, ml, ts: Date.now() });
+  const past7 = Array.from({ length: 7 }, (_, i) => {
+    const d = daysAgo(6 - i);
+    const ml = data.water.filter(w => w.date === d).reduce((a, w) => a + w.ml, 0);
+    return { date: d, ml };
+  });
+  const maxPast = Math.max(goals.waterGoalMl, ...past7.map(p => p.ml));
+
+  return (
+    <div className="stack">
+      <Card>
+        <div className="center-stack">
+          <Ring pct={pct} label={`of ${goals.waterGoalMl}ml`} value={totalMl} unit="ml" big />
+        </div>
+        <div className="quick-water">
+          <button className="qa" onClick={() => add(250)}>+ Glass<br /><span>250ml</span></button>
+          <button className="qa" onClick={() => add(500)}>+ Bottle<br /><span>500ml</span></button>
+          <button className="qa" onClick={() => add(1000)}>+ 1L<br /><span>1000ml</span></button>
+        </div>
+      </Card>
+
+      <Card title="Custom amount">
+        <div className="seg">
+          <button className={`seg-btn ${unit === "ml" ? "active" : ""}`} onClick={() => { setUnit("ml"); setCustom(""); }}>Milliliters</button>
+          <button className={`seg-btn ${unit === "l" ? "active" : ""}`} onClick={() => { setUnit("l"); setCustom(""); }}>Liters</button>
+        </div>
+        <div className="row">
+          <input type="number" step={unit === "l" ? "0.1" : "50"} value={custom} onChange={e => setCustom(e.target.value)} placeholder={unit === "l" ? "0.5" : "350"} />
+          <button className="btn" onClick={() => { const v = parseFloat(custom); if (!v) return; add(unit === "l" ? Math.round(v * 1000) : Math.round(v)); setCustom(""); }} disabled={!custom}>Add</button>
+        </div>
+      </Card>
+
+      {todayWater.length > 0 && (
+        <Card title="Today's log" sub={`${todayWater.length} ${todayWater.length === 1 ? "entry" : "entries"}`}>
+          <div className="list">
+            {todayWater.slice().reverse().map(w => {
+              const t = new Date(w.ts || Date.now());
+              return (
+                <div key={w.id} className="list-row">
+                  <span className="muted">{t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                  <span className="list-main">{w.ml}ml</span>
+                  <button className="x" onClick={() => onDelete(w.id)}>×</button>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
+      <Card title="Past 7 days">
+        <div className="week">
+          {past7.map(d => (
+            <div key={d.date} className="week-col">
+              <div className="week-bar-wrap">
+                <div className="week-bar" style={{ height: `${(d.ml / maxPast) * 100}%`, background: d.ml >= goals.waterGoalMl ? "var(--accent)" : "var(--muted)" }} />
+              </div>
+              <div className="week-day">{new Date(d.date + "T00:00:00").toLocaleDateString("en-US", { weekday: "short" }).slice(0, 1)}</div>
+              <div className="week-val">{d.ml >= 1000 ? (d.ml/1000).toFixed(1) + "L" : d.ml + "ml"}</div>
+            </div>
+          ))}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ─── SUPPLEMENT ──
+function SupplementForm({ data, onAdd, onDelete }) {
+  const [name, setName] = useState("");
+  const [dose, setDose] = useState("");
+  const todaySupps = data.supplements.filter(s => s.date === getTodayStr());
+  return (
+    <div className="stack">
+      <Card title="Log supplement">
+        <div className="field-grid">
+          <label>Name<input type="text" value={name} onChange={e => setName(e.target.value)} placeholder="Creatine, Multi, Whey" /></label>
+          <label>Dose / notes<input type="text" value={dose} onChange={e => setDose(e.target.value)} placeholder="5g, 1 cap" /></label>
+        </div>
+        <button className="btn full" onClick={() => { if (!name.trim()) return; onAdd({ id: Date.now(), date: getTodayStr(), name: name.trim(), dose: dose.trim(), ts: Date.now() }); setName(""); setDose(""); }} disabled={!name.trim()}>Save</button>
+      </Card>
+
+      {todaySupps.length > 0 && (
+        <Card title="Today's supplements">
+          <div className="list">
+            {todaySupps.slice().reverse().map(s => {
+              const t = new Date(s.ts || Date.now());
+              return (
+                <div key={s.id} className="list-row">
+                  <div className="list-main">
+                    <div>{s.name}</div>
+                    {s.dose && <div className="muted small">{s.dose}</div>}
+                  </div>
+                  <span className="muted">{t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                  <button className="x" onClick={() => onDelete(s.id)}>×</button>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ─── HISTORY TAB ──────────────────────────────────────────────────────────────
+function HistoryTab({ data, goals, addEntry, deleteEntry }) {
+  const [view, setView] = useState("trends"); // trends | lists
+  return (
+    <div className="stack">
+      <div className="subtabs">
+        <button className={`subtab ${view === "trends" ? "active" : ""}`} onClick={() => setView("trends")}>📊 Trends</button>
+        <button className={`subtab ${view === "lists" ? "active" : ""}`} onClick={() => setView("lists")}>≡ Lists</button>
+      </div>
+      {view === "trends" && <TrendsView data={data} goals={goals} addEntry={addEntry} />}
+      {view === "lists" && <ListsView data={data} deleteEntry={deleteEntry} />}
+    </div>
+  );
+}
+
+function TrendsView({ data, goals, addEntry }) {
+  const [range, setRange] = useState(14);
+  const series = useMemo(() => Array.from({ length: range }, (_, i) => daysAgo(range - 1 - i)), [range]);
+
+  const sleepPts = series.map(d => { const s = data.sleep.find(x => x.date === d); return { value: s ? s.duration : null }; });
+  const calPts = series.map(d => { const day = data.diet.filter(x => x.date === d); return { value: day.length ? day.reduce((a, m) => a + (m.calories || 0), 0) : null }; });
+  const proteinPts = series.map(d => { const day = data.diet.filter(x => x.date === d); return { value: day.length ? day.reduce((a, m) => a + (m.protein || 0), 0) : null }; });
+  const workoutPts = series.map(d => ({ value: data.exercise.filter(x => x.date === d).length + data.sports.filter(x => x.date === d).length }));
+  const weightPts = series.map(d => { const w = data.weight.find(x => x.date === d); return { value: w ? w.weight : null }; });
+  const waterPts = series.map(d => { const ml = data.water.filter(x => x.date === d).reduce((a, w) => a + w.ml, 0); return { value: ml || null }; });
+
+  const sleepVals = sleepPts.map(p => p.value).filter(v => v != null);
+  const avgSleep = sleepVals.length ? +(sleepVals.reduce((a, b) => a + b, 0) / sleepVals.length).toFixed(1) : null;
+  const sleepDebt = sleepVals.reduce((debt, v) => debt + (8 - v), 0);
+
+  const calVals = calPts.map(p => p.value).filter(v => v != null);
+  const avgCal = calVals.length ? Math.round(calVals.reduce((a, b) => a + b, 0) / calVals.length) : null;
+
+  const proteinHits = proteinPts.filter(p => p.value != null && p.value >= goals.protein).length;
+  const proteinLogged = proteinPts.filter(p => p.value != null).length;
+
+  const totalWorkouts = workoutPts.reduce((a, p) => a + p.value, 0);
+
+  const weightFilled = weightPts.filter(p => p.value != null);
+  const weightChange = weightFilled.length >= 2 ? +(weightFilled[weightFilled.length - 1].value - weightFilled[0].value).toFixed(1) : null;
+
+  const [showWt, setShowWt] = useState(false);
+  const [wtVal, setWtVal] = useState("");
+
+  // Sleep × workout correlation
   const corr = (() => {
     const days = series.map(d => {
       const s = data.sleep.find(x => x.date === d);
-      const wk = data.exercise.filter(x => x.date === d).length + data.sports.filter(x => x.date === d).length;
-      return s ? { sleep: s.duration, workouts: wk } : null;
+      const w = data.exercise.filter(x => x.date === d).length + data.sports.filter(x => x.date === d).length;
+      return s ? { sleep: s.duration, w } : null;
     }).filter(Boolean);
     if (days.length < 4) return null;
     const good = days.filter(d => d.sleep >= 7);
     const poor = days.filter(d => d.sleep < 7);
     if (!good.length || !poor.length) return null;
     return {
-      goodAvg: +(good.reduce((a, d) => a + d.workouts, 0) / good.length).toFixed(2),
-      poorAvg: +(poor.reduce((a, d) => a + d.workouts, 0) / poor.length).toFixed(2),
-      goodN: good.length, poorN: poor.length,
+      goodAvg: +(good.reduce((a, d) => a + d.w, 0) / good.length).toFixed(2),
+      poorAvg: +(poor.reduce((a, d) => a + d.w, 0) / poor.length).toFixed(2),
+      goodN: good.length, poorN: poor.length
     };
   })();
 
   return (
-    <div>
-      {/* Range toggle */}
-      <div className="trends-range">
+    <>
+      <div className="seg">
         {[7, 14, 30].map(r => (
-          <button key={r} className={`mode-btn ${range === r ? "active" : ""}`} onClick={() => setRange(r)}>{r} days</button>
+          <button key={r} className={`seg-btn ${range === r ? "active" : ""}`} onClick={() => setRange(r)}>{r} days</button>
         ))}
       </div>
 
-      {/* SLEEP */}
-      <div className="form-card">
-        <div className="trend-card-hd">
-          <span className="db-card-title">😴 Sleep</span>
-          <div className="trend-card-stats">
-            <span>Avg <strong style={{ color: "#6ee7f7" }}>{avgSleep != null ? `${avgSleep}h` : "—"}</strong></span>
-            <span>Debt <strong style={{ color: sleepDebt > 5 ? "#f97b6e" : sleepDebt > 0 ? "#f9e27e" : "#a5f3b4" }}>{sleepDebt > 0 ? `+${sleepDebt}h` : sleepDebt < 0 ? `${sleepDebt}h` : "0h"}</strong></span>
-          </div>
+      <Card title="😴 Sleep">
+        <div className="trend-stats">
+          <div className="ts"><span className="ts-l">Average</span><span className="ts-v">{avgSleep ?? "—"}h</span></div>
+          <div className="ts"><span className="ts-l">Sleep debt</span><span className={`ts-v ${sleepDebt > 5 ? "warn" : sleepDebt > 0 ? "neutral" : "good"}`}>{sleepDebt > 0 ? "+" : ""}{Math.round(sleepDebt*10)/10}h</span></div>
         </div>
-        <MiniChart points={sleepSeries} color="#6ee7f7" showGoal={8} />
-        <div className="trend-note">Target: 8h/night. {sleepDebt > 5 ? "You're significantly under-rested — prioritize sleep this week." : sleepDebt > 0 ? "Small deficit — manageable." : "On track."}</div>
-      </div>
+        <MiniChart points={sleepPts} showGoal={8} />
+      </Card>
 
-      {/* CALORIES */}
-      <div className="form-card">
-        <div className="trend-card-hd">
-          <span className="db-card-title">🍎 Calories</span>
-          <div className="trend-card-stats">
-            <span>Avg <strong style={{ color: "#f9e27e" }}>{avgCal != null ? `${avgCal}` : "—"}</strong></span>
-            <span>Target <strong style={{ color: "var(--muted)" }}>{goals.calories}</strong></span>
-          </div>
+      <Card title="🍎 Calories">
+        <div className="trend-stats">
+          <div className="ts"><span className="ts-l">Average</span><span className="ts-v">{avgCal ?? "—"}</span></div>
+          <div className="ts"><span className="ts-l">Target</span><span className="ts-v muted">{goals.calories}</span></div>
         </div>
-        <MiniChart points={calorieSeries} color="#f9e27e" showGoal={goals.calories} />
-      </div>
+        <MiniChart points={calPts} showGoal={goals.calories} />
+      </Card>
 
-      {/* PROTEIN */}
-      <div className="form-card">
-        <div className="trend-card-hd">
-          <span className="db-card-title">🥩 Protein</span>
-          <div className="trend-card-stats">
-            <span>Hit rate <strong style={{ color: proteinHitDays >= proteinLoggedDays * 0.7 ? "#a5f3b4" : "#f9e27e" }}>{proteinLoggedDays ? `${proteinHitDays}/${proteinLoggedDays} days` : "—"}</strong></span>
-          </div>
+      <Card title="🥩 Protein">
+        <div className="trend-stats">
+          <div className="ts"><span className="ts-l">Target hit</span><span className={`ts-v ${proteinLogged && proteinHits >= proteinLogged * 0.7 ? "good" : "neutral"}`}>{proteinLogged ? `${proteinHits}/${proteinLogged} days` : "—"}</span></div>
         </div>
-        <MiniChart points={proteinSeries} color="#c4b5fd" showGoal={goals.protein} />
-      </div>
+        <MiniChart points={proteinPts} showGoal={goals.protein} />
+      </Card>
 
-      {/* WORKOUTS */}
-      <div className="form-card">
-        <div className="trend-card-hd">
-          <span className="db-card-title">💪 Workouts</span>
-          <div className="trend-card-stats">
-            <span><strong style={{ color: "#f97b6e" }}>{totalWorkouts}</strong> total · last {range}d</span>
-          </div>
+      <Card title="💪 Workouts">
+        <div className="trend-stats">
+          <div className="ts"><span className="ts-l">Total</span><span className="ts-v">{totalWorkouts}</span></div>
         </div>
-        <div className="trend-bars">
-          {workoutSeries.map((p, i) => (
-            <div key={i} className="trend-bar-col" title={`${p.label}: ${p.value} workout${p.value === 1 ? "" : "s"}`}>
-              <div className="trend-bar" style={{ height: `${Math.min(100, p.value * 33)}%`, background: p.value > 0 ? "#f97b6e" : "transparent", border: p.value === 0 ? "1px dashed var(--border)" : "none" }} />
+        <div className="bars-row">
+          {workoutPts.map((p, i) => (
+            <div key={i} className="bar-col" title={`${p.value} workout${p.value === 1 ? "" : "s"}`}>
+              <div className="bar-fill" style={{ height: `${Math.min(100, p.value * 33)}%`, opacity: p.value === 0 ? 0.15 : 1 }} />
             </div>
           ))}
         </div>
-      </div>
+      </Card>
 
-      {/* BODY WEIGHT */}
-      <div className="form-card">
-        <div className="trend-card-hd">
-          <span className="db-card-title">⚖ Body Weight</span>
-          <div className="trend-card-stats">
-            {weightChange != null && (
-              <span>Change <strong style={{ color: weightChange === 0 ? "var(--muted)" : (goals.goal === "Lose Fat" ? (weightChange < 0 ? "#a5f3b4" : "#f9e27e") : (weightChange > 0 ? "#a5f3b4" : "#f9e27e")) }}>{weightChange > 0 ? "+" : ""}{weightChange}{goals.weightUnit || "kg"}</strong></span>
-            )}
-          </div>
+      <Card title="⚖ Body weight" action={<button className="link-btn" onClick={() => setShowWt(s => !s)}>{showWt ? "Cancel" : "+ Log"}</button>}>
+        <div className="trend-stats">
+          {weightChange != null && (
+            <div className="ts"><span className="ts-l">Change</span>
+              <span className={`ts-v ${weightChange === 0 ? "neutral" : (goals.goal === "Lose Fat" ? (weightChange < 0 ? "good" : "warn") : (weightChange > 0 ? "good" : "warn"))}`}>
+                {weightChange > 0 ? "+" : ""}{weightChange}{goals.weightUnit}
+              </span>
+            </div>
+          )}
         </div>
-        <MiniChart points={weightSeries} color="#a5f3b4" />
-        <button className="btn-ai" style={{ marginTop: 14 }} onClick={() => setShowWeightForm(s => !s)}>{showWeightForm ? "Cancel" : "+ Log weight"}</button>
-        {showWeightForm && (
-          <div style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "flex-end" }}>
-            <label style={{ flex: 1 }}>Date<input type="date" value={wtDate} onChange={e => setWtDate(e.target.value)} /></label>
-            <label style={{ flex: 1 }}>Weight ({goals.weightUnit || "kg"})<input type="number" step="0.1" value={wt} onChange={e => setWt(e.target.value)} placeholder="75.5" /></label>
-            <button className="btn-primary" style={{ flex: 0, padding: "10px 16px" }} onClick={() => {
-              if (!wt) return;
-              const event = new CustomEvent("fitlog-add-weight", { detail: { id: Date.now(), date: wtDate, weight: parseFloat(wt), unit: goals.weightUnit || "kg" } });
-              window.dispatchEvent(event);
-              setWt(""); setShowWeightForm(false);
-            }}>Save</button>
+        <MiniChart points={weightPts} />
+        {showWt && (
+          <div className="inline-form" style={{ marginTop: 12 }}>
+            <input type="number" step="0.1" value={wtVal} onChange={e => setWtVal(e.target.value)} placeholder={`weight (${goals.weightUnit})`} autoFocus />
+            <button className="btn" onClick={() => { if (wtVal) { addEntry("weight")({ id: Date.now(), date: getTodayStr(), weight: parseFloat(wtVal), unit: goals.weightUnit }); setWtVal(""); setShowWt(false); } }}>Save</button>
           </div>
         )}
-      </div>
+      </Card>
 
-      {/* WATER */}
-      <div className="form-card">
-        <div className="trend-card-hd">
-          <span className="db-card-title">💧 Water</span>
-          <div className="trend-card-stats">
-            <span>Target <strong style={{ color: "#6ee7f7" }}>{goals.waterGoalMl}ml</strong></span>
-          </div>
+      <Card title="💧 Water">
+        <div className="trend-stats">
+          <div className="ts"><span className="ts-l">Daily target</span><span className="ts-v">{goals.waterGoalMl}ml</span></div>
         </div>
-        <MiniChart points={waterSeries} color="#4db8cc" showGoal={goals.waterGoalMl} formatY={v => `${(v/1000).toFixed(1)}L`} />
-      </div>
+        <MiniChart points={waterPts} showGoal={goals.waterGoalMl} />
+      </Card>
 
-      {/* SLEEP-PERFORMANCE CORRELATION */}
       {corr && (
-        <div className="form-card insight-card">
-          <div className="db-card-hd"><span className="db-card-title">🔬 Sleep ↔ Training</span></div>
-          <p style={{ fontSize: ".88rem", lineHeight: 1.6, color: "var(--text)", marginBottom: 8 }}>
-            On nights you slept <strong>7+ hours</strong> ({corr.goodN} days), you averaged <strong style={{ color: "#a5f3b4" }}>{corr.goodAvg}</strong> workout{corr.goodAvg === 1 ? "" : "s"}/day.
-            On nights under 7 hours ({corr.poorN} days), you averaged <strong style={{ color: "#f97b6e" }}>{corr.poorAvg}</strong>.
+        <Card title="🔬 Sleep ↔ Training" className="insight-card">
+          <p className="md-p">
+            On nights with <strong>7+ hours sleep</strong> ({corr.goodN} days), you averaged <strong>{corr.goodAvg}</strong> workout{corr.goodAvg === 1 ? "" : "s"}/day.
+            On nights with less ({corr.poorN} days), you averaged <strong>{corr.poorAvg}</strong>.
           </p>
-          <p style={{ fontSize: ".78rem", color: "var(--muted)", lineHeight: 1.5 }}>
-            {corr.goodAvg > corr.poorAvg
-              ? "👉 Better sleep correlates with more training. Prioritize rest."
-              : corr.goodAvg < corr.poorAvg
-              ? "👉 Interesting — you train more on less sleep. Could be motivation peaks, but watch for burnout."
-              : "👉 No strong difference yet. Keep logging."}
+          <p className="muted small" style={{ marginTop: 6 }}>
+            {corr.goodAvg > corr.poorAvg ? "→ Better sleep correlates with more training. Prioritize rest." : corr.goodAvg < corr.poorAvg ? "→ You train more on less sleep. Watch for burnout." : "→ No strong difference yet. Keep logging."}
           </p>
-        </div>
+        </Card>
       )}
-    </div>
+    </>
   );
 }
 
-// ─── DAILY INSIGHT CARD ───────────────────────────────────────────────────────
-function DailyInsightCard({ data, goals }) {
-  const today = getTodayStr();
-  const cachedKey = STORAGE_KEY + "_insight_" + today;
-  const [insight, setInsight] = useState(() => localStorage.getItem(cachedKey) || "");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  async function generate() {
-    setLoading(true); setError("");
-    try {
-      const txt = await generateDailyInsight(data, goals);
-      setInsight(txt);
-      localStorage.setItem(cachedKey, txt);
-    } catch { setError("Couldn't generate insight. Try again."); }
-    setLoading(false);
-  }
-
-  function refresh() {
-    localStorage.removeItem(cachedKey);
-    setInsight("");
-    generate();
-  }
-
+function ListsView({ data, deleteEntry }) {
+  const [cat, setCat] = useState("diet");
+  const cats = [
+    { key: "diet", label: "Meals", icon: "◉" },
+    { key: "sleep", label: "Sleep", icon: "◐" },
+    { key: "exercise", label: "Workouts", icon: "◆" },
+    { key: "sports", label: "Sports", icon: "◇" },
+    { key: "weight", label: "Weight", icon: "⚖" },
+    { key: "water", label: "Water", icon: "◊" },
+    { key: "supplements", label: "Supplements", icon: "⊕" },
+  ];
+  const entries = data[cat] || [];
   return (
-    <div className="db-card insight-card">
-      <div className="db-card-hd">
-        <span className="db-card-title">✦ Today's Insight</span>
-        {insight && <button className="chat-clear-btn" onClick={refresh} disabled={loading}>↻ Refresh</button>}
-      </div>
-      {!insight && !loading && (
-        <>
-          <p style={{ fontSize: ".85rem", color: "var(--muted)", lineHeight: 1.6, marginBottom: 12 }}>
-            Get a quick AI take on what you should focus on today based on your recent data.
-          </p>
-          <button className="btn-ai" onClick={generate}>✦ Generate insight</button>
-        </>
-      )}
-      {loading && <div className="loading-text" style={{ color: "var(--accent)", fontSize: ".88rem" }}><span className="spinner-dot" />Thinking…</div>}
-      {error && <div className="error-msg">{error}</div>}
-      {insight && !loading && (
-        <div className="md-content insight-text">{renderMarkdown(insight)}</div>
-      )}
-    </div>
-  );
-}
-
-// ─── BODY WEIGHT QUICK LOG ────────────────────────────────────────────────────
-function BodyWeightQuickCard({ data, goals, onAddWeight }) {
-  const [show, setShow] = useState(false);
-  const [val, setVal] = useState("");
-  const sorted = [...data.weight].sort((a, b) => (a.date > b.date ? -1 : 1));
-  const latest = sorted[0];
-  const prev = sorted[1];
-  const unit = goals.weightUnit || "kg";
-  const todayLogged = data.weight.some(w => w.date === getTodayStr());
-
-  function save() {
-    if (!val) return;
-    onAddWeight({ id: Date.now(), date: getTodayStr(), weight: parseFloat(val), unit });
-    setVal(""); setShow(false);
-  }
-
-  return (
-    <div className="db-card weight-card">
-      <div className="db-card-hd">
-        <span className="db-card-title">⚖ Weight</span>
-        {!todayLogged && !show && <button className="chat-clear-btn" onClick={() => setShow(true)}>+ Log today</button>}
-        {todayLogged && <span style={{ fontSize: ".72rem", color: "var(--sports)" }}>✓ Logged today</span>}
-      </div>
-      {latest ? (
-        <div className="weight-display">
-          <div className="weight-main">{latest.weight}<span>{latest.unit || unit}</span></div>
-          {prev && (
-            <div className="weight-delta" style={{ color: latest.weight === prev.weight ? "var(--muted)" : (goals.goal === "Lose Fat" ? (latest.weight < prev.weight ? "#a5f3b4" : "#f9e27e") : (latest.weight > prev.weight ? "#a5f3b4" : "#f9e27e")) }}>
-              {latest.weight > prev.weight ? "▲" : latest.weight < prev.weight ? "▼" : "—"} {Math.abs(latest.weight - prev.weight).toFixed(1)}{unit} vs last
-            </div>
-          )}
-          <div className="weight-date">{formatDate(latest.date)}</div>
-        </div>
-      ) : (
-        <div className="db-empty" style={{ padding: 10 }}>No weight logged yet</div>
-      )}
-      {show && (
-        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-          <input type="number" step="0.1" value={val} onChange={e => setVal(e.target.value)} placeholder={`weight in ${unit}`} autoFocus onKeyDown={e => e.key === "Enter" && save()} />
-          <button className="btn-primary" style={{ flex: 0, padding: "10px 16px" }} onClick={save} disabled={!val}>Save</button>
-          <button className="btn-secondary" onClick={() => { setShow(false); setVal(""); }}>×</button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── SLEEP FORM ───────────────────────────────────────────────────────────────
-function SleepForm({ onAdd }) {
-  const [form, setForm] = useState({ date: getTodayStr(), bedtime: "22:30", wakeTime: "06:30", quality: "Good", notes: "" });
-  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
-  function calcDur(bed, wake) {
-    const [bh, bm] = bed.split(":").map(Number), [wh, wm] = wake.split(":").map(Number);
-    let m = (wh * 60 + wm) - (bh * 60 + bm); if (m < 0) m += 1440; return (m / 60).toFixed(1);
-  }
-  const dur = calcDur(form.bedtime, form.wakeTime);
-  return (
-    <div className="form-card">
-      <h3 className="form-title">Log Sleep</h3>
-      <div className="form-grid">
-        <label>Date<input type="date" value={form.date} onChange={e => set("date", e.target.value)} /></label>
-        <label>Bedtime<input type="time" value={form.bedtime} onChange={e => set("bedtime", e.target.value)} /></label>
-        <label>Wake Time<input type="time" value={form.wakeTime} onChange={e => set("wakeTime", e.target.value)} /></label>
-        <label>Quality<select value={form.quality} onChange={e => set("quality", e.target.value)}>{sleepQuality.map(q => <option key={q}>{q}</option>)}</select></label>
-      </div>
-      <div className="duration-badge">Duration: <strong>{dur}h</strong></div>
-      <label>Notes<textarea value={form.notes} onChange={e => set("notes", e.target.value)} placeholder="How did you sleep?" /></label>
-      <button className="btn-primary" style={{ marginTop: 14 }} onClick={() => onAdd({ ...form, duration: parseFloat(dur), id: Date.now() })}>Add Sleep Log</button>
-    </div>
-  );
-}
-
-// ─── DIET FORM ────────────────────────────────────────────────────────────────
-function DietForm({ onAdd }) {
-  const [date, setDate] = useState(getTodayStr());
-  const [meal, setMeal] = useState("Breakfast");
-  const [inputText, setInputText] = useState("");
-  const [imageFile, setImageFile] = useState(null);
-  const [imagePreview, setImagePreview] = useState(null);
-  const [analyzing, setAnalyzing] = useState(false);
-  const [result, setResult] = useState(null);
-  const [error, setError] = useState("");
-  const [mode, setMode] = useState("text");
-  const fileRef = useRef();
-
-  async function handleAnalyze() {
-    if (mode === "text" && !inputText.trim()) return;
-    if (mode === "image" && !imageFile) return;
-    setAnalyzing(true); setError(""); setResult(null);
-    try {
-      let b64 = null, mt = null;
-      if (mode === "image" && imageFile) {
-        b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.onerror = rej; r.readAsDataURL(imageFile); });
-        mt = imageFile.type;
-      }
-      const r = await analyzeFoodAI(mode === "text" ? inputText : "", b64, mt);
-      if (r) setResult(r); else setError("Could not analyze. Try rephrasing or a clearer photo.");
-    } catch { setError("Analysis failed."); } finally { setAnalyzing(false); }
-  }
-
-  return (
-    <div className="form-card">
-      <h3 className="form-title">Log Meal <span className="ai-badge">✦ AI</span></h3>
-      <div className="form-grid" style={{ marginBottom: 16 }}>
-        <label>Date<input type="date" value={date} onChange={e => setDate(e.target.value)} /></label>
-        <label>Meal Type<select value={meal} onChange={e => setMeal(e.target.value)}>{mealTypes.map(m => <option key={m}>{m}</option>)}</select></label>
-      </div>
-      <div className="mode-toggle">
-        <button className={`mode-btn ${mode === "text" ? "active" : ""}`} onClick={() => { setMode("text"); setResult(null); setError(""); }}>✎ Describe</button>
-        <button className={`mode-btn ${mode === "image" ? "active" : ""}`} onClick={() => { setMode("image"); setResult(null); setError(""); }}>⊞ Photo</button>
-      </div>
-      {mode === "text" && !result && <label style={{ marginBottom: 14 }}>What did you eat?<textarea value={inputText} onChange={e => setInputText(e.target.value)} placeholder='"Two eggs, toast, orange juice"' style={{ minHeight: 80 }} /></label>}
-      {mode === "image" && !result && (
-        <div className="image-upload-area" onClick={() => fileRef.current.click()}>
-          {imagePreview ? <img src={imagePreview} alt="Food" className="food-preview" /> : <div className="upload-prompt"><span className="upload-icon">⊞</span><span>Tap to upload a photo</span></div>}
-          <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={e => { const f = e.target.files[0]; if (!f) return; setImageFile(f); setResult(null); setError(""); const r = new FileReader(); r.onload = ev => setImagePreview(ev.target.result); r.readAsDataURL(f); }} />
-        </div>
-      )}
-      {!result && <button className="btn-ai" onClick={handleAnalyze} disabled={analyzing || (mode === "text" ? !inputText.trim() : !imageFile)}>{analyzing ? <span className="loading-text"><span className="spinner-dot" />Analyzing…</span> : "✦ Analyze Nutrition with AI"}</button>}
-      {error && <div className="error-msg">{error}</div>}
-      {result && (
-        <div className="ai-result">
-          <div className="ai-result-title">✦ AI Analysis</div>
-          <div className="ai-food-name">{result.food}</div>
-          <div className="macro-grid">
-            <div className="macro-chip cal"><span className="macro-val">{result.calories}</span><span className="macro-lbl">kcal</span></div>
-            <div className="macro-chip"><span className="macro-val">{result.protein}g</span><span className="macro-lbl">protein</span></div>
-            <div className="macro-chip"><span className="macro-val">{result.carbs}g</span><span className="macro-lbl">carbs</span></div>
-            <div className="macro-chip"><span className="macro-val">{result.fat}g</span><span className="macro-lbl">fat</span></div>
-          </div>
-          {result.notes && <div className="ai-note">"{result.notes}"</div>}
-          <div className="result-actions">
-            <button className="btn-primary" onClick={() => { onAdd({ date, meal, food: result.food, calories: result.calories, protein: result.protein, carbs: result.carbs, fat: result.fat, notes: result.notes || "", id: Date.now() }); setResult(null); setInputText(""); setImageFile(null); setImagePreview(null); }}>+ Add to Log</button>
-            <button className="btn-secondary" onClick={() => { setResult(null); setError(""); }}>Re-analyze</button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── EXERCISE TAB ─────────────────────────────────────────────────────────────
-function ExerciseTab({ entries, onAdd, onDelete }) {
-  const [text, setText] = useState(""); const [date, setDate] = useState(getTodayStr()); const [label, setLabel] = useState(""); const [expanded, setExpanded] = useState(null);
-  return (
-    <div>
-      <div className="form-card">
-        <h3 className="form-title">Paste from Strong</h3>
-        <div className="form-grid" style={{ marginBottom: 14 }}>
-          <label>Date<input type="date" value={date} onChange={e => setDate(e.target.value)} /></label>
-          <label>Label (optional)<input type="text" value={label} onChange={e => setLabel(e.target.value)} placeholder="e.g. Push Day A" /></label>
-        </div>
-        <label style={{ marginBottom: 14 }}>Workout<textarea value={text} onChange={e => setText(e.target.value)} placeholder={"Push Day A\nOctober 14, 2024 · 1h 12m\n\nBench Press (Barbell)\nSet 1: 60 kg × 10\nSet 2: 80 kg × 8"} style={{ minHeight: 220, fontFamily: "monospace", fontSize: "0.8rem", lineHeight: 1.7 }} /></label>
-        <button className="btn-primary" onClick={() => { if (!text.trim()) return; onAdd({ id: Date.now(), date, label: label.trim() || "Workout", text: text.trim() }); setText(""); setLabel(""); }} disabled={!text.trim()}>Save Workout</button>
-      </div>
-      <div className="list-header"><h3 className="section-title" style={{ margin: 0 }}>Workout Log</h3><span className="entry-count">{entries.length} entries</span></div>
-      {entries.length === 0 && <div className="empty-msg">No workouts saved yet.</div>}
-      <div className="log-list">
-        {entries.map(w => (
-          <div key={w.id} className={`log-item ${expanded === w.id ? "open" : ""}`}>
-            <div className="log-header" onClick={() => setExpanded(expanded === w.id ? null : w.id)}>
-              <div className="log-title">{w.label}</div>
-              <div className="log-meta"><span className="log-tag">{formatDate(w.date)}</span><span className="log-tag">{w.text.split("\n").filter(Boolean).length} lines</span><span className="log-toggle">{expanded === w.id ? "▲" : "▼"}</span></div>
-            </div>
-            {expanded === w.id && <div className="log-detail"><pre className="workout-raw">{w.text}</pre><button className="btn-delete" onClick={() => onDelete(w.id)}>Delete</button></div>}
-          </div>
+    <>
+      <div className="subtabs">
+        {cats.map(c => (
+          <button key={c.key} className={`subtab ${cat === c.key ? "active" : ""}`} onClick={() => setCat(c.key)}>
+            <span className="subtab-icon">{c.icon}</span>{c.label}
+          </button>
         ))}
       </div>
-    </div>
+      <Card title={cats.find(c => c.key === cat).label} sub={`${entries.length} ${entries.length === 1 ? "entry" : "entries"}`}>
+        {entries.length === 0 ? (
+          <Empty title={`No ${cats.find(c => c.key === cat).label.toLowerCase()} logged yet`} hint="Head to the Log tab to add some" />
+        ) : (
+          <div className="hist-list">
+            {entries.map(item => <HistItem key={item.id} item={item} type={cat} onDelete={() => deleteEntry(cat)(item.id)} />)}
+          </div>
+        )}
+      </Card>
+    </>
   );
 }
 
-// ─── SPORTS FORM ─────────────────────────────────────────────────────────────
-function SportsForm({ onAdd }) {
-  const [form, setForm] = useState({ date: getTodayStr(), sport: "Basketball", duration: "60", intensity: "Moderate", result: "", opponent: "", score: "", notes: "" });
-  const [estimating, setEstimating] = useState(false); const [estimate, setEstimate] = useState(null); const [weight, setWeight] = useState("75");
-  const set = (k, v) => { setForm(f => ({ ...f, [k]: v })); setEstimate(null); };
+function HistItem({ item, type, onDelete }) {
+  const [open, setOpen] = useState(false);
+  let main = "", tags = [], detail = null;
+  if (type === "sleep") {
+    main = `${item.duration}h · ${item.quality}`;
+    tags = [`${item.bedtime} → ${item.wakeTime}`];
+    detail = item.notes;
+  } else if (type === "diet") {
+    main = `${item.meal} · ${item.food}`;
+    tags = [`${item.calories} kcal`, `P ${item.protein}g`, `C ${item.carbs}g`, `F ${item.fat}g`];
+    detail = item.notes;
+  } else if (type === "exercise") {
+    main = item.label;
+    tags = [`${item.text.split("\n").filter(Boolean).length} lines`];
+    detail = <pre className="raw-text">{item.text}</pre>;
+  } else if (type === "sports") {
+    main = `${item.sport} · ${item.duration}min`;
+    tags = [item.intensity, item.result || "Practice", `${item.calories} kcal`].filter(Boolean);
+    detail = [item.opponent && `vs ${item.opponent}`, item.score && `Score: ${item.score}`, item.notes].filter(Boolean).join(" · ");
+  } else if (type === "weight") {
+    main = `${item.weight}${item.unit || "kg"}`;
+    tags = [];
+  } else if (type === "water") {
+    main = `${item.ml}ml`;
+    tags = item.ts ? [new Date(item.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })] : [];
+  } else if (type === "supplements") {
+    main = item.name;
+    tags = [item.dose, item.ts && new Date(item.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })].filter(Boolean);
+  }
+
+  const hasDetail = detail && (typeof detail === "string" ? detail.trim() : true);
+
   return (
-    <div className="form-card">
-      <h3 className="form-title">Log Sport <span className="ai-badge">✦ AI</span></h3>
-      <div className="form-grid">
-        <label>Date<input type="date" value={form.date} onChange={e => set("date", e.target.value)} /></label>
-        <label>Sport<select value={form.sport} onChange={e => set("sport", e.target.value)}>{sportsOptions.map(s => <option key={s}>{s}</option>)}</select></label>
-        <label>Duration (min)<input type="number" value={form.duration} onChange={e => set("duration", e.target.value)} placeholder="60" /></label>
-        <label>Intensity<select value={form.intensity} onChange={e => set("intensity", e.target.value)}>{intensityLevels.map(l => <option key={l}>{l}</option>)}</select></label>
-        <label>Your Weight (kg)<input type="number" value={weight} onChange={e => { setWeight(e.target.value); setEstimate(null); }} placeholder="75" /></label>
-        <label>Result<select value={form.result} onChange={e => set("result", e.target.value)}><option value="">—</option><option>Win</option><option>Loss</option><option>Draw</option><option>Practice</option></select></label>
-        <label>Opponent<input type="text" value={form.opponent} onChange={e => set("opponent", e.target.value)} placeholder="Team / Player" /></label>
-        <label>Score<input type="text" value={form.score} onChange={e => set("score", e.target.value)} placeholder="21 – 18" /></label>
-      </div>
-      <label>Notes<textarea value={form.notes} onChange={e => set("notes", e.target.value)} placeholder="How did it go?" /></label>
-      {!estimate && <button className="btn-ai" style={{ marginTop: 14 }} onClick={async () => { if (!form.duration) return; setEstimating(true); const r = await estimateSportsCalories(form.sport, Number(form.duration), form.intensity, Number(weight) || 75); setEstimate(r); setEstimating(false); }} disabled={estimating || !form.duration}>{estimating ? <span className="loading-text"><span className="spinner-dot" />Calculating…</span> : "✦ Estimate Calories with AI"}</button>}
-      {estimate && (
-        <div className="calorie-estimate">
-          <div className="calorie-est-header">✦ AI Estimate</div>
-          <div className="calorie-est-value">{estimate.calories} <span>kcal burned</span></div>
-          <div className="calorie-est-note">{estimate.note}</div>
-          <div className="result-actions">
-            <button className="btn-primary" onClick={() => { onAdd({ ...form, id: Date.now(), duration: Number(form.duration) || 0, calories: estimate.calories }); setForm(f => ({ ...f, opponent: "", score: "", result: "", notes: "" })); setEstimate(null); }}>+ Add to Log</button>
-            <button className="btn-secondary" onClick={() => setEstimate(null)}>Re-estimate</button>
+    <div className={`hist ${open ? "open" : ""}`}>
+      <div className="hist-head" onClick={() => hasDetail && setOpen(o => !o)}>
+        <div className="hist-l">
+          <span className="hist-dot" style={{ background: TYPE_DOT[type] }} />
+          <div className="hist-text">
+            <div className="hist-main">{main}</div>
+            <div className="hist-date">{formatShortDate(item.date)}</div>
           </div>
         </div>
+        <div className="hist-tags">
+          {tags.map((t, i) => <span key={i} className="hist-tag">{t}</span>)}
+          {hasDetail && <span className="muted">{open ? "▲" : "▼"}</span>}
+          <button className="x" onClick={(e) => { e.stopPropagation(); if (confirm("Delete?")) onDelete(); }}>×</button>
+        </div>
+      </div>
+      {open && hasDetail && (
+        <div className="hist-detail">{detail}</div>
       )}
     </div>
   );
 }
 
-// ─── LOG ITEM ─────────────────────────────────────────────────────────────────
-function LogItem({ item, type, onDelete }) {
-  const [open, setOpen] = useState(false);
-  let title = "", meta = [], detail = [];
-  if (type === "sleep") { title = `Sleep — ${formatDate(item.date)}`; meta = [`${item.duration}h`, item.quality]; detail = [`Bedtime: ${item.bedtime}`, `Wake: ${item.wakeTime}`, item.notes && `Notes: ${item.notes}`].filter(Boolean); }
-  else if (type === "diet") { title = `${item.meal} — ${formatDate(item.date)}`; meta = [item.food.slice(0, 28) + (item.food.length > 28 ? "…" : ""), `${item.calories} kcal`]; detail = [`Protein: ${item.protein}g`, `Carbs: ${item.carbs}g`, `Fat: ${item.fat}g`, item.notes && `Notes: ${item.notes}`].filter(Boolean); }
-  else if (type === "sports") { title = `${item.sport} — ${formatDate(item.date)}`; meta = [item.result || "Practice", `${item.duration}min`, `${item.calories} kcal`]; detail = [item.intensity && `Intensity: ${item.intensity}`, item.opponent && `vs ${item.opponent}`, item.score && `Score: ${item.score}`, item.notes && `Notes: ${item.notes}`].filter(Boolean); }
-  return (
-    <div className={`log-item ${open ? "open" : ""}`}>
-      <div className="log-header" onClick={() => setOpen(o => !o)}>
-        <div className="log-title">{title}</div>
-        <div className="log-meta">{meta.map((m, i) => <span key={i} className="log-tag">{m}</span>)}<span className="log-toggle">{open ? "▲" : "▼"}</span></div>
-      </div>
-      {open && <div className="log-detail">{detail.map((d, i) => <div key={i} className="log-detail-row">{d}</div>)}<button className="btn-delete" onClick={() => onDelete(item.id)}>Delete</button></div>}
-    </div>
-  );
-}
-
-// ─── STAT CARD ────────────────────────────────────────────────────────────────
-function StatCard({ label, value, unit, color, sub }) {
-  return (
-    <div className="stat-card" style={{ "--accent": color }}>
-      <div className="stat-value">{value}<span className="stat-unit">{unit}</span></div>
-      <div className="stat-label">{label}</div>
-      {sub && <div className="stat-sub">{sub}</div>}
-    </div>
-  );
-}
-
-// ─── SETTINGS SECTION ─────────────────────────────────────────────────────────
-function SettingsSection({ data, goals, onSaveGoals, onClearAll, onImport }) {
-  const [open, setOpen] = useState(false);
-  const [tab, setTab] = useState("goals"); // goals | export | data
-
-  // ─── Goals state ──
-  const [form, setForm] = useState(goals);
-  const [saved, setSaved] = useState(false);
-  const setG = (k, v) => setForm(f => ({ ...f, [k]: v }));
-
-  useEffect(() => { setForm(goals); }, [goals]);
-
-  function autoCalc(calories, goal) {
-    if (goal === "Build Muscle") return { protein: Math.round(calories * .30 / 4), carbs: Math.round(calories * .45 / 4), fat: Math.round(calories * .25 / 9) };
-    if (goal === "Lose Fat") return { protein: Math.round(calories * .35 / 4), carbs: Math.round(calories * .35 / 4), fat: Math.round(calories * .30 / 9) };
-    if (goal === "Improve Endurance") return { protein: Math.round(calories * .20 / 4), carbs: Math.round(calories * .55 / 4), fat: Math.round(calories * .25 / 9) };
-    if (goal === "Athletic Performance") return { protein: Math.round(calories * .25 / 4), carbs: Math.round(calories * .50 / 4), fat: Math.round(calories * .25 / 9) };
-    return { protein: Math.round(calories * .25 / 4), carbs: Math.round(calories * .45 / 4), fat: Math.round(calories * .30 / 9) };
-  }
-  const total = form.protein * 4 + form.carbs * 4 + form.fat * 9;
-  const pPct = Math.round((form.protein * 4 / total) * 100);
-  const cPct = Math.round((form.carbs * 4 / total) * 100);
-  const fPct = Math.round((form.fat * 9 / total) * 100);
-
-  // ─── Export helpers ──
-  function escapeCSV(v) {
-    if (v == null) return "";
-    const s = String(v);
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  }
-  function arrayToCSV(rows, headers) {
-    return [headers.join(","), ...rows.map(r => headers.map(h => escapeCSV(r[h])).join(","))].join("\n");
-  }
-  function download(filename, content, mime = "text/csv") {
-    const blob = new Blob([content], { type: `${mime};charset=utf-8;` });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = filename;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }
-  const exportSleep = () => download(`fitlog-sleep-${getTodayStr()}.csv`, arrayToCSV(data.sleep, ["date","duration_hours","bedtime","wakeTime","quality","notes"]));
-  const exportDiet = () => download(`fitlog-diet-${getTodayStr()}.csv`, arrayToCSV(data.diet, ["date","meal","food","calories","protein","carbs","fat","notes"]));
-  const exportExercise = () => download(`fitlog-workouts-${getTodayStr()}.csv`, arrayToCSV(data.exercise, ["date","label","text"]));
-  const exportSports = () => download(`fitlog-sports-${getTodayStr()}.csv`, arrayToCSV(data.sports, ["date","sport","duration","intensity","calories","result","opponent","score","notes"]));
-  const exportWeight = () => download(`fitlog-weight-${getTodayStr()}.csv`, arrayToCSV(data.weight || [], ["date","weight","unit"]));
-  const exportWater = () => download(`fitlog-water-${getTodayStr()}.csv`, arrayToCSV((data.water || []).map(w => ({ ...w, time: w.ts ? new Date(w.ts).toISOString() : "" })), ["date","time","ml"]));
-  const exportSupps = () => download(`fitlog-supplements-${getTodayStr()}.csv`, arrayToCSV((data.supplements || []).map(s => ({ ...s, time: s.ts ? new Date(s.ts).toISOString() : "" })), ["date","time","name","dose"]));
-  const exportChat = () => {
-    try {
-      const msgs = JSON.parse(localStorage.getItem(STORAGE_KEY + "_chat") || "[]");
-      const rows = msgs.map(m => ({ timestamp: m.ts ? new Date(m.ts).toISOString() : "", role: m.role, text: m.text }));
-      download(`fitlog-chat-${getTodayStr()}.csv`, arrayToCSV(rows, ["timestamp","role","text"]));
-    } catch { alert("Could not export chat."); }
-  };
-  const exportAll = () => {
-    if (data.sleep.length) exportSleep();
-    setTimeout(() => data.diet.length && exportDiet(), 200);
-    setTimeout(() => data.exercise.length && exportExercise(), 400);
-    setTimeout(() => data.sports.length && exportSports(), 600);
-    setTimeout(() => (data.weight || []).length && exportWeight(), 800);
-    setTimeout(() => (data.water || []).length && exportWater(), 1000);
-    setTimeout(() => (data.supplements || []).length && exportSupps(), 1200);
-    setTimeout(() => exportChat(), 1400);
-  };
-  const exportJSON = () => {
-    const all = { exportedAt: new Date().toISOString(), goals, data, chat: JSON.parse(localStorage.getItem(STORAGE_KEY + "_chat") || "[]") };
-    download(`fitlog-backup-${getTodayStr()}.json`, JSON.stringify(all, null, 2), "application/json");
-  };
-
-  // ─── Import / Clear ──
-  const fileRef = useRef();
-  function handleImportFile(e) {
-    const file = e.target.files[0]; if (!file) return;
-    const reader = new FileReader();
-    reader.onload = ev => {
-      try {
-        const parsed = JSON.parse(ev.target.result);
-        if (!parsed.data || !parsed.goals) throw new Error("Invalid backup");
-        if (!confirm("This will REPLACE all your current data with the backup. Continue?")) return;
-        onImport(parsed);
-        alert("Backup restored successfully!");
-      } catch { alert("Couldn't read that file. Make sure it's a fitlog JSON backup."); }
-    };
-    reader.readAsText(file);
-    e.target.value = ""; // reset so same file can be re-uploaded
-  }
-
-  const counts = { sleep: data.sleep.length, diet: data.diet.length, exercise: data.exercise.length, sports: data.sports.length, weight: (data.weight || []).length, water: (data.water || []).length, supplements: (data.supplements || []).length };
-  let chatCount = 0;
-  try { chatCount = JSON.parse(localStorage.getItem(STORAGE_KEY + "_chat") || "[]").length; } catch {}
-  const totalEntries = counts.sleep + counts.diet + counts.exercise + counts.sports + counts.weight + counts.water + counts.supplements;
-
-  return (
-    <div className="dash-section">
-      <button className="dash-section-toggle" onClick={() => setOpen(o => !o)}>
-        <span className="dash-section-label">⚙ Settings</span>
-        <span className="dash-section-meta">{goals.goal} · {goals.calories} kcal</span>
-        <span className="dash-chevron">{open ? "▲" : "▼"}</span>
-      </button>
-      {open && (
-        <div style={{ borderTop: "1px solid var(--border)" }}>
-          <div className="settings-tabs">
-            <button className={`settings-tab ${tab === "goals" ? "active" : ""}`} onClick={() => setTab("goals")}>⊙ Goals</button>
-            <button className={`settings-tab ${tab === "export" ? "active" : ""}`} onClick={() => setTab("export")}>⬇ Export</button>
-            <button className={`settings-tab ${tab === "data" ? "active" : ""}`} onClick={() => setTab("data")}>⌗ Data</button>
-          </div>
-
-          {/* ── GOALS TAB ── */}
-          {tab === "goals" && (
-            <div className="settings-body">
-              <div className="form-grid" style={{ marginBottom: 12 }}>
-                <label>Primary Goal
-                  <select value={form.goal} onChange={e => setG("goal", e.target.value)}>
-                    {fitnessGoals.map(g => <option key={g}>{g}</option>)}
-                  </select>
-                </label>
-                <label>Daily Calories
-                  <input type="number" value={form.calories} onChange={e => setG("calories", Number(e.target.value))} />
-                </label>
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                <span style={{ fontSize: ".82rem", color: "var(--text)", fontWeight: 500 }}>Macros</span>
-                <button className="btn-secondary" style={{ padding: "5px 11px", fontSize: ".73rem" }} onClick={() => setForm(f => ({ ...f, ...autoCalc(f.calories, f.goal) }))}>✦ Auto for {form.goal}</button>
-              </div>
-              <div className="form-grid" style={{ gridTemplateColumns: "1fr 1fr 1fr", marginBottom: 12 }}>
-                <label>Protein (g)<input type="number" value={form.protein} onChange={e => setG("protein", Number(e.target.value))} /></label>
-                <label>Carbs (g)<input type="number" value={form.carbs} onChange={e => setG("carbs", Number(e.target.value))} /></label>
-                <label>Fat (g)<input type="number" value={form.fat} onChange={e => setG("fat", Number(e.target.value))} /></label>
-              </div>
-              <div className="macro-bar">
-                <div className="macro-bar-seg mprot" style={{ width: `${pPct}%` }} />
-                <div className="macro-bar-seg mcarb" style={{ width: `${cPct}%` }} />
-                <div className="macro-bar-seg mfat" style={{ width: `${fPct}%` }} />
-              </div>
-              <div className="macro-legend">
-                <span><span className="ldot mprot-d" />P {pPct}%</span>
-                <span><span className="ldot mcarb-d" />C {cPct}%</span>
-                <span><span className="ldot mfat-d" />F {fPct}%</span>
-                <span style={{ marginLeft: "auto", color: Math.abs(total - form.calories) > 50 ? "#f9e27e" : "var(--muted)" }}>{total} / {form.calories} kcal</span>
-              </div>
-
-              <div style={{ borderTop: "1px solid var(--border)", margin: "18px 0 14px" }} />
-              <div className="form-grid">
-                <label>Daily Water Goal (ml)
-                  <input type="number" step="100" value={form.waterGoalMl} onChange={e => setG("waterGoalMl", Number(e.target.value))} />
-                </label>
-                <label>Weight Unit
-                  <select value={form.weightUnit} onChange={e => setG("weightUnit", e.target.value)}>
-                    <option value="kg">kg</option>
-                    <option value="lb">lb</option>
-                  </select>
-                </label>
-              </div>
-
-              <button className="btn-primary" style={{ marginTop: 14 }} onClick={() => { onSaveGoals(form); setSaved(true); setTimeout(() => setSaved(false), 2000); }}>
-                {saved ? "✓ Saved!" : "Save Goals"}
-              </button>
-            </div>
-          )}
-
-          {/* ── EXPORT TAB ── */}
-          {tab === "export" && (
-            <div className="settings-body">
-              <p style={{ fontSize: ".85rem", color: "var(--muted)", marginBottom: 14, lineHeight: 1.6 }}>
-                Download your tracked data and chat history. Open CSV files in Excel, Google Sheets, or Numbers.
-              </p>
-              <div className="export-grid">
-                <button className="export-btn" onClick={exportSleep} disabled={!counts.sleep}>
-                  <span className="export-icon" style={{ color: "var(--sleep)" }}>◐</span>
-                  <span className="export-name">Sleep</span>
-                  <span className="export-count">{counts.sleep} entries</span>
-                </button>
-                <button className="export-btn" onClick={exportDiet} disabled={!counts.diet}>
-                  <span className="export-icon" style={{ color: "var(--diet)" }}>◉</span>
-                  <span className="export-name">Diet</span>
-                  <span className="export-count">{counts.diet} entries</span>
-                </button>
-                <button className="export-btn" onClick={exportExercise} disabled={!counts.exercise}>
-                  <span className="export-icon" style={{ color: "var(--exercise)" }}>◆</span>
-                  <span className="export-name">Workouts</span>
-                  <span className="export-count">{counts.exercise} entries</span>
-                </button>
-                <button className="export-btn" onClick={exportSports} disabled={!counts.sports}>
-                  <span className="export-icon" style={{ color: "var(--sports)" }}>◇</span>
-                  <span className="export-name">Sports</span>
-                  <span className="export-count">{counts.sports} entries</span>
-                </button>
-                <button className="export-btn" onClick={exportWater} disabled={!counts.water}>
-                  <span className="export-icon" style={{ color: "#4db8cc" }}>◊</span>
-                  <span className="export-name">Water</span>
-                  <span className="export-count">{counts.water} entries</span>
-                </button>
-                <button className="export-btn" onClick={exportSupps} disabled={!counts.supplements}>
-                  <span className="export-icon" style={{ color: "#c4b5fd" }}>⊕</span>
-                  <span className="export-name">Supplements</span>
-                  <span className="export-count">{counts.supplements} entries</span>
-                </button>
-                <button className="export-btn" onClick={exportWeight} disabled={!counts.weight}>
-                  <span className="export-icon" style={{ color: "#a5f3b4" }}>⚖</span>
-                  <span className="export-name">Weight</span>
-                  <span className="export-count">{counts.weight} entries</span>
-                </button>
-                <button className="export-btn" onClick={exportChat} disabled={chatCount <= 1}>
-                  <span className="export-icon" style={{ color: "var(--accent)" }}>✦</span>
-                  <span className="export-name">AI Chat</span>
-                  <span className="export-count">{Math.max(0, chatCount - 1)} messages</span>
-                </button>
-              </div>
-              <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
-                <button className="btn-primary" onClick={exportAll}>⬇ All as CSV</button>
-                <button className="btn-secondary" onClick={exportJSON}>JSON Backup</button>
-              </div>
-              <p style={{ fontSize: ".75rem", color: "var(--muted)", marginTop: 12, lineHeight: 1.5 }}>
-                <strong style={{ color: "var(--text)" }}>JSON Backup</strong> includes everything (goals, data, chat) and can be used to restore in the Data tab.
-              </p>
-            </div>
-          )}
-
-          {/* ── DATA TAB ── */}
-          {tab === "data" && (
-            <div className="settings-body">
-              <div className="data-stats">
-                <div className="data-stat"><span className="data-stat-num">{totalEntries}</span><span className="data-stat-lbl">Total Entries</span></div>
-                <div className="data-stat"><span className="data-stat-num">{Math.max(0, chatCount - 1)}</span><span className="data-stat-lbl">Chat Messages</span></div>
-              </div>
-
-              <div className="data-action">
-                <div>
-                  <div className="data-action-title">📥 Restore from Backup</div>
-                  <div className="data-action-desc">Load a previously exported fitlog JSON file. This replaces all current data.</div>
-                </div>
-                <button className="btn-secondary" onClick={() => fileRef.current.click()}>Choose File</button>
-                <input ref={fileRef} type="file" accept=".json,application/json" style={{ display: "none" }} onChange={handleImportFile} />
-              </div>
-
-              <div className="data-action danger">
-                <div>
-                  <div className="data-action-title" style={{ color: "var(--exercise)" }}>⚠ Clear All Data</div>
-                  <div className="data-action-desc">Permanently delete all sleep, diet, workouts, sports, and chat history. Goals remain.</div>
-                </div>
-                <button className="btn-delete" onClick={() => {
-                  if (confirm("Delete ALL tracked data and chat history? This can't be undone.")) {
-                    if (confirm("Are you absolutely sure? Consider exporting a backup first.")) {
-                      onClearAll();
-                    }
-                  }
-                }} style={{ margin: 0 }}>Clear Everything</button>
-              </div>
-
-              <p style={{ fontSize: ".72rem", color: "var(--muted)", marginTop: 14, lineHeight: 1.6 }}>
-                Your data lives in your browser's storage on this device only. No cloud sync. Export a JSON backup regularly if you care about keeping it.
-              </p>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── AI COACH SECTION ────────────────────────────────────────────────────────
-const COACH_INITIAL_MSG = {
-  role: "assistant",
-  text: "Hey! I'm your AI coach. Ask me anything — best exercises for your goal, how to improve your sleep, what to eat before a workout, whether you should rest today. I'll use your actual logged data AND remember our past conversations to give you the best answer. 💪"
-};
+// ─── COACH TAB ────────────────────────────────────────────────────────────────
+const COACH_GREETING = { role: "assistant", text: "Hey! I'm your AI coach. Ask me anything — best exercises for your goal, how to improve your sleep, what to eat before a workout, whether you should rest today. I see your real fitness data and remember our chats. 💪", ts: Date.now() };
 
 function loadMessages() {
-  try {
-    const r = localStorage.getItem(STORAGE_KEY + "_chat");
-    const parsed = r ? JSON.parse(r) : null;
-    return Array.isArray(parsed) && parsed.length > 0 ? parsed : [COACH_INITIAL_MSG];
-  } catch { return [COACH_INITIAL_MSG]; }
+  try { const r = localStorage.getItem(STORAGE_KEY + "_chat"); const p = r ? JSON.parse(r) : null; return Array.isArray(p) && p.length ? p : [COACH_GREETING]; } catch { return [COACH_GREETING]; }
 }
-function saveMessages(m) { localStorage.setItem(STORAGE_KEY + "_chat", JSON.stringify(m)); }
+const saveMessages = m => localStorage.setItem(STORAGE_KEY + "_chat", JSON.stringify(m));
 
-function AICoachSection({ data, goals }) {
-  const [open, setOpen] = useState(false);
-  const [tab, setTab] = useState("chat");
-  const [loading, setLoading] = useState(false);
-  const [analysis, setAnalysis] = useState(null);
-  const [analysisError, setAnalysisError] = useState("");
+function CoachTab({ data, goals }) {
   const [messages, setMessages] = useState(loadMessages);
   const [input, setInput] = useState("");
-  const [chatLoading, setChatLoading] = useState(false);
-  const chatEndRef = useRef(null);
+  const [loading, setLoading] = useState(false);
+  const [showAnalysis, setShowAnalysis] = useState(false);
+  const [analysis, setAnalysis] = useState(null);
+  const [analysisLoad, setAnalysisLoad] = useState(false);
+  const [analysisErr, setAnalysisErr] = useState("");
+  const endRef = useRef(null);
 
-  // Persist messages whenever they change
   useEffect(() => { saveMessages(messages); }, [messages]);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, loading]);
 
-  const hasData = data.sleep.length > 0 || data.diet.length > 0 || data.exercise.length > 0 || data.sports.length > 0;
-  const statusColor = { good: "#a5f3b4", warning: "#f9e27e", critical: "#f97b6e" };
-  const statusBg = { good: "rgba(165,243,180,0.07)", warning: "rgba(249,226,126,0.07)", critical: "rgba(249,123,110,0.07)" };
-  const statusBorder = { good: "rgba(165,243,180,0.22)", warning: "rgba(249,226,126,0.22)", critical: "rgba(249,123,110,0.22)" };
+  const hasData = data.sleep.length || data.diet.length || data.exercise.length || data.sports.length;
 
-  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, chatLoading]);
-
-  function buildContext() {
+  function ctx() {
     const cut = new Date(); cut.setDate(cut.getDate() - 14);
-    const last14 = arr => arr.filter(i => new Date(i.date + "T00:00:00") >= cut);
+    const l14 = arr => arr.filter(i => new Date(i.date + "T00:00:00") >= cut);
     const today = getTodayStr();
-    const todayWaterMl = (data.water || []).filter(w => w.date === today).reduce((a, w) => a + w.ml, 0);
-    const todaySupps = (data.supplements || []).filter(s => s.date === today);
-    const recentWeights = (data.weight || []).slice(0, 5);
-    return `User goal: ${goals.goal}
-Calorie target: ${goals.calories}kcal | Protein: ${goals.protein}g | Carbs: ${goals.carbs}g | Fat: ${goals.fat}g | Water goal: ${goals.waterGoalMl}ml
-
-Sleep (last 14d): ${last14(data.sleep).map(s => `${s.date}: ${s.duration}h (${s.quality})`).join(", ") || "none"}
-Diet (last 14d): ${last14(data.diet).map(d => `${d.date} ${d.meal}: ${d.food} ${d.calories}kcal P${d.protein}g`).join(" | ") || "none"}
-Workouts (last 14d): ${last14(data.exercise).map(e => `${e.date}: ${e.label}`).join(", ") || "none"}
-Sports (last 14d): ${last14(data.sports).map(s => `${s.date}: ${s.sport} ${s.duration}min ${s.intensity}`).join(", ") || "none"}
-Body weight (recent): ${recentWeights.map(w => `${w.date}: ${w.weight}${w.unit||"kg"}`).join(", ") || "none"}
-Today's water: ${todayWaterMl}ml / ${goals.waterGoalMl}ml
-Today's supplements: ${todaySupps.map(s => s.name).join(", ") || "none yet"}`;
+    const todayWater = data.water.filter(w => w.date === today).reduce((a, w) => a + w.ml, 0);
+    return `Goal: ${goals.goal} | Cal: ${goals.calories} | P${goals.protein} C${goals.carbs} F${goals.fat} | Water target: ${goals.waterGoalMl}ml
+Sleep (14d): ${l14(data.sleep).map(s => `${s.date}:${s.duration}h(${s.quality})`).join(", ") || "none"}
+Diet (14d): ${l14(data.diet).map(d => `${d.date} ${d.meal}: ${d.food} ${d.calories}kcal P${d.protein}g`).join(" | ") || "none"}
+Workouts (14d): ${l14(data.exercise).map(e => `${e.date}: ${e.label}`).join(", ") || "none"}
+Sports (14d): ${l14(data.sports).map(s => `${s.date}: ${s.sport} ${s.duration}min ${s.intensity}`).join(", ") || "none"}
+Weight recent: ${data.weight.slice(0, 5).map(w => `${w.date}: ${w.weight}${w.unit||"kg"}`).join(", ") || "none"}
+Today water: ${todayWater}/${goals.waterGoalMl}ml
+Today supplements: ${data.supplements.filter(s => s.date === today).map(s => s.name).join(", ") || "none"}`;
   }
 
-  // Summarize old conversation chunks to preserve long-term memory without burning tokens.
-  // Triggers when there are >20 messages: it asks Claude to compress everything older
-  // than the last 20 into a single "previous conversation summary" assistant message.
-  async function maybeCompactMemory(updatedMessages) {
-    if (updatedMessages.length < 22) return updatedMessages; // 1 greeting + 21+ chat
-    // Check if a summary already exists
-    if (updatedMessages.some(m => m.summary)) {
-      // Replace summary if more than 30 unsummarized messages since
-      const summaryIdx = updatedMessages.findIndex(m => m.summary);
-      const afterSummary = updatedMessages.length - summaryIdx - 1;
-      if (afterSummary < 30) return updatedMessages;
+  async function compactIfNeeded(msgs) {
+    if (msgs.length < 22) return msgs;
+    if (msgs.some(m => m.summary)) {
+      const sIdx = msgs.findIndex(m => m.summary);
+      if (msgs.length - sIdx - 1 < 30) return msgs;
     }
-    const toSummarize = updatedMessages.slice(1, updatedMessages.length - 20);
-    const transcript = toSummarize.map(m => `${m.role.toUpperCase()}: ${m.text}`).join("\n\n");
+    const toSum = msgs.slice(1, msgs.length - 20);
+    const transcript = toSum.map(m => `${m.role.toUpperCase()}: ${m.text}`).join("\n\n");
     try {
-      const sumText = await callClaude({
-        system: "Summarize the following coaching conversation in 4-6 bullet points capturing: (1) what the user is working on, (2) advice the coach has given that's still relevant, (3) preferences or constraints the user has mentioned, (4) progress made. Be specific. No preamble.",
-        userText: transcript,
-        maxTokens: 400
-      });
-      const greeting = updatedMessages[0];
-      const summaryMsg = { role: "assistant", summary: true, text: `📝 *Previous conversation summary:*\n\n${sumText}`, ts: Date.now() };
-      const recent = updatedMessages.slice(-20);
-      return [greeting, summaryMsg, ...recent];
-    } catch {
-      return updatedMessages; // if summarization fails, just continue with full history
-    }
+      const sum = await callClaude({ system: "Summarize this coaching conversation in 4-6 bullet points: what the user works on, advice given, preferences, progress. Specific, no preamble.", userText: transcript, maxTokens: 400 });
+      return [msgs[0], { role: "assistant", summary: true, text: `📝 *Earlier conversation summary:*\n\n${sum}`, ts: Date.now() }, ...msgs.slice(-20)];
+    } catch { return msgs; }
   }
 
-  async function sendMessage() {
+  async function send() {
     const q = input.trim();
-    if (!q || chatLoading) return;
+    if (!q || loading) return;
     setInput("");
     let updated = [...messages, { role: "user", text: q, ts: Date.now() }];
     setMessages(updated);
-    setChatLoading(true);
+    setLoading(true);
     try {
-      // Compact if needed (replaces old chunk with a summary message)
-      updated = await maybeCompactMemory(updated);
+      updated = await compactIfNeeded(updated);
       setMessages(updated);
-
-      // Build messages for API: skip the initial greeting, include the summary if present
-      const recentHistory = updated.slice(1);
-      const apiMsgs = recentHistory.map(m => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.text }));
-      // Inject latest fitness data into the most recent user message so context stays fresh
-      const lastUserIdx = apiMsgs.map(m => m.role).lastIndexOf("user");
-      if (lastUserIdx >= 0) {
-        apiMsgs[lastUserIdx] = { role: "user", content: `[Current fitness data]\n${buildContext()}\n\n[My question]\n${apiMsgs[lastUserIdx].content}` };
-      }
-      const resp = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-haiku-4-5",
-          max_tokens: 800,
-          system: `You are an elite personal trainer and sports nutritionist. The user shares real fitness tracking data with you AND you have access to your full conversation history (including a summary of older chats). Reference past discussions naturally when relevant ("like we talked about last week..."). Give direct, specific, practical advice referencing their actual numbers. Use markdown: **bold** for key points, bullet lists for steps. Be concise — 2-4 short paragraphs. Be encouraging but honest. Their goal: ${goals.goal}.`,
-          messages: apiMsgs
-        })
+      const apiMsgs = updated.slice(1).map(m => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.text }));
+      const lastU = apiMsgs.map(m => m.role).lastIndexOf("user");
+      if (lastU >= 0) apiMsgs[lastU] = { role: "user", content: `[Current data]\n${ctx()}\n\n[My question]\n${apiMsgs[lastU].content}` };
+      const reply = await callClaude({
+        system: `You are an elite personal trainer and sports nutritionist. The user shares their real fitness tracking data with you AND you have access to your full conversation history (including a summary of older chats). Reference past discussions naturally. Give direct, specific advice with their actual numbers. Use markdown: **bold** for key points, bullet lists for steps. 2-4 short paragraphs max. Their goal: ${goals.goal}.`,
+        maxTokens: 800,
+        conversationMessages: apiMsgs
       });
-      const res = await resp.json();
-      const reply = res.content?.map(b => b.text || "").join("") || "Sorry, try again.";
-      setMessages(prev => [...prev, { role: "assistant", text: reply, ts: Date.now() }]);
+      setMessages(m => [...m, { role: "assistant", text: reply || "Sorry, try again.", ts: Date.now() }]);
     } catch {
-      setMessages(prev => [...prev, { role: "assistant", text: "Something went wrong. Please try again." }]);
+      setMessages(m => [...m, { role: "assistant", text: "Something went wrong. Try again.", ts: Date.now() }]);
     }
-    setChatLoading(false);
+    setLoading(false);
   }
 
   function clearChat() {
-    if (confirm("Clear all chat history? This can't be undone.")) {
-      setMessages([COACH_INITIAL_MSG]);
-    }
+    if (confirm("Clear all chat history? This can't be undone.")) setMessages([COACH_GREETING]);
   }
 
   async function runAnalysis() {
-    setLoading(true); setAnalysisError(""); setAnalysis(null);
+    setAnalysisLoad(true); setAnalysisErr("");
     try { setAnalysis(await analyzeAllData(data, goals)); }
-    catch { setAnalysisError("Analysis failed. Log some data and try again."); }
-    finally { setLoading(false); }
+    catch { setAnalysisErr("Couldn't analyze. Try again."); }
+    setAnalysisLoad(false);
   }
 
-  const suggestions = [
-    "Should I train today or rest?",
-    "What should I eat before my workout?",
-    "How can I improve my sleep?",
-    "Am I eating enough protein?",
-    "What's the best split for my goal?",
-  ];
+  const suggestions = ["Should I train today or rest?", "Am I eating enough protein?", "What should I eat pre-workout?", "How can I improve my sleep?"];
+  const statusColor = { good: "var(--good)", warning: "var(--warn)", critical: "var(--bad)" };
 
   return (
-    <div className="dash-section">
-      <button className="dash-section-toggle" onClick={() => setOpen(o => !o)}>
-        <span className="dash-section-label">✦ AI Coach</span>
-        <span className="dash-section-meta">{analysis ? `Score: ${analysis.overallScore}/10` : "Chat · Analysis"}</span>
-        <span className="dash-chevron">{open ? "▲" : "▼"}</span>
-      </button>
-
-      {open && (
-        <div style={{ borderTop: "1px solid var(--border)" }}>
-          <div className="coach-tabs">
-            <button className={`coach-tab ${tab === "chat" ? "active" : ""}`} onClick={() => setTab("chat")}>💬 Ask Coach</button>
-            <button className={`coach-tab ${tab === "analysis" ? "active" : ""}`} onClick={() => setTab("analysis")}>📊 Full Analysis</button>
-          </div>
-
-          {tab === "chat" && (
-            <div className="coach-chat-wrap">
-              <div className="chat-info-bar">
-                <span className="chat-info-label">{messages.length - 1} messages · saved on this device</span>
-                {messages.length > 1 && (
-                  <button className="chat-clear-btn" onClick={clearChat}>Clear chat</button>
-                )}
-              </div>
-              <div className="coach-messages">
-                {messages.map((m, i) => (
-                  <div key={i} className={`coach-msg ${m.role}`}>
-                    {m.role === "assistant" && <div className="coach-avatar">✦</div>}
-                    <div className="coach-bubble">
-                      <div className="md-content">{renderMarkdown(m.text)}</div>
-                    </div>
-                  </div>
-                ))}
-                {chatLoading && (
-                  <div className="coach-msg assistant">
-                    <div className="coach-avatar">✦</div>
-                    <div className="coach-bubble coach-typing"><span /><span /><span /></div>
-                  </div>
-                )}
-                <div ref={chatEndRef} />
-              </div>
-
-              {messages.length <= 1 && (
-                <div className="coach-suggestions">
-                  {suggestions.map((s, i) => (
-                    <button key={i} className="coach-suggestion" onClick={() => setInput(s)}>{s}</button>
-                  ))}
-                </div>
-              )}
-
-              <div className="coach-input-row">
-                <input
-                  className="coach-input"
-                  value={input}
-                  onChange={e => setInput(e.target.value)}
-                  onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }}}
-                  placeholder="Ask about training, diet, recovery…"
-                  disabled={chatLoading}
-                />
-                <button className="coach-send" onClick={sendMessage} disabled={!input.trim() || chatLoading}>
-                  {chatLoading ? <span className="spinner-dot" style={{ width: 12, height: 12 }} /> : "↑"}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {tab === "analysis" && (
-            <div style={{ padding: "18px" }}>
-              <p style={{ fontSize: "0.85rem", color: "var(--muted)", marginBottom: 14, lineHeight: 1.6 }}>
-                Deep analysis of your last 14 days vs your <strong style={{ color: "var(--text)" }}>{goals.goal}</strong> goal.
-              </p>
-              {!hasData && <div className="empty-msg" style={{ marginBottom: 14 }}>Log some data first.</div>}
-              <button className="btn-ai" onClick={runAnalysis} disabled={loading || !hasData}>
-                {loading ? <span className="loading-text"><span className="spinner-dot" />Analyzing…</span> : "✦ Run Full Analysis"}
-              </button>
-              {analysisError && <div className="error-msg" style={{ marginTop: 12 }}>{analysisError}</div>}
-              {analysis && (
-                <div className="coach-results">
-                  <div className="overall-score-card">
-                    <div className="score-ring">
-                      <svg viewBox="0 0 80 80">
-                        <circle cx="40" cy="40" r="34" fill="none" stroke="var(--border)" strokeWidth="6" />
-                        <circle cx="40" cy="40" r="34" fill="none" stroke="#6ee7f7" strokeWidth="6"
-                          strokeDasharray={`${(analysis.overallScore / 10) * 213.6} 213.6`} strokeLinecap="round" transform="rotate(-90 40 40)" />
-                      </svg>
-                      <div className="score-number">{analysis.overallScore}<span>/10</span></div>
-                    </div>
-                    <div><div className="score-label">Overall Score</div><p className="score-summary">{analysis.summary}</p></div>
-                  </div>
-                  <div className="priority-card">
-                    <div className="priority-label">⚡ This Week's #1 Priority</div>
-                    <div className="priority-text">{analysis.priorityAction}</div>
-                  </div>
-                  {analysis.sections.map((s, i) => (
-                    <div key={i} className="coach-section" style={{ background: statusBg[s.status], border: `1px solid ${statusBorder[s.status]}` }}>
-                      <div className="coach-section-header">
-                        <div className="coach-section-title">{s.category}</div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <span style={{ fontSize: "0.85rem", fontWeight: 600, color: statusColor[s.status] }}>{s.score}/10</span>
-                          <span style={{ width: 8, height: 8, borderRadius: "50%", background: statusColor[s.status], display: "inline-block" }} />
-                        </div>
-                      </div>
-                      <p className="coach-insight">{s.insight}</p>
-                      <div className="coach-tips">{s.tips.map((tip, j) => (
-                        <div key={j} className="coach-tip">
-                          <span style={{ color: statusColor[s.status], fontWeight: 700, flexShrink: 0 }}>→</span>
-                          <span>{tip}</span>
-                        </div>
-                      ))}</div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+    <div className="coach-wrap">
+      <div className="coach-bar">
+        <div className="coach-bar-l">
+          <span className="coach-bar-title">AI Coach</span>
+          <span className="muted small">{messages.length - 1} messages</span>
         </div>
-      )}
-    </div>
-  );
-}
-
-// ─── RING CHART ───────────────────────────────────────────────────────────────
-function RingChart({ pct, color, size = 88, stroke = 8, label, value, unit }) {
-  const r = (size - stroke) / 2;
-  const circ = 2 * Math.PI * r;
-  const filled = Math.min(1, pct / 100) * circ;
-  return (
-    <div className="ring-wrap">
-      <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
-        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="var(--surface2)" strokeWidth={stroke} />
-        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth={stroke}
-          strokeDasharray={`${filled} ${circ}`} strokeLinecap="round"
-          style={{ transition: "stroke-dasharray 0.8s cubic-bezier(.4,0,.2,1)", filter: `drop-shadow(0 0 6px ${color}88)` }} />
-      </svg>
-      <div className="ring-center">
-        <div className="ring-val" style={{ color }}>{value}<span className="ring-unit">{unit}</span></div>
-        <div className="ring-pct">{pct > 0 ? pct + "%" : ""}</div>
-      </div>
-      <div className="ring-label">{label}</div>
-    </div>
-  );
-}
-
-// ─── DASHBOARD ────────────────────────────────────────────────────────────────
-function Dashboard({ data, goals, onSaveGoals, onClearAll, onImport }) {
-  const today = getTodayStr();
-  const now = new Date();
-  const last7 = arr => arr.filter(i => (now - new Date(i.date + "T00:00:00")) / 86400000 <= 7);
-  const todaySleep = data.sleep.filter(s => s.date === today);
-  const todayDiet = data.diet.filter(s => s.date === today);
-  const todayExercise = data.exercise.filter(s => s.date === today);
-  const todaySports = data.sports.filter(s => s.date === today);
-  const avgSleep = last7(data.sleep).length
-    ? +(last7(data.sleep).reduce((a, s) => a + s.duration, 0) / last7(data.sleep).length).toFixed(1) : 0;
-  const todayCalIn = todayDiet.reduce((a, m) => a + m.calories, 0);
-  const todayProtein = todayDiet.reduce((a, m) => a + (m.protein || 0), 0);
-  const todayCarbs = todayDiet.reduce((a, m) => a + (m.carbs || 0), 0);
-  const todayFat = todayDiet.reduce((a, m) => a + (m.fat || 0), 0);
-  const todayCalOut = todaySports.reduce((a, e) => a + (e.calories || 0), 0);
-  const todayWaterMl = (data.water || []).filter(w => w.date === today).reduce((a, w) => a + w.ml, 0);
-  const waterPct = goals.waterGoalMl > 0 ? Math.min(100, Math.round((todayWaterMl / goals.waterGoalMl) * 100)) : 0;
-  const totalWorkouts = last7(data.exercise).length + last7(data.sports).length;
-  const calPct = goals.calories > 0 ? Math.min(100, Math.round((todayCalIn / goals.calories) * 100)) : 0;
-  const prtPct = goals.protein > 0 ? Math.min(100, Math.round((todayProtein / goals.protein) * 100)) : 0;
-  const carbPct = goals.carbs > 0 ? Math.min(100, Math.round((todayCarbs / goals.carbs) * 100)) : 0;
-  const fatPct = goals.fat > 0 ? Math.min(100, Math.round((todayFat / goals.fat) * 100)) : 0;
-  const sleepPct = Math.min(100, Math.round((avgSleep / 8) * 100));
-  const hr = now.getHours();
-  const greeting = hr < 5 ? "Still up?" : hr < 12 ? "Good morning" : hr < 17 ? "Good afternoon" : hr < 21 ? "Good evening" : "Good night";
-  const recentAll = [
-    ...data.sleep.map(i => ({ ...i, _type: "sleep" })),
-    ...data.diet.map(i => ({ ...i, _type: "diet" })),
-    ...data.exercise.map(i => ({ ...i, _type: "exercise" })),
-    ...data.sports.map(i => ({ ...i, _type: "sports" })),
-  ].sort((a, b) => b.id - a.id).slice(0, 6);
-  const typeColor = { sleep: "var(--sleep)", diet: "var(--diet)", exercise: "var(--exercise)", sports: "var(--sports)" };
-  const typeBg = { sleep: "rgba(110,231,247,.1)", diet: "rgba(249,226,126,.1)", exercise: "rgba(249,123,110,.1)", sports: "rgba(165,243,180,.1)" };
-  const typeIcon = { sleep: "◐", diet: "◉", exercise: "◆", sports: "◇" };
-
-  return (
-    <div className="dashboard">
-
-      {/* HERO */}
-      <div className="db-hero">
-        <div className="db-hero-glow" />
-        <div className="db-hero-inner">
-          <div className="db-hero-top">
-            <div>
-              <p className="db-hero-date">{now.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}</p>
-              <h2 className="db-hero-greeting">{greeting} 👋</h2>
-            </div>
-            <div className="db-goal-pill">{goals.goal}</div>
-          </div>
-          <div className="db-rings">
-            <RingChart pct={calPct} color="#f9e27e" value={todayCalIn || "—"} unit="" label="Calories" />
-            <RingChart pct={prtPct} color="#c4b5fd" value={todayProtein || "—"} unit={todayProtein ? "g" : ""} label="Protein" />
-            <RingChart pct={waterPct} color="#4db8cc" value={todayWaterMl ? (todayWaterMl >= 1000 ? (todayWaterMl/1000).toFixed(1) : todayWaterMl) : "—"} unit={todayWaterMl ? (todayWaterMl >= 1000 ? "L" : "ml") : ""} label="Water" />
-            <RingChart pct={sleepPct} color="#6ee7f7" value={avgSleep || "—"} unit={avgSleep ? "h" : ""} label="Avg Sleep" />
-          </div>
+        <div className="coach-bar-r">
+          <button className="link-btn" onClick={() => setShowAnalysis(s => !s)}>{showAnalysis ? "← Back to chat" : "📊 Full analysis"}</button>
+          {!showAnalysis && messages.length > 1 && <button className="link-btn" onClick={clearChat}>Clear</button>}
         </div>
       </div>
 
-      {/* DAILY INSIGHT */}
-      <DailyInsightCard data={data} goals={goals} />
-
-      {/* AI COACH */}
-      <AICoachSection data={data} goals={goals} />
-
-      {/* BODY WEIGHT */}
-      <BodyWeightQuickCard data={data} goals={goals} onAddWeight={(e) => window.dispatchEvent(new CustomEvent("fitlog-add-weight", { detail: e }))} />
-
-      {/* NUTRITION CARD */}
-      {todayCalIn > 0 && (
-        <div className="db-card">
-          <div className="db-card-hd">
-            <span className="db-card-title">Today's Nutrition</span>
-            <span className="db-card-badge" style={{ color: "#f9e27e" }}>{todayCalIn} kcal</span>
-          </div>
-          <div className="db-macros">
-            {[
-              { label: "Calories", val: todayCalIn, target: goals.calories, unit: "kcal", color: "#f9e27e", pct: calPct },
-              { label: "Protein", val: todayProtein, target: goals.protein, unit: "g", color: "#c4b5fd", pct: prtPct },
-              { label: "Carbs", val: todayCarbs, target: goals.carbs, unit: "g", color: "#f97b6e", pct: carbPct },
-              { label: "Fat", val: todayFat, target: goals.fat, unit: "g", color: "#a5f3b4", pct: fatPct },
-            ].map(m => (
-              <div key={m.label} className="db-macro-row">
-                <div className="db-macro-info">
-                  <span className="db-macro-label">{m.label}</span>
-                  <span className="db-macro-nums" style={{ color: m.color }}>{m.val}{m.unit} <span className="db-macro-target">/ {m.target}{m.unit}</span></span>
-                </div>
-                <div className="db-macro-track">
-                  <div className="db-macro-fill" style={{ width: `${m.pct}%`, background: m.color, boxShadow: `0 0 8px ${m.color}55` }} />
+      {!showAnalysis && (
+        <>
+          <div className="msgs">
+            {messages.map((m, i) => (
+              <div key={i} className={`msg ${m.role}`}>
+                {m.role === "assistant" && <div className="avatar">✦</div>}
+                <div className="bubble">
+                  <div className="md">{renderMarkdown(m.text)}</div>
                 </div>
               </div>
             ))}
+            {loading && (
+              <div className="msg assistant">
+                <div className="avatar">✦</div>
+                <div className="bubble typing"><span /><span /><span /></div>
+              </div>
+            )}
+            <div ref={endRef} />
           </div>
-          {todayCalOut > 0 && (
-            <div className="db-net-cal">
-              <span>Net calories</span>
-              <span style={{ color: "#a5f3b4", fontWeight: 600 }}>{todayCalIn - todayCalOut} kcal <span style={{ color: "var(--muted)", fontWeight: 400 }}>({todayCalOut} burned)</span></span>
+
+          {messages.length <= 1 && (
+            <div className="suggs">
+              {suggestions.map((s, i) => <button key={i} className="sugg" onClick={() => setInput(s)}>{s}</button>)}
             </div>
+          )}
+
+          <div className="composer">
+            <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} placeholder="Ask about training, food, recovery…" disabled={loading} />
+            <button className="send" onClick={send} disabled={!input.trim() || loading}>{loading ? <span className="spinner" /> : "↑"}</button>
+          </div>
+        </>
+      )}
+
+      {showAnalysis && (
+        <div className="stack analysis-stack">
+          <Card title="Full data analysis" sub={`Reviews your last 14 days vs your ${goals.goal} goal`}>
+            {!hasData ? <Empty title="No data yet" hint="Log some sleep, food, or workouts first" /> : (
+              <button className="btn full" onClick={runAnalysis} disabled={analysisLoad}>
+                {analysisLoad ? <><span className="spinner" />Analyzing…</> : analysis ? "Re-run analysis" : "Run analysis"}
+              </button>
+            )}
+            {analysisErr && <div className="err">{analysisErr}</div>}
+          </Card>
+
+          {analysis && (
+            <>
+              <Card>
+                <div className="score-row">
+                  <div className="score-ring">
+                    <svg viewBox="0 0 80 80">
+                      <circle cx="40" cy="40" r="34" fill="none" stroke="var(--track)" strokeWidth="6" />
+                      <circle cx="40" cy="40" r="34" fill="none" stroke="var(--accent)" strokeWidth="6" strokeDasharray={`${(analysis.overallScore / 10) * 213.6} 213.6`} strokeLinecap="round" transform="rotate(-90 40 40)" />
+                    </svg>
+                    <div className="score-n">{analysis.overallScore}<span>/10</span></div>
+                  </div>
+                  <div>
+                    <div className="card-title" style={{ marginBottom: 4 }}>Overall score</div>
+                    <p className="md-p">{analysis.summary}</p>
+                  </div>
+                </div>
+              </Card>
+
+              <Card className="priority-card">
+                <div className="priority-label">⚡ This week's #1 priority</div>
+                <p className="priority-text">{analysis.priorityAction}</p>
+              </Card>
+
+              {analysis.sections.map((s, i) => (
+                <Card key={i}>
+                  <div className="ana-hd">
+                    <span className="card-title">{s.category}</span>
+                    <div className="ana-score">
+                      <span style={{ color: statusColor[s.status] }}>{s.score}/10</span>
+                      <span className="ana-dot" style={{ background: statusColor[s.status] }} />
+                    </div>
+                  </div>
+                  <p className="muted" style={{ lineHeight: 1.6, fontSize: ".88rem", marginTop: 8 }}>{s.insight}</p>
+                  <ul className="ana-tips">
+                    {s.tips.map((t, j) => <li key={j}><span className="ana-arrow">→</span><span>{t}</span></li>)}
+                  </ul>
+                </Card>
+              ))}
+            </>
           )}
         </div>
       )}
-
-      {/* TODAY'S ACTIVITY */}
-      <div className="db-card">
-        <div className="db-card-hd"><span className="db-card-title">Today's Activity</span></div>
-        {todaySleep.length + todayDiet.length + todayExercise.length + todaySports.length === 0
-          ? <div className="db-empty">Nothing logged yet — go crush it! 💪</div>
-          : <div className="db-tiles">
-              {todaySleep.map(s => (
-                <div key={s.id} className="db-tile" style={{ "--tc": "#6ee7f7", "--tb": "rgba(110,231,247,.07)" }}>
-                  <span className="db-tile-icon">◐</span>
-                  <span className="db-tile-val">{s.duration}h</span>
-                  <span className="db-tile-lbl">{s.quality} sleep</span>
-                </div>
-              ))}
-              {todayExercise.map(e => (
-                <div key={e.id} className="db-tile" style={{ "--tc": "#f97b6e", "--tb": "rgba(249,123,110,.07)" }}>
-                  <span className="db-tile-icon">◆</span>
-                  <span className="db-tile-val" style={{ fontSize: "0.8rem" }}>{e.label}</span>
-                  <span className="db-tile-lbl">Workout</span>
-                </div>
-              ))}
-              {todaySports.map(s => (
-                <div key={s.id} className="db-tile" style={{ "--tc": "#a5f3b4", "--tb": "rgba(165,243,180,.07)" }}>
-                  <span className="db-tile-icon">◇</span>
-                  <span className="db-tile-val" style={{ fontSize: "0.8rem" }}>{s.sport}</span>
-                  <span className="db-tile-lbl">{s.duration}min · {s.calories}kcal</span>
-                </div>
-              ))}
-              {todayDiet.map(m => (
-                <div key={m.id} className="db-tile" style={{ "--tc": "#f9e27e", "--tb": "rgba(249,226,126,.07)" }}>
-                  <span className="db-tile-icon">◉</span>
-                  <span className="db-tile-val" style={{ fontSize: "0.8rem" }}>{m.meal}</span>
-                  <span className="db-tile-lbl">{m.calories} kcal</span>
-                </div>
-              ))}
-            </div>
-        }
-      </div>
-
-      {/* SETTINGS (Goals · Export · Data) */}
-      <SettingsSection data={data} goals={goals} onSaveGoals={onSaveGoals} onClearAll={onClearAll} onImport={onImport} />
-
-      {/* RECENT FEED */}
-      <div className="db-card">
-        <div className="db-card-hd"><span className="db-card-title">Recent Entries</span></div>
-        {recentAll.length === 0
-          ? <div className="db-empty">No entries yet — start logging!</div>
-          : <div className="db-feed">
-              {recentAll.map((item, i) => (
-                <div key={item.id} className="db-feed-item">
-                  <div className="db-feed-left">
-                    <div className="db-feed-icon" style={{ color: typeColor[item._type], background: typeBg[item._type] }}>{typeIcon[item._type]}</div>
-                    {i < recentAll.length - 1 && <div className="db-feed-line" />}
-                  </div>
-                  <div className="db-feed-body">
-                    <div className="db-feed-text">
-                      {item._type === "sleep" && `${item.duration}h sleep · ${item.quality}`}
-                      {item._type === "diet" && `${item.meal}: ${item.food.slice(0, 38)}${item.food.length > 38 ? "…" : ""}`}
-                      {item._type === "exercise" && item.label}
-                      {item._type === "sports" && `${item.sport}${item.result ? " · " + item.result : ""} · ${item.calories} kcal`}
-                    </div>
-                    <div className="db-feed-date">{formatDate(item.date)}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-        }
-      </div>
-
     </div>
+  );
+}
+
+// ─── SETTINGS TAB ─────────────────────────────────────────────────────────────
+function SettingsTab({ data, goals, onSaveGoals, onClearAll, onImport }) {
+  const [section, setSection] = useState("goals");
+
+  return (
+    <div className="stack">
+      <div className="subtabs">
+        <button className={`subtab ${section === "goals" ? "active" : ""}`} onClick={() => setSection("goals")}>⊙ Goals</button>
+        <button className={`subtab ${section === "export" ? "active" : ""}`} onClick={() => setSection("export")}>⬇ Export</button>
+        <button className={`subtab ${section === "data" ? "active" : ""}`} onClick={() => setSection("data")}>⌗ Data</button>
+      </div>
+      {section === "goals" && <GoalsSettings goals={goals} onSave={onSaveGoals} />}
+      {section === "export" && <ExportSettings data={data} goals={goals} />}
+      {section === "data" && <DataSettings data={data} onClearAll={onClearAll} onImport={onImport} />}
+    </div>
+  );
+}
+
+function GoalsSettings({ goals, onSave }) {
+  const [form, setForm] = useState(goals);
+  const [saved, setSaved] = useState(false);
+  useEffect(() => { setForm(goals); }, [goals]);
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const autoCalc = (cal, goal) => {
+    if (goal === "Build Muscle") return { protein: Math.round(cal*.30/4), carbs: Math.round(cal*.45/4), fat: Math.round(cal*.25/9) };
+    if (goal === "Lose Fat") return { protein: Math.round(cal*.35/4), carbs: Math.round(cal*.35/4), fat: Math.round(cal*.30/9) };
+    if (goal === "Improve Endurance") return { protein: Math.round(cal*.20/4), carbs: Math.round(cal*.55/4), fat: Math.round(cal*.25/9) };
+    if (goal === "Athletic Performance") return { protein: Math.round(cal*.25/4), carbs: Math.round(cal*.50/4), fat: Math.round(cal*.25/9) };
+    return { protein: Math.round(cal*.25/4), carbs: Math.round(cal*.45/4), fat: Math.round(cal*.30/9) };
+  };
+  const total = form.protein*4 + form.carbs*4 + form.fat*9;
+  const pPct = Math.round((form.protein*4/total)*100);
+  const cPct = Math.round((form.carbs*4/total)*100);
+  const fPct = Math.round((form.fat*9/total)*100);
+
+  return (
+    <Card title="Goals & targets">
+      <div className="field-grid">
+        <label>Primary goal<select value={form.goal} onChange={e => set("goal", e.target.value)}>{fitnessGoals.map(g => <option key={g}>{g}</option>)}</select></label>
+        <label>Daily calories<input type="number" value={form.calories} onChange={e => set("calories", +e.target.value)} /></label>
+      </div>
+
+      <div className="row-between">
+        <span className="lbl">Macros</span>
+        <button className="link-btn" onClick={() => setForm(f => ({ ...f, ...autoCalc(f.calories, f.goal) }))}>Auto-calc for {form.goal}</button>
+      </div>
+      <div className="field-grid three">
+        <label>Protein (g)<input type="number" value={form.protein} onChange={e => set("protein", +e.target.value)} /></label>
+        <label>Carbs (g)<input type="number" value={form.carbs} onChange={e => set("carbs", +e.target.value)} /></label>
+        <label>Fat (g)<input type="number" value={form.fat} onChange={e => set("fat", +e.target.value)} /></label>
+      </div>
+
+      <div className="macro-bar">
+        <div className="macro-seg" style={{ width: `${pPct}%`, background: "#b4a8e8" }} />
+        <div className="macro-seg" style={{ width: `${cPct}%`, background: "#f9c97e" }} />
+        <div className="macro-seg" style={{ width: `${fPct}%`, background: "#f47e6e" }} />
+      </div>
+      <div className="legend">
+        <span><span className="dot" style={{ background: "#b4a8e8" }} />Protein {pPct}%</span>
+        <span><span className="dot" style={{ background: "#f9c97e" }} />Carbs {cPct}%</span>
+        <span><span className="dot" style={{ background: "#f47e6e" }} />Fat {fPct}%</span>
+        <span className="muted" style={{ marginLeft: "auto" }}>{total} / {form.calories} kcal</span>
+      </div>
+
+      <div className="divider" />
+      <div className="field-grid">
+        <label>Daily water (ml)<input type="number" step="100" value={form.waterGoalMl} onChange={e => set("waterGoalMl", +e.target.value)} /></label>
+        <label>Weight unit<select value={form.weightUnit} onChange={e => set("weightUnit", e.target.value)}><option value="kg">kg</option><option value="lb">lb</option></select></label>
+      </div>
+
+      <button className="btn full" onClick={() => { onSave(form); setSaved(true); setTimeout(() => setSaved(false), 2000); }}>{saved ? "✓ Saved" : "Save goals"}</button>
+    </Card>
+  );
+}
+
+function ExportSettings({ data, goals }) {
+  const esc = v => v == null ? "" : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
+  const csv = (rows, h) => [h.join(","), ...rows.map(r => h.map(k => esc(r[k])).join(","))].join("\n");
+  const dl = (name, content, mime = "text/csv") => {
+    const blob = new Blob([content], { type: `${mime};charset=utf-8` });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(a.href);
+  };
+  const t = getTodayStr();
+  const dlSleep = () => dl(`fitlog-sleep-${t}.csv`, csv(data.sleep, ["date","duration","bedtime","wakeTime","quality","notes"]));
+  const dlDiet = () => dl(`fitlog-diet-${t}.csv`, csv(data.diet, ["date","meal","food","calories","protein","carbs","fat","notes"]));
+  const dlExer = () => dl(`fitlog-workouts-${t}.csv`, csv(data.exercise, ["date","label","text"]));
+  const dlSp = () => dl(`fitlog-sports-${t}.csv`, csv(data.sports, ["date","sport","duration","intensity","calories","result","opponent","score","notes"]));
+  const dlWt = () => dl(`fitlog-weight-${t}.csv`, csv(data.weight, ["date","weight","unit"]));
+  const dlWater = () => dl(`fitlog-water-${t}.csv`, csv(data.water.map(w => ({ ...w, time: w.ts ? new Date(w.ts).toISOString() : "" })), ["date","time","ml"]));
+  const dlSupp = () => dl(`fitlog-supplements-${t}.csv`, csv(data.supplements.map(s => ({ ...s, time: s.ts ? new Date(s.ts).toISOString() : "" })), ["date","time","name","dose"]));
+  const dlChat = () => {
+    try { const msgs = JSON.parse(localStorage.getItem(STORAGE_KEY + "_chat") || "[]");
+      const rows = msgs.map(m => ({ timestamp: m.ts ? new Date(m.ts).toISOString() : "", role: m.role, text: m.text }));
+      dl(`fitlog-chat-${t}.csv`, csv(rows, ["timestamp","role","text"]));
+    } catch { alert("Could not export chat."); }
+  };
+  const dlAll = () => {
+    [dlSleep, dlDiet, dlExer, dlSp, dlWt, dlWater, dlSupp, dlChat].forEach((fn, i) => setTimeout(fn, i * 200));
+  };
+  const dlJson = () => dl(`fitlog-backup-${t}.json`, JSON.stringify({ exportedAt: new Date().toISOString(), goals, data, chat: JSON.parse(localStorage.getItem(STORAGE_KEY + "_chat") || "[]") }, null, 2), "application/json");
+
+  let chatCount = 0;
+  try { chatCount = JSON.parse(localStorage.getItem(STORAGE_KEY + "_chat") || "[]").length; } catch {}
+
+  const cats = [
+    { label: "Sleep", icon: "◐", n: data.sleep.length, fn: dlSleep },
+    { label: "Meals", icon: "◉", n: data.diet.length, fn: dlDiet },
+    { label: "Workouts", icon: "◆", n: data.exercise.length, fn: dlExer },
+    { label: "Sports", icon: "◇", n: data.sports.length, fn: dlSp },
+    { label: "Weight", icon: "⚖", n: data.weight.length, fn: dlWt },
+    { label: "Water", icon: "◊", n: data.water.length, fn: dlWater },
+    { label: "Supps", icon: "⊕", n: data.supplements.length, fn: dlSupp },
+    { label: "Chat", icon: "✦", n: Math.max(0, chatCount - 1), fn: dlChat },
+  ];
+
+  return (
+    <Card title="Export your data" sub="CSVs open in Excel, Google Sheets, Numbers">
+      <div className="exp-grid">
+        {cats.map(c => (
+          <button key={c.label} className="exp-card" onClick={c.fn} disabled={!c.n}>
+            <span className="exp-icon">{c.icon}</span>
+            <span className="exp-name">{c.label}</span>
+            <span className="exp-n">{c.n}</span>
+          </button>
+        ))}
+      </div>
+      <div className="row" style={{ marginTop: 14 }}>
+        <button className="btn flex" onClick={dlAll}>⬇ All as CSV</button>
+        <button className="btn-ghost" onClick={dlJson}>JSON backup</button>
+      </div>
+      <p className="muted small" style={{ marginTop: 12 }}>JSON backup includes everything and can be restored from the Data tab.</p>
+    </Card>
+  );
+}
+
+function DataSettings({ data, onClearAll, onImport }) {
+  const fileRef = useRef();
+  const total = Object.values(data).reduce((a, arr) => a + arr.length, 0);
+  let chatCount = 0;
+  try { chatCount = Math.max(0, JSON.parse(localStorage.getItem(STORAGE_KEY + "_chat") || "[]").length - 1); } catch {}
+
+  function importFile(e) {
+    const f = e.target.files[0]; if (!f) return;
+    const r = new FileReader();
+    r.onload = ev => {
+      try {
+        const p = JSON.parse(ev.target.result);
+        if (!p.data || !p.goals) throw new Error();
+        if (!confirm("This will REPLACE all your current data with the backup. Continue?")) return;
+        onImport(p);
+        alert("Backup restored.");
+      } catch { alert("Couldn't read that file. Use a fitlog JSON backup."); }
+    };
+    r.readAsText(f);
+    e.target.value = "";
+  }
+
+  return (
+    <>
+      <Card title="Your data">
+        <div className="stat-row">
+          <div className="stat"><div className="stat-n">{total}</div><div className="stat-l">Total entries</div></div>
+          <div className="stat"><div className="stat-n">{chatCount}</div><div className="stat-l">Chat messages</div></div>
+        </div>
+      </Card>
+
+      <Card title="📥 Restore backup" sub="Load a fitlog JSON file. Replaces current data.">
+        <button className="btn-ghost full" onClick={() => fileRef.current.click()}>Choose file…</button>
+        <input ref={fileRef} type="file" accept=".json,application/json" hidden onChange={importFile} />
+      </Card>
+
+      <Card title="⚠ Danger zone" className="danger-card">
+        <p className="muted" style={{ marginBottom: 12, fontSize: ".85rem", lineHeight: 1.6 }}>
+          Permanently delete all sleep, meals, workouts, sports, water, supplements, weight, and chat history. Goals remain. <strong>Export a backup first.</strong>
+        </p>
+        <button className="btn-danger full" onClick={() => { if (confirm("Delete ALL tracked data and chat history?") && confirm("Are you absolutely sure?")) onClearAll(); }}>Clear everything</button>
+      </Card>
+
+      <p className="muted small center" style={{ marginTop: 8 }}>Your data lives in your browser's storage on this device only. No cloud sync.</p>
+    </>
   );
 }
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function FitnessTracker() {
-  const [activeTab, setActiveTab] = useState("Dashboard");
+  const [activeTab, setActiveTab] = useState("Home");
+  const [logSub, setLogSub] = useState(null);
   const [data, setData] = useState(loadData);
   const [goals, setGoals] = useState(loadGoals);
   useEffect(() => { saveData(data); }, [data]);
   useEffect(() => { saveGoals(goals); }, [goals]);
+
   const addEntry = type => entry => setData(d => ({ ...d, [type]: [entry, ...(d[type] || [])] }));
   const deleteEntry = type => id => setData(d => ({ ...d, [type]: (d[type] || []).filter(e => e.id !== id) }));
-  const clearAllData = () => {
+  const clearAll = () => {
     setData(defaultData);
     localStorage.removeItem(STORAGE_KEY + "_chat");
     setTimeout(() => window.location.reload(), 100);
   };
-  const importData = (backup) => {
+  const importData = backup => {
     if (backup.data) setData({ ...defaultData, ...backup.data });
     if (backup.goals) setGoals({ ...defaultGoals, ...backup.goals });
     if (backup.chat) localStorage.setItem(STORAGE_KEY + "_chat", JSON.stringify(backup.chat));
     setTimeout(() => window.location.reload(), 100);
   };
 
-  // Allow Trends tab's inline weight form to add a weight entry without prop drilling
-  useEffect(() => {
-    const handler = (e) => addEntry("weight")(e.detail);
-    window.addEventListener("fitlog-add-weight", handler);
-    return () => window.removeEventListener("fitlog-add-weight", handler);
-  }, []);
+  function navTo(tab, sub) {
+    setActiveTab(tab);
+    if (sub) setLogSub(sub);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
 
   return (
     <>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap');
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-        :root { --bg:#0e0f14; --surface:#16181f; --surface2:#1e2029; --border:#2a2d38; --text:#e8eaf0; --muted:#7a7e94; --accent:#6ee7f7; --sleep:#6ee7f7; --diet:#f9e27e; --exercise:#f97b6e; --sports:#a5f3b4; --radius:14px; }
-        body { background:var(--bg); color:var(--text); font-family:'DM Sans',sans-serif; }
-        .app { min-height:100vh; display:flex; flex-direction:column; max-width:860px; margin:0 auto; padding:0 16px 100px; }
-        .app-header { padding:28px 0 20px; display:flex; align-items:baseline; gap:12px; }
-        .app-header h1 { font-family:'DM Serif Display',serif; font-size:2rem; letter-spacing:-0.5px; background:linear-gradient(135deg,#e8eaf0 30%,#6ee7f7); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
-        .app-header p { color:var(--muted); font-size:0.85rem; font-weight:300; }
-        .tabs { display:flex; gap:4px; background:var(--surface); border-radius:12px; padding:5px; margin-bottom:24px; border:1px solid var(--border); overflow-x:auto; scrollbar-width:none; }
-        .tabs::-webkit-scrollbar { display:none; }
-        .tab-btn { flex:1; min-width:76px; padding:9px 10px; border:none; background:transparent; color:var(--muted); font-family:'DM Sans',sans-serif; font-size:0.78rem; font-weight:500; border-radius:8px; cursor:pointer; transition:all .2s; white-space:nowrap; display:flex; align-items:center; justify-content:center; gap:5px; }
-        .tab-btn.active { background:var(--surface2); color:var(--text); box-shadow:0 1px 3px rgba(0,0,0,.4); }
-        .tab-btn:hover:not(.active) { color:var(--text); }
-        .form-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:24px; margin-bottom:24px; }
-        .form-title { font-family:'DM Serif Display',serif; font-size:1.3rem; margin-bottom:18px; color:var(--text); display:flex; align-items:center; gap:10px; }
-        .ai-badge { font-family:'DM Sans',sans-serif; font-size:0.68rem; font-weight:600; background:linear-gradient(135deg,#6ee7f7,#a5f3b4); color:#0a1214; padding:3px 9px; border-radius:20px; letter-spacing:.05em; }
-        .form-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:14px; }
-        @media (max-width:560px) { .form-grid { grid-template-columns:1fr; } }
-        label { display:flex; flex-direction:column; gap:6px; font-size:.78rem; font-weight:500; color:var(--muted); letter-spacing:.03em; text-transform:uppercase; }
-        input,select,textarea { background:var(--surface2); border:1px solid var(--border); border-radius:8px; color:var(--text); font-family:'DM Sans',sans-serif; font-size:.92rem; padding:10px 12px; outline:none; transition:border-color .2s; width:100%; }
-        input:focus,select:focus,textarea:focus { border-color:var(--accent); }
-        textarea { resize:vertical; min-height:72px; }
-        select option { background:var(--surface2); }
-        .duration-badge { display:inline-block; background:rgba(110,231,247,.12); color:var(--sleep); border:1px solid rgba(110,231,247,.25); border-radius:20px; padding:5px 14px; font-size:.85rem; margin-bottom:14px; }
-        .mode-toggle { display:flex; gap:6px; margin-bottom:16px; }
-        .mode-btn { flex:1; padding:10px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; color:var(--muted); font-family:'DM Sans',sans-serif; font-size:.82rem; font-weight:500; cursor:pointer; transition:all .2s; }
-        .mode-btn.active { background:rgba(110,231,247,.08); border-color:rgba(110,231,247,.4); color:var(--sleep); }
-        .image-upload-area { border:2px dashed var(--border); border-radius:10px; min-height:140px; display:flex; align-items:center; justify-content:center; cursor:pointer; margin-bottom:14px; overflow:hidden; transition:border-color .2s; }
-        .image-upload-area:hover { border-color:var(--accent); }
-        .upload-prompt { display:flex; flex-direction:column; align-items:center; gap:8px; color:var(--muted); font-size:.88rem; }
-        .upload-icon { font-size:2.2rem; }
-        .food-preview { width:100%; max-height:220px; object-fit:cover; }
-        .ai-result { background:rgba(110,231,247,.05); border:1px solid rgba(110,231,247,.2); border-radius:12px; padding:18px; margin-top:4px; }
-        .ai-result-title { font-size:.72rem; font-weight:600; color:var(--sleep); letter-spacing:.09em; text-transform:uppercase; margin-bottom:8px; }
-        .ai-food-name { font-size:1rem; font-weight:500; color:var(--text); margin-bottom:14px; line-height:1.4; }
-        .macro-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-bottom:12px; }
-        .macro-chip { background:var(--surface2); border-radius:10px; padding:10px 8px; text-align:center; border:1px solid var(--border); }
-        .macro-chip.cal { border-color:rgba(249,226,126,.3); background:rgba(249,226,126,.06); }
-        .macro-chip.cal .macro-val { color:var(--diet); }
-        .macro-val { display:block; font-size:1.05rem; font-weight:600; color:var(--text); }
-        .macro-lbl { display:block; font-size:.66rem; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; margin-top:3px; }
-        .ai-note { font-size:.82rem; color:var(--muted); margin-bottom:14px; font-style:italic; line-height:1.5; }
-        .calorie-estimate { background:rgba(165,243,180,.05); border:1px solid rgba(165,243,180,.2); border-radius:12px; padding:18px; margin-top:14px; }
-        .calorie-est-header { font-size:.72rem; font-weight:600; color:var(--sports); letter-spacing:.09em; text-transform:uppercase; margin-bottom:8px; }
-        .calorie-est-value { font-family:'DM Serif Display',serif; font-size:2.4rem; color:var(--sports); margin-bottom:6px; line-height:1; }
-        .calorie-est-value span { font-family:'DM Sans',sans-serif; font-size:.88rem; color:var(--muted); }
-        .calorie-est-note { font-size:.82rem; color:var(--muted); margin-bottom:16px; font-style:italic; line-height:1.5; }
-        .result-actions { display:flex; gap:8px; }
-        .btn-primary { flex:1; padding:12px; background:linear-gradient(135deg,#6ee7f7,#4db8cc); color:#0a1214; font-family:'DM Sans',sans-serif; font-size:.9rem; font-weight:600; border:none; border-radius:10px; cursor:pointer; transition:opacity .2s,transform .1s; letter-spacing:.02em; }
-        .btn-primary:hover { opacity:.9; } .btn-primary:active { transform:scale(.98); } .btn-primary:disabled { opacity:.4; cursor:not-allowed; }
-        .btn-secondary { padding:10px 16px; background:var(--surface2); border:1px solid var(--border); color:var(--muted); font-family:'DM Sans',sans-serif; font-size:.85rem; border-radius:10px; cursor:pointer; white-space:nowrap; }
-        .btn-secondary:hover { color:var(--text); }
-        .btn-ai { width:100%; padding:13px; background:transparent; border:1px solid rgba(110,231,247,.3); color:var(--accent); font-family:'DM Sans',sans-serif; font-size:.9rem; font-weight:600; border-radius:10px; cursor:pointer; transition:all .2s; }
-        .btn-ai:hover:not(:disabled) { background:rgba(110,231,247,.08); } .btn-ai:disabled { opacity:.4; cursor:not-allowed; }
-        .loading-text { display:inline-flex; align-items:center; gap:10px; }
-        .spinner-dot { display:inline-block; width:14px; height:14px; border:2px solid currentColor; border-top-color:transparent; border-radius:50%; animation:spin .7s linear infinite; flex-shrink:0; }
-        @keyframes spin { to { transform:rotate(360deg); } }
-        .error-msg { margin-top:12px; padding:11px 14px; background:rgba(249,123,110,.08); border:1px solid rgba(249,123,110,.25); color:var(--exercise); border-radius:8px; font-size:.85rem; }
-        .section-title { font-family:'DM Serif Display',serif; font-size:1.15rem; color:var(--text); margin:24px 0 10px; }
-
-        /* ── DASHBOARD ── */
-        .dashboard { display:flex; flex-direction:column; gap:14px; }
-
-        /* Hero */
-        .db-hero { position:relative; border-radius:20px; overflow:hidden; background:linear-gradient(135deg,#161a24 0%,#0e1420 60%,#0d1a1f 100%); border:1px solid var(--border); padding:24px 20px 20px; }
-        .db-hero-glow { position:absolute; top:-60px; right:-60px; width:220px; height:220px; background:radial-gradient(circle,rgba(110,231,247,.12) 0%,transparent 70%); pointer-events:none; }
-        .db-hero-inner { position:relative; }
-        .db-hero-top { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:22px; }
-        .db-hero-date { font-size:.75rem; color:var(--muted); margin-bottom:4px; letter-spacing:.03em; }
-        .db-hero-greeting { font-family:'DM Serif Display',serif; font-size:1.7rem; color:var(--text); line-height:1.1; }
-        .db-goal-pill { background:rgba(110,231,247,.12); color:var(--sleep); border:1px solid rgba(110,231,247,.2); border-radius:20px; padding:5px 13px; font-size:.72rem; font-weight:600; white-space:nowrap; letter-spacing:.03em; }
-        .db-rings { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
-        @media (max-width:420px) { .db-rings { grid-template-columns:repeat(2,1fr); } }
-
-        /* Ring chart */
-        .ring-wrap { display:flex; flex-direction:column; align-items:center; gap:6px; }
-        .ring-center { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; }
-        .ring-wrap > svg { display:block; }
-        .ring-wrap { position:relative; }
-        .ring-val { font-family:'DM Serif Display',serif; font-size:1.1rem; line-height:1; }
-        .ring-unit { font-family:'DM Sans',sans-serif; font-size:.6rem; opacity:.8; }
-        .ring-pct { font-size:.6rem; color:var(--muted); }
-        .ring-label { font-size:.68rem; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; text-align:center; }
-
-        /* Card */
-        .db-card { background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:18px; }
-        .db-card-hd { display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
-        .db-card-title { font-family:'DM Serif Display',serif; font-size:1rem; color:var(--text); }
-        .db-card-badge { font-size:.78rem; font-weight:600; }
-
-        /* Macros */
-        .db-macros { display:flex; flex-direction:column; gap:10px; }
-        .db-macro-row { display:flex; flex-direction:column; gap:5px; }
-        .db-macro-info { display:flex; justify-content:space-between; align-items:baseline; }
-        .db-macro-label { font-size:.75rem; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
-        .db-macro-nums { font-size:.85rem; font-weight:600; }
-        .db-macro-target { font-size:.72rem; color:var(--muted); font-weight:400; }
-        .db-macro-track { height:5px; background:var(--surface2); border-radius:3px; overflow:hidden; }
-        .db-macro-fill { height:100%; border-radius:3px; transition:width .7s cubic-bezier(.4,0,.2,1); }
-        .db-net-cal { margin-top:12px; padding-top:12px; border-top:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; font-size:.82rem; color:var(--muted); }
-
-        /* Activity tiles */
-        .db-tiles { display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:8px; }
-        .db-tile { background:var(--tb,var(--surface2)); border:1px solid rgba(255,255,255,.06); border-radius:12px; padding:12px 10px; display:flex; flex-direction:column; align-items:center; gap:4px; text-align:center; border-top:2px solid var(--tc); }
-        .db-tile-icon { font-size:1.1rem; color:var(--tc); }
-        .db-tile-val { font-family:'DM Serif Display',serif; font-size:1rem; color:var(--text); line-height:1.1; }
-        .db-tile-lbl { font-size:.65rem; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
-
-        /* Feed */
-        .db-feed { display:flex; flex-direction:column; }
-        .db-feed-item { display:flex; gap:12px; align-items:flex-start; padding:6px 0; }
-        .db-feed-left { display:flex; flex-direction:column; align-items:center; flex-shrink:0; }
-        .db-feed-icon { width:32px; height:32px; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:.9rem; flex-shrink:0; }
-        .db-feed-line { width:1px; flex:1; background:var(--border); min-height:10px; margin:3px 0; }
-        .db-feed-body { flex:1; padding-top:5px; padding-bottom:4px; }
-        .db-feed-text { font-size:.84rem; color:var(--text); line-height:1.4; }
-        .db-feed-date { font-size:.72rem; color:var(--muted); margin-top:2px; }
-
-        /* Empty */
-        .db-empty { text-align:center; color:var(--muted); padding:20px; font-size:.88rem; }
-
-        .log-list { display:flex; flex-direction:column; gap:8px; }
-        .log-item { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; transition:border-color .2s; }
-        .log-item.open { border-color:rgba(110,231,247,.4); }
-        .log-header { display:flex; align-items:center; justify-content:space-between; padding:14px 18px; cursor:pointer; gap:12px; }
-        .log-title { font-weight:500; font-size:.9rem; }
-        .log-meta { display:flex; align-items:center; gap:6px; flex-shrink:0; flex-wrap:wrap; justify-content:flex-end; }
-        .log-tag { background:var(--surface2); border:1px solid var(--border); border-radius:20px; padding:2px 10px; font-size:.72rem; color:var(--muted); }
-        .log-toggle { color:var(--muted); font-size:.7rem; margin-left:4px; }
-        .log-detail { padding:14px 18px 16px; border-top:1px solid var(--border); display:flex; flex-direction:column; gap:6px; }
-        .log-detail-row { font-size:.85rem; color:var(--muted); }
-        .btn-delete { margin-top:8px; padding:6px 14px; background:rgba(249,123,110,.1); color:var(--exercise); border:1px solid rgba(249,123,110,.2); border-radius:8px; font-family:'DM Sans',sans-serif; font-size:.8rem; cursor:pointer; align-self:flex-start; }
-        .btn-delete:hover { background:rgba(249,123,110,.2); }
-        .workout-raw { font-family:monospace; font-size:.78rem; color:var(--muted); white-space:pre-wrap; word-break:break-word; line-height:1.7; background:var(--surface2); border-radius:8px; padding:14px; border:1px solid var(--border); max-height:400px; overflow-y:auto; }
-        .dash-greeting h2 { font-family:'DM Serif Display',serif; font-size:1.6rem; margin-bottom:4px; }
-        .dash-date { color:var(--muted); font-size:.85rem; margin-bottom:8px; }
-        .goal-chip { display:inline-block; background:rgba(110,231,247,.1); color:var(--sleep); border:1px solid rgba(110,231,247,.2); border-radius:20px; padding:3px 12px; font-size:.75rem; font-weight:500; margin-bottom:16px; }
-        .today-pills { display:flex; flex-wrap:wrap; gap:8px; }
-        .pill { padding:6px 14px; border-radius:20px; font-size:.8rem; font-weight:500; }
-        .pill-sleep { background:rgba(110,231,247,.1); color:var(--sleep); border:1px solid rgba(110,231,247,.2); }
-        .pill-diet { background:rgba(249,226,126,.1); color:var(--diet); border:1px solid rgba(249,226,126,.2); }
-        .pill-exercise { background:rgba(249,123,110,.1); color:var(--exercise); border:1px solid rgba(249,123,110,.2); }
-        .pill-sports { background:rgba(165,243,180,.1); color:var(--sports); border:1px solid rgba(165,243,180,.2); }
-        .pill-empty { background:var(--surface2); color:var(--muted); border:1px solid var(--border); }
-        .recent-list { display:flex; flex-direction:column; gap:6px; }
-        .recent-row { display:flex; align-items:center; gap:12px; padding:12px 16px; background:var(--surface); border:1px solid var(--border); border-radius:10px; font-size:.85rem; }
-        .recent-icon { font-size:1rem; } .recent-label { flex:1; } .recent-date { color:var(--muted); font-size:.75rem; white-space:nowrap; }
-        .recent-sleep .recent-icon { color:var(--sleep); } .recent-diet .recent-icon { color:var(--diet); } .recent-exercise .recent-icon { color:var(--exercise); } .recent-sports .recent-icon { color:var(--sports); }
-        .empty-msg { text-align:center; color:var(--muted); padding:28px; font-size:.9rem; background:var(--surface); border-radius:var(--radius); border:1px dashed var(--border); }
-        .tab-content { animation:fadeIn .2s ease; }
-        @keyframes fadeIn { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
-        .list-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
-        .entry-count { background:var(--surface2); color:var(--muted); border-radius:20px; padding:3px 10px; font-size:.75rem; }
-
-        /* COLLAPSIBLE DASH SECTIONS */
-        .dash-section { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; margin-bottom:8px; }
-        .dash-section-toggle { width:100%; display:flex; align-items:center; gap:10px; padding:14px 18px; background:transparent; border:none; cursor:pointer; text-align:left; }
-        .dash-section-toggle:hover { background:rgba(255,255,255,.02); }
-        .dash-section-label { font-size:.9rem; font-weight:600; color:var(--text); flex-shrink:0; }
-        .dash-section-meta { font-size:.78rem; color:var(--muted); flex:1; }
-        .dash-chevron { color:var(--muted); font-size:.7rem; flex-shrink:0; }
-        .dash-section-body { padding:0 18px 20px; border-top:1px solid var(--border); padding-top:18px; }
-
-        /* AI COACH TABS */
-        .coach-tabs { display:flex; border-bottom:1px solid var(--border); }
-        .chat-info-bar { display:flex; justify-content:space-between; align-items:center; padding:8px 16px; border-bottom:1px solid var(--border); background:rgba(110,231,247,.03); }
-        .chat-info-label { font-size:.72rem; color:var(--muted); }
-        .chat-clear-btn { background:transparent; border:1px solid var(--border); color:var(--muted); font-family:'DM Sans',sans-serif; font-size:.7rem; padding:4px 10px; border-radius:14px; cursor:pointer; transition:all .2s; }
-        .chat-clear-btn:hover { color:var(--exercise); border-color:rgba(249,123,110,.4); }
-
-        /* EXPORT */
-        .export-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:8px; }
-        .export-btn { background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:14px 10px; display:flex; flex-direction:column; align-items:center; gap:4px; cursor:pointer; transition:all .2s; color:var(--text); font-family:'DM Sans',sans-serif; }
-        .export-btn:hover:not(:disabled) { border-color:var(--accent); transform:translateY(-1px); }
-        .export-btn:disabled { opacity:.4; cursor:not-allowed; }
-
-        /* SETTINGS */
-        .settings-tabs { display:flex; border-bottom:1px solid var(--border); }
-        .settings-tab { flex:1; padding:11px 6px; background:transparent; border:none; color:var(--muted); font-family:'DM Sans',sans-serif; font-size:.78rem; font-weight:500; cursor:pointer; transition:all .2s; border-bottom:2px solid transparent; margin-bottom:-1px; }
-        .settings-tab.active { color:var(--accent); border-bottom-color:var(--accent); }
-        .settings-tab:hover:not(.active) { color:var(--text); }
-        .settings-body { padding:18px; }
-
-        /* DATA TAB */
-        .data-stats { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:18px; }
-        .data-stat { background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:14px; text-align:center; }
-        .data-stat-num { display:block; font-family:'DM Serif Display',serif; font-size:1.6rem; color:var(--accent); line-height:1; margin-bottom:4px; }
-        .data-stat-lbl { display:block; font-size:.7rem; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
-        .data-action { display:flex; align-items:center; gap:12px; padding:14px; background:var(--surface2); border:1px solid var(--border); border-radius:10px; margin-bottom:10px; }
-        .data-action.danger { border-color:rgba(249,123,110,.2); background:rgba(249,123,110,.04); }
-        .data-action > div:first-child { flex:1; }
-        .data-action-title { font-size:.88rem; font-weight:500; color:var(--text); margin-bottom:3px; }
-        .data-action-desc { font-size:.75rem; color:var(--muted); line-height:1.5; }
-
-        /* ── MARKDOWN ── */
-        .md-content > *:first-child { margin-top:0; }
-        .md-content > *:last-child { margin-bottom:0; }
-        .md-p { margin:7px 0 0; line-height:1.55; }
-        .md-h1 { font-family:'DM Serif Display',serif; font-size:1.05rem; color:var(--text); margin:14px 0 6px; }
-        .md-h2 { font-family:'DM Serif Display',serif; font-size:.95rem; color:var(--text); margin:12px 0 4px; }
-        .md-ul, .md-ol { margin:6px 0; padding-left:20px; }
-        .md-ul li, .md-ol li { margin:4px 0; line-height:1.5; }
-        .md-ul { list-style:none; padding-left:0; }
-        .md-ul li { position:relative; padding-left:16px; }
-        .md-ul li::before { content:"→"; position:absolute; left:0; color:var(--accent); font-weight:700; }
-        .md-code { background:var(--surface2); border:1px solid var(--border); border-radius:4px; padding:1px 6px; font-size:.82em; font-family:monospace; }
-
-        /* ── DAILY INSIGHT ── */
-        .insight-card { border:1px solid rgba(110,231,247,.2); background:linear-gradient(135deg,rgba(110,231,247,.04),rgba(165,243,180,.03)); }
-        .insight-text { font-size:.88rem; line-height:1.6; color:var(--text); }
-
-        /* ── BODY WEIGHT CARD ── */
-        .weight-card { }
-        .weight-display { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; }
-        .weight-main { font-family:'DM Serif Display',serif; font-size:2rem; color:#a5f3b4; line-height:1; }
-        .weight-main span { font-family:'DM Sans',sans-serif; font-size:.9rem; color:var(--muted); margin-left:4px; }
-        .weight-delta { font-size:.82rem; font-weight:500; }
-        .weight-date { font-size:.72rem; color:var(--muted); margin-left:auto; }
-
-        /* ── WATER TAB ── */
-        .water-hero { position:relative; width:160px; height:160px; margin:14px auto 18px; }
-        .water-hero svg { position:absolute; inset:0; }
-        .water-hero-text { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; }
-        .water-hero-ml { font-family:'DM Serif Display',serif; font-size:2rem; color:#6ee7f7; line-height:1; }
-        .water-hero-ml span { font-family:'DM Sans',sans-serif; font-size:.8rem; color:var(--muted); margin-left:3px; }
-        .water-hero-goal { font-size:.75rem; color:var(--muted); margin-top:4px; }
-        .water-quick { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
-        .water-q-btn { background:rgba(110,231,247,.06); border:1px solid rgba(110,231,247,.2); color:var(--text); border-radius:10px; padding:12px 8px; cursor:pointer; font-family:'DM Sans',sans-serif; font-size:.84rem; font-weight:500; display:flex; flex-direction:column; gap:3px; transition:all .2s; }
-        .water-q-btn:hover { background:rgba(110,231,247,.12); transform:translateY(-1px); }
-        .water-q-btn span { font-size:.7rem; color:var(--muted); font-weight:400; }
-        .water-entries { display:flex; flex-direction:column; gap:6px; }
-        .water-entry { display:flex; align-items:center; gap:12px; padding:9px 12px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; }
-        .water-entry-time { font-size:.78rem; color:var(--muted); min-width:56px; }
-        .water-entry-ml { flex:1; font-weight:500; color:#6ee7f7; }
-        .water-entry-x { background:transparent; border:none; color:var(--muted); cursor:pointer; font-size:1.2rem; line-height:1; padding:0 4px; transition:color .2s; }
-        .water-entry-x:hover { color:var(--exercise); }
-        .water-week { display:grid; grid-template-columns:repeat(7,1fr); gap:5px; align-items:end; }
-        .water-week-day { display:flex; flex-direction:column; align-items:center; gap:4px; }
-        .water-week-bar-wrap { width:100%; height:80px; background:var(--surface2); border-radius:5px; position:relative; overflow:hidden; display:flex; align-items:flex-end; }
-        .water-week-bar { width:100%; border-radius:4px; min-height:3px; transition:height .6s ease, background .3s; }
-        .water-week-label { font-size:.7rem; color:var(--muted); }
-        .water-week-ml { font-size:.65rem; color:var(--text); font-weight:500; }
-
-        /* ── SUPPLEMENTS ── */
-        .supp-list { display:flex; flex-direction:column; gap:6px; }
-        .supp-entry { display:flex; align-items:center; gap:10px; padding:10px 12px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; }
-        .supp-entry-main { flex:1; }
-        .supp-entry-name { font-size:.88rem; color:var(--text); font-weight:500; }
-        .supp-entry-dose { font-size:.72rem; color:var(--muted); margin-top:2px; }
-        .supp-entry-time { font-size:.72rem; color:var(--muted); }
-
-        /* ── TRENDS ── */
-        .trends-range { display:flex; gap:6px; margin-bottom:18px; }
-        .trend-card-hd { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; gap:12px; flex-wrap:wrap; }
-        .trend-card-stats { display:flex; gap:14px; font-size:.76rem; color:var(--muted); }
-        .trend-card-stats strong { font-weight:600; }
-        .mini-chart { width:100%; height:80px; display:block; }
-        .chart-empty { color:var(--muted); font-size:.82rem; text-align:center; padding:20px; font-style:italic; }
-        .trend-note { font-size:.75rem; color:var(--muted); margin-top:10px; line-height:1.5; }
-        .trend-bars { display:grid; grid-template-columns:repeat(auto-fit, minmax(8px, 1fr)); gap:3px; height:60px; align-items:end; padding:0 4px; }
-        .trend-bar-col { height:100%; display:flex; align-items:flex-end; }
-        .trend-bar { width:100%; min-height:4px; border-radius:3px; transition:height .6s ease; }
-        .export-icon { font-size:1.3rem; }
-        .export-name { font-size:.84rem; font-weight:500; }
-        .export-count { font-size:.68rem; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
-        .coach-tab { flex:1; padding:11px; background:transparent; border:none; color:var(--muted); font-family:'DM Sans',sans-serif; font-size:.82rem; font-weight:500; cursor:pointer; transition:all .2s; border-bottom:2px solid transparent; margin-bottom:-1px; }
-        .coach-tab.active { color:var(--accent); border-bottom-color:var(--accent); }
-        .coach-tab:hover:not(.active) { color:var(--text); }
-
-        /* CHAT */
-        .coach-chat-wrap { display:flex; flex-direction:column; }
-        .coach-messages { padding:16px 16px 8px; display:flex; flex-direction:column; gap:12px; max-height:380px; overflow-y:auto; scroll-behavior:smooth; }
-        .coach-messages::-webkit-scrollbar { width:3px; }
-        .coach-messages::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
-        .coach-msg { display:flex; gap:10px; align-items:flex-start; }
-        .coach-msg.user { flex-direction:row-reverse; }
-        .coach-avatar { width:28px; height:28px; border-radius:8px; background:linear-gradient(135deg,rgba(110,231,247,.15),rgba(165,243,180,.15)); border:1px solid rgba(110,231,247,.25); display:flex; align-items:center; justify-content:center; font-size:.75rem; color:var(--accent); flex-shrink:0; margin-top:2px; }
-        .coach-bubble { max-width:82%; background:var(--surface2); border:1px solid var(--border); border-radius:12px; padding:10px 13px; font-size:.84rem; line-height:1.55; color:var(--text); }
-        .coach-msg.user .coach-bubble { background:rgba(110,231,247,.1); border-color:rgba(110,231,247,.2); color:var(--text); border-radius:12px 12px 4px 12px; }
-        .coach-msg.assistant .coach-bubble { border-radius:4px 12px 12px 12px; }
-        .coach-typing { display:flex; gap:5px; align-items:center; padding:12px 14px; }
-        .coach-typing span { width:6px; height:6px; background:var(--muted); border-radius:50%; animation:typingBounce .9s infinite; }
-        .coach-typing span:nth-child(2) { animation-delay:.15s; }
-        .coach-typing span:nth-child(3) { animation-delay:.3s; }
-        @keyframes typingBounce { 0%,60%,100% { transform:translateY(0); } 30% { transform:translateY(-5px); } }
-        .coach-suggestions { padding:4px 16px 12px; display:flex; flex-wrap:wrap; gap:6px; }
-        .coach-suggestion { background:var(--surface2); border:1px solid var(--border); border-radius:20px; padding:6px 12px; font-family:'DM Sans',sans-serif; font-size:.75rem; color:var(--muted); cursor:pointer; transition:all .2s; white-space:nowrap; }
-        .coach-suggestion:hover { color:var(--accent); border-color:rgba(110,231,247,.3); background:rgba(110,231,247,.06); }
-        .coach-input-row { display:flex; gap:8px; padding:10px 14px 16px; border-top:1px solid var(--border); }
-        .coach-input { flex:1; background:var(--surface2); border:1px solid var(--border); border-radius:10px; color:var(--text); font-family:'DM Sans',sans-serif; font-size:.88rem; padding:10px 14px; outline:none; transition:border-color .2s; }
-        .coach-input:focus { border-color:var(--accent); }
-        .coach-input::placeholder { color:var(--muted); }
-        .coach-send { width:38px; height:38px; border-radius:10px; background:linear-gradient(135deg,#6ee7f7,#4db8cc); border:none; color:#0a1214; font-size:1rem; font-weight:700; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0; transition:opacity .2s; align-self:flex-end; }
-        .coach-send:disabled { opacity:.4; cursor:not-allowed; }
-        .coach-send:hover:not(:disabled) { opacity:.85; }
-
-        /* AI COACH */
-        .coach-results { display:flex; flex-direction:column; gap:12px; margin-top:16px; }
-        .overall-score-card { background:var(--surface2); border:1px solid var(--border); border-radius:12px; padding:18px; display:flex; align-items:center; gap:18px; }
-        .score-ring { position:relative; width:72px; height:72px; flex-shrink:0; }
-        .score-ring svg { width:72px; height:72px; }
-        .score-number { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-family:'DM Serif Display',serif; font-size:1.4rem; color:var(--text); }
-        .score-number span { font-family:'DM Sans',sans-serif; font-size:.6rem; color:var(--muted); margin-left:1px; }
-        .score-label { font-size:.7rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin-bottom:5px; }
-        .score-summary { font-size:.85rem; color:var(--text); line-height:1.6; }
-        .priority-card { background:rgba(110,231,247,.06); border:1px solid rgba(110,231,247,.2); border-radius:10px; padding:14px 16px; }
-        .priority-label { font-size:.7rem; font-weight:700; color:var(--accent); text-transform:uppercase; letter-spacing:.08em; margin-bottom:7px; }
-        .priority-text { font-size:.88rem; color:var(--text); line-height:1.6; font-weight:500; }
-        .coach-section { border-radius:10px; padding:16px; }
-        .coach-section-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
-        .coach-section-title { font-family:'DM Serif Display',serif; font-size:1rem; color:var(--text); }
-        .coach-insight { font-size:.83rem; color:var(--muted); line-height:1.6; margin-bottom:10px; font-style:italic; }
-        .coach-tips { display:flex; flex-direction:column; gap:7px; }
-        .coach-tip { display:flex; gap:9px; font-size:.83rem; color:var(--text); line-height:1.5; }
-
-        /* GOALS MACROS */
-        .macro-bar { height:8px; border-radius:4px; overflow:hidden; display:flex; gap:2px; background:var(--surface2); margin-bottom:8px; }
-        .macro-bar-seg { height:100%; transition:width .4s; }
-        .mprot { background:#c4b5fd; border-radius:4px 0 0 4px; }
-        .mcarb { background:#f9e27e; }
-        .mfat { background:#f97b6e; border-radius:0 4px 4px 0; }
-        .macro-legend { display:flex; gap:12px; font-size:.73rem; color:var(--muted); align-items:center; }
-        .ldot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:3px; }
-        .mprot-d { background:#c4b5fd; } .mcarb-d { background:#f9e27e; } .mfat-d { background:#f97b6e; }
-      `}</style>
-
+      <style>{styles}</style>
       <div className="app">
-        <header className="app-header"><h1>FitLog</h1><p>Your personal fitness journal</p></header>
-        <nav className="tabs">
+        <header className="topbar">
+          <h1 className="brand">FitLog</h1>
+        </header>
+
+        <main className="main">
+          {activeTab === "Home" && <HomeTab data={data} goals={goals} onAddWater={addEntry("water")} onAddWeight={addEntry("weight")} onNav={navTo} />}
+          {activeTab === "Log" && <LogTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} initialSub={logSub} />}
+          {activeTab === "History" && <HistoryTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />}
+          {activeTab === "Coach" && <CoachTab data={data} goals={goals} />}
+          {activeTab === "Settings" && <SettingsTab data={data} goals={goals} onSaveGoals={setGoals} onClearAll={clearAll} onImport={importData} />}
+        </main>
+
+        <nav className="tabbar">
           {TABS.map(tab => (
-            <button key={tab} className={`tab-btn ${activeTab === tab ? "active" : ""}`} onClick={() => setActiveTab(tab)}>
-              <span>{icons[tab]}</span>{tab}
+            <button key={tab} className={`tabbtn ${activeTab === tab ? "active" : ""}`} onClick={() => { setActiveTab(tab); if (tab !== "Log") setLogSub(null); window.scrollTo({ top: 0, behavior: "smooth" }); }}>
+              <span className="tabbtn-icon">{tab === "Home" ? "⌂" : tab === "Log" ? "+" : tab === "History" ? "≡" : tab === "Coach" ? "✦" : "⚙"}</span>
+              <span className="tabbtn-label">{tab}</span>
             </button>
           ))}
         </nav>
-
-        <div className="tab-content">
-          {activeTab === "Dashboard" && <Dashboard data={data} goals={goals} onSaveGoals={setGoals} onClearAll={clearAllData} onImport={importData} />}
-
-          {activeTab === "Sleep" && (
-            <>
-              <SleepForm onAdd={addEntry("sleep")} />
-              <div className="list-header"><h3 className="section-title" style={{ margin: 0 }}>Sleep Log</h3><span className="entry-count">{data.sleep.length} entries</span></div>
-              <div className="log-list">
-                {data.sleep.length === 0 && <div className="empty-msg">No sleep logs yet.</div>}
-                {data.sleep.map(item => <LogItem key={item.id} item={item} type="sleep" onDelete={deleteEntry("sleep")} />)}
-              </div>
-            </>
-          )}
-
-          {activeTab === "Diet" && (
-            <>
-              <DietForm onAdd={addEntry("diet")} />
-              <div className="list-header"><h3 className="section-title" style={{ margin: 0 }}>Meal Log</h3><span className="entry-count">{data.diet.length} entries</span></div>
-              <div className="log-list">
-                {data.diet.length === 0 && <div className="empty-msg">No meals logged yet.</div>}
-                {data.diet.map(item => <LogItem key={item.id} item={item} type="diet" onDelete={deleteEntry("diet")} />)}
-              </div>
-            </>
-          )}
-
-          {activeTab === "Exercise" && <ExerciseTab entries={data.exercise} onAdd={addEntry("exercise")} onDelete={deleteEntry("exercise")} />}
-
-          {activeTab === "Sports" && (
-            <>
-              <SportsForm onAdd={addEntry("sports")} />
-              <div className="list-header"><h3 className="section-title" style={{ margin: 0 }}>Sports Log</h3><span className="entry-count">{data.sports.length} entries</span></div>
-              <div className="log-list">
-                {data.sports.length === 0 && <div className="empty-msg">No sports logged yet.</div>}
-                {data.sports.map(item => <LogItem key={item.id} item={item} type="sports" onDelete={deleteEntry("sports")} />)}
-              </div>
-            </>
-          )}
-
-          {activeTab === "Water" && (
-            <WaterTab
-              data={data}
-              goals={goals}
-              onAddWater={addEntry("water")}
-              onDeleteWater={deleteEntry("water")}
-              onAddSupp={addEntry("supplements")}
-              onDeleteSupp={deleteEntry("supplements")}
-            />
-          )}
-
-          {activeTab === "Trends" && <TrendsTab data={data} goals={goals} />}
-        </div>
       </div>
     </>
   );
 }
+
+// ─── STYLES ───────────────────────────────────────────────────────────────────
+const styles = `
+@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Inter:wght@400;500;600;700&display=swap');
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0a0b0f;
+  --surface: #14161c;
+  --surface-2: #1a1d25;
+  --border: rgba(255,255,255,0.06);
+  --border-strong: rgba(255,255,255,0.1);
+  --text: #ebedf2;
+  --text-2: #b5b9c4;
+  --muted: #6b7180;
+  --accent: #6ee7f7;
+  --accent-dim: rgba(110,231,247,0.12);
+  --track: rgba(255,255,255,0.06);
+  --good: #8fd989;
+  --warn: #f9c97e;
+  --bad: #f47e6e;
+  --radius: 14px;
+  --radius-sm: 10px;
+}
+
+html, body { background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+body { font-size: 15px; line-height: 1.5; }
+
+.app { min-height: 100vh; max-width: 720px; margin: 0 auto; padding: 0 18px 96px; padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
+
+/* Top */
+.topbar { padding: 22px 0 14px; }
+.brand { font-family: 'DM Serif Display', serif; font-size: 1.7rem; color: var(--text); font-weight: 400; letter-spacing: -0.5px; }
+
+/* Tab bar bottom */
+.tabbar {
+  position: fixed; bottom: 0; left: 0; right: 0;
+  background: rgba(10,11,15,0.92); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+  border-top: 1px solid var(--border);
+  display: flex; padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
+  z-index: 100;
+}
+.tabbtn {
+  flex: 1; background: transparent; border: none; color: var(--muted);
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 6px 4px; cursor: pointer; transition: color .15s;
+  font-family: inherit;
+}
+.tabbtn.active { color: var(--accent); }
+.tabbtn-icon { font-size: 1.1rem; line-height: 1; }
+.tabbtn-label { font-size: .67rem; font-weight: 500; }
+
+.main { animation: fade .2s ease; }
+@keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+/* Layout */
+.stack { display: flex; flex-direction: column; gap: 14px; }
+.row { display: flex; gap: 8px; align-items: center; }
+.flex { flex: 1; }
+.row-between { display: flex; justify-content: space-between; align-items: center; margin: 10px 0 8px; }
+
+/* Greeting */
+.greeting { padding: 4px 2px 6px; }
+.greeting-date { color: var(--muted); font-size: .8rem; font-weight: 500; letter-spacing: 0.02em; text-transform: uppercase; }
+.greeting-h { font-family: 'DM Serif Display', serif; font-size: 1.85rem; font-weight: 400; margin: 6px 0 4px; line-height: 1.05; letter-spacing: -0.01em; }
+.greeting-goal { color: var(--text-2); font-size: .9rem; }
+
+/* Card */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; }
+.card-hd { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
+.card-title { font-size: .92rem; font-weight: 600; color: var(--text); letter-spacing: -0.005em; }
+.card-sub { color: var(--muted); font-size: .8rem; margin-top: 3px; line-height: 1.5; }
+
+/* Rings */
+.rings-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.ring { position: relative; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.ring svg { display: block; }
+.ring-center { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding-bottom: 18px; }
+.ring-val { font-family: 'DM Serif Display', serif; font-size: 1.05rem; color: var(--text); }
+.ring-val.big { font-size: 1.4rem; }
+.ring-unit { font-family: 'Inter', sans-serif; font-size: .65rem; color: var(--muted); margin-left: 2px; font-weight: 500; }
+.ring-label { font-size: .68rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+.ring-targets { display: flex; justify-content: space-around; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); font-size: .72rem; color: var(--muted); }
+
+/* Quick actions */
+.quick-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.qa {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 14px; display: flex; align-items: center; gap: 10px;
+  color: var(--text); font-family: inherit; font-size: .9rem; font-weight: 500; cursor: pointer;
+  transition: border-color .15s, background .15s; min-height: 56px;
+}
+.qa:hover { border-color: var(--border-strong); }
+.qa.qa-primary { background: var(--accent-dim); border-color: rgba(110,231,247,0.25); color: var(--accent); }
+.qa-icon { font-size: 1.1rem; }
+
+.quick-water { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 14px; }
+.quick-water .qa { flex-direction: column; gap: 4px; text-align: center; padding: 14px 8px; min-height: 64px; line-height: 1.2; }
+.quick-water .qa span { color: var(--muted); font-size: .7rem; font-weight: 400; }
+
+/* Today items */
+.today-items { display: flex; flex-direction: column; gap: 8px; }
+.today-item { display: flex; align-items: center; gap: 10px; font-size: .87rem; padding: 4px 0; }
+.today-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.today-text { color: var(--text-2); }
+
+/* Weight */
+.weight-row { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.weight-big { font-family: 'DM Serif Display', serif; font-size: 2.1rem; color: var(--text); line-height: 1; }
+.weight-big span { font-family: 'Inter', sans-serif; font-size: .85rem; color: var(--muted); margin-left: 4px; font-weight: 500; }
+.weight-meta { display: flex; flex-direction: column; gap: 2px; font-size: .8rem; }
+.weight-diff.good { color: var(--good); }
+.weight-diff.warn { color: var(--warn); }
+
+/* Insight */
+.insight { font-size: .9rem; line-height: 1.6; color: var(--text); }
+
+/* Sub-tabs */
+.subtabs {
+  display: flex; gap: 4px; background: var(--surface); padding: 4px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  overflow-x: auto; scrollbar-width: none;
+}
+.subtabs::-webkit-scrollbar { display: none; }
+.subtab {
+  flex: 1; padding: 8px 10px; background: transparent; border: none; color: var(--muted);
+  font-family: inherit; font-size: .8rem; font-weight: 500; cursor: pointer; border-radius: 7px;
+  white-space: nowrap; display: flex; align-items: center; justify-content: center; gap: 5px;
+  transition: all .15s; min-width: 60px;
+}
+.subtab.active { background: var(--surface-2); color: var(--text); }
+.subtab:hover:not(.active) { color: var(--text-2); }
+.subtab-icon { font-size: .9rem; }
+
+/* Forms */
+.field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+.field-grid.three { grid-template-columns: 1fr 1fr 1fr; }
+@media (max-width: 480px) { .field-grid:not(.three) { grid-template-columns: 1fr; } }
+label { display: flex; flex-direction: column; gap: 5px; font-size: .73rem; color: var(--muted); font-weight: 500; text-transform: uppercase; letter-spacing: 0.04em; }
+input, select, textarea {
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+  color: var(--text); font-family: inherit; font-size: .92rem; padding: 11px 12px;
+  outline: none; transition: border-color .15s; width: 100%;
+}
+input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+textarea { resize: vertical; min-height: 64px; line-height: 1.5; }
+select option { background: var(--surface-2); }
+
+.duration-pill { display: inline-flex; gap: 4px; background: var(--accent-dim); border: 1px solid rgba(110,231,247,0.2); color: var(--accent); padding: 4px 12px; border-radius: 16px; font-size: .82rem; margin-bottom: 12px; font-weight: 500; }
+.duration-pill span { font-weight: 600; }
+
+.lbl { font-size: .82rem; color: var(--text); font-weight: 500; }
+
+/* Buttons */
+.btn { background: var(--accent); color: #0a1418; border: none; border-radius: 10px; padding: 11px 18px; font-family: inherit; font-size: .88rem; font-weight: 600; cursor: pointer; transition: opacity .15s; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+.btn:hover:not(:disabled) { opacity: 0.92; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn.full { width: 100%; }
+.btn-ghost { background: transparent; border: 1px solid var(--border-strong); color: var(--text); border-radius: 10px; padding: 10px 18px; font-family: inherit; font-size: .85rem; font-weight: 500; cursor: pointer; transition: background .15s; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+.btn-ghost:hover:not(:disabled) { background: var(--surface-2); }
+.btn-ghost:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-ghost.full { width: 100%; }
+.btn-danger { background: rgba(244,126,110,0.1); border: 1px solid rgba(244,126,110,0.3); color: var(--bad); border-radius: 10px; padding: 11px 18px; font-family: inherit; font-size: .88rem; font-weight: 600; cursor: pointer; transition: background .15s; }
+.btn-danger:hover { background: rgba(244,126,110,0.18); }
+.btn-danger.full { width: 100%; }
+.link-btn { background: transparent; border: none; color: var(--accent); font-family: inherit; font-size: .78rem; font-weight: 500; cursor: pointer; padding: 2px 6px; }
+.link-btn:hover:not(:disabled) { text-decoration: underline; }
+.link-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+/* Segmented control */
+.seg { display: flex; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 3px; margin-bottom: 12px; }
+.seg-btn { flex: 1; background: transparent; border: none; color: var(--muted); font-family: inherit; font-size: .8rem; font-weight: 500; padding: 7px 10px; border-radius: 6px; cursor: pointer; transition: all .15s; }
+.seg-btn.active { background: var(--bg); color: var(--text); }
+
+/* Upload */
+.upload {
+  border: 2px dashed var(--border-strong); border-radius: 10px; min-height: 140px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  cursor: pointer; color: var(--muted); margin-bottom: 12px; overflow: hidden;
+  transition: border-color .15s;
+}
+.upload:hover { border-color: var(--accent); }
+.upload-icon { font-size: 2rem; }
+.upload-img { width: 100%; max-height: 220px; object-fit: cover; }
+
+/* AI cards */
+.ai-card { background: var(--accent-dim); border: 1px solid rgba(110,231,247,0.2); border-radius: 12px; padding: 16px; margin-top: 4px; }
+.ai-card-label { font-size: .68rem; font-weight: 600; color: var(--accent); letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 6px; }
+.ai-card-name { font-size: .95rem; font-weight: 500; margin-bottom: 12px; }
+.ai-card-big { font-family: 'DM Serif Display', serif; font-size: 2.4rem; color: var(--accent); line-height: 1; margin-bottom: 6px; }
+.ai-card-big span { font-family: 'Inter', sans-serif; font-size: .9rem; color: var(--muted); font-weight: 500; }
+.ai-card-note { font-size: .82rem; color: var(--text-2); line-height: 1.55; margin-bottom: 12px; }
+
+.macros { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 12px; }
+.macro { background: var(--surface); border-radius: 8px; padding: 9px 6px; text-align: center; border: 1px solid var(--border); }
+.macro-v { display: block; font-size: .95rem; font-weight: 600; color: var(--text); }
+.macro-l { display: block; font-size: .62rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 2px; }
+
+/* Spinner */
+.spinner { display: inline-block; width: 13px; height: 13px; border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; flex-shrink: 0; }
+.spinner.inline { width: 12px; height: 12px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-row { display: flex; align-items: center; gap: 10px; color: var(--accent); font-size: .85rem; }
+
+/* Errors */
+.err { padding: 10px 14px; background: rgba(244,126,110,0.08); border: 1px solid rgba(244,126,110,0.25); color: var(--bad); border-radius: 8px; font-size: .82rem; margin-top: 10px; }
+
+/* Empty */
+.empty { text-align: center; padding: 24px 12px; }
+.empty-icon { font-size: 1.6rem; color: var(--muted); margin-bottom: 8px; opacity: 0.5; }
+.empty-title { color: var(--text-2); font-size: .92rem; font-weight: 500; }
+.empty-hint { color: var(--muted); font-size: .8rem; margin-top: 4px; line-height: 1.5; }
+
+/* History list */
+.hist-list { display: flex; flex-direction: column; gap: 4px; }
+.hist { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.hist.open { border-color: var(--border-strong); }
+.hist-head { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; gap: 10px; cursor: pointer; }
+.hist-l { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+.hist-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.hist-text { min-width: 0; flex: 1; }
+.hist-main { font-size: .87rem; font-weight: 500; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hist-date { font-size: .72rem; color: var(--muted); margin-top: 2px; }
+.hist-tags { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.hist-tag { font-size: .7rem; color: var(--muted); background: var(--surface); border: 1px solid var(--border); padding: 2px 8px; border-radius: 8px; white-space: nowrap; }
+.hist-detail { padding: 0 12px 12px; font-size: .85rem; color: var(--text-2); line-height: 1.5; border-top: 1px solid var(--border); padding-top: 10px; }
+.raw-text { font-family: ui-monospace, monospace; font-size: .78rem; white-space: pre-wrap; word-break: break-word; line-height: 1.6; background: var(--bg); padding: 12px; border-radius: 8px; }
+
+/* List rows (water log etc) */
+.list { display: flex; flex-direction: column; gap: 4px; }
+.list-row { display: flex; align-items: center; gap: 12px; padding: 9px 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; }
+.list-main { flex: 1; font-size: .87rem; }
+.x { background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 1.3rem; line-height: 1; padding: 4px 6px; border-radius: 4px; transition: color .15s; }
+.x:hover { color: var(--bad); background: rgba(244,126,110,0.08); }
+
+/* Inline form */
+.inline-form { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+.inline-form input { flex: 1; }
+
+/* Trends */
+.trend-stats { display: flex; gap: 18px; margin-bottom: 10px; }
+.ts { display: flex; flex-direction: column; gap: 2px; }
+.ts-l { font-size: .68rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+.ts-v { font-size: .98rem; font-weight: 600; color: var(--text); }
+.ts-v.good { color: var(--good); }
+.ts-v.warn { color: var(--warn); }
+.ts-v.neutral { color: var(--text-2); }
+.ts-v.muted { color: var(--muted); }
+.chart { width: 100%; height: 70px; display: block; }
+.muted-center { color: var(--muted); font-size: .82rem; text-align: center; padding: 18px; font-style: italic; }
+
+.bars-row { display: grid; grid-auto-columns: 1fr; grid-auto-flow: column; gap: 3px; height: 56px; align-items: end; }
+.bar-col { height: 100%; display: flex; align-items: flex-end; }
+.bar-fill { width: 100%; min-height: 3px; background: var(--accent); border-radius: 2px; transition: height .6s ease; }
+
+/* Week mini */
+.week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; align-items: end; }
+.week-col { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.week-bar-wrap { width: 100%; height: 64px; background: var(--surface-2); border-radius: 4px; display: flex; align-items: flex-end; overflow: hidden; }
+.week-bar { width: 100%; border-radius: 3px; min-height: 3px; transition: height .6s; }
+.week-day { font-size: .68rem; color: var(--muted); font-weight: 500; }
+.week-val { font-size: .64rem; color: var(--text-2); }
+
+.center-stack { display: flex; justify-content: center; padding: 8px 0 16px; }
+
+/* Markdown */
+.md > *:first-child { margin-top: 0; }
+.md > *:last-child { margin-bottom: 0; }
+.md-p { line-height: 1.55; margin: 6px 0 0; font-size: .87rem; }
+.md-h1 { font-family: 'DM Serif Display', serif; font-size: 1rem; color: var(--text); margin: 12px 0 4px; font-weight: 400; }
+.md-h2 { font-family: 'DM Serif Display', serif; font-size: .9rem; color: var(--text); margin: 10px 0 4px; font-weight: 400; }
+.md-ul, .md-ol { margin: 6px 0; padding-left: 18px; font-size: .87rem; }
+.md-ul li, .md-ol li { margin: 3px 0; line-height: 1.5; }
+.md-ul { list-style: none; padding-left: 0; }
+.md-ul li { position: relative; padding-left: 14px; }
+.md-ul li::before { content: "→"; position: absolute; left: 0; color: var(--accent); }
+.md-code { background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-size: .82em; font-family: ui-monospace, monospace; }
+
+/* Coach */
+.coach-wrap { display: flex; flex-direction: column; min-height: calc(100vh - 220px); }
+.coach-bar { display: flex; justify-content: space-between; align-items: center; padding: 0 4px 14px; }
+.coach-bar-l { display: flex; flex-direction: column; }
+.coach-bar-title { font-size: .92rem; font-weight: 600; }
+.coach-bar-r { display: flex; gap: 4px; }
+.msgs { display: flex; flex-direction: column; gap: 14px; padding: 4px 2px 12px; min-height: 200px; }
+.msg { display: flex; gap: 8px; align-items: flex-start; }
+.msg.user { flex-direction: row-reverse; }
+.avatar { width: 26px; height: 26px; border-radius: 8px; background: var(--accent-dim); border: 1px solid rgba(110,231,247,0.25); display: flex; align-items: center; justify-content: center; font-size: .72rem; color: var(--accent); flex-shrink: 0; margin-top: 2px; }
+.bubble { max-width: 82%; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 10px 14px; }
+.msg.user .bubble { background: var(--accent-dim); border-color: rgba(110,231,247,0.2); border-radius: 14px 14px 4px 14px; }
+.msg.assistant .bubble { border-radius: 4px 14px 14px 14px; }
+.bubble.typing { display: flex; gap: 4px; padding: 14px; }
+.bubble.typing span { width: 6px; height: 6px; background: var(--muted); border-radius: 50%; animation: bounce .9s infinite; }
+.bubble.typing span:nth-child(2) { animation-delay: .15s; }
+.bubble.typing span:nth-child(3) { animation-delay: .3s; }
+@keyframes bounce { 0%, 60%, 100% { transform: translateY(0); } 30% { transform: translateY(-5px); } }
+
+.suggs { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 2px 12px; }
+.sugg { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 6px 12px; color: var(--text-2); font-family: inherit; font-size: .78rem; cursor: pointer; transition: all .15s; }
+.sugg:hover { color: var(--accent); border-color: rgba(110,231,247,0.3); }
+
+.composer { display: flex; gap: 8px; padding: 10px 2px 8px; position: sticky; bottom: 80px; background: linear-gradient(transparent, var(--bg) 25%); padding-top: 14px; }
+.composer input { flex: 1; }
+.send { width: 38px; height: 38px; min-width: 38px; border-radius: 10px; background: var(--accent); color: #0a1418; border: none; font-size: 1.1rem; font-weight: 700; cursor: pointer; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+.send:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* Analysis */
+.analysis-stack { animation: fade .2s ease; }
+.score-row { display: flex; align-items: center; gap: 16px; }
+.score-ring { position: relative; width: 80px; height: 80px; flex-shrink: 0; }
+.score-ring svg { width: 80px; height: 80px; }
+.score-n { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-family: 'DM Serif Display', serif; font-size: 1.5rem; }
+.score-n span { font-family: 'Inter', sans-serif; font-size: .62rem; color: var(--muted); margin-left: 2px; }
+
+.priority-card { background: var(--accent-dim); border-color: rgba(110,231,247,0.2); }
+.priority-label { font-size: .68rem; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; }
+.priority-text { font-size: .92rem; line-height: 1.55; color: var(--text); font-weight: 500; }
+
+.ana-hd { display: flex; justify-content: space-between; align-items: center; }
+.ana-score { display: flex; align-items: center; gap: 7px; font-size: .85rem; font-weight: 600; }
+.ana-dot { width: 7px; height: 7px; border-radius: 50%; }
+.ana-tips { list-style: none; padding: 0; margin: 12px 0 0; display: flex; flex-direction: column; gap: 7px; }
+.ana-tips li { display: flex; gap: 9px; font-size: .85rem; color: var(--text); line-height: 1.5; }
+.ana-arrow { color: var(--accent); font-weight: 700; flex-shrink: 0; }
+
+/* Settings macros bar */
+.macro-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; gap: 2px; background: var(--surface-2); margin: 10px 0 8px; }
+.macro-seg { height: 100%; transition: width .4s; }
+.legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: .73rem; color: var(--text-2); }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; }
+.divider { height: 1px; background: var(--border); margin: 16px 0; }
+
+/* Export grid */
+.exp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; }
+.exp-card { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 14px 8px; display: flex; flex-direction: column; align-items: center; gap: 4px; cursor: pointer; transition: all .15s; color: var(--text); font-family: inherit; }
+.exp-card:hover:not(:disabled) { border-color: var(--accent); transform: translateY(-1px); }
+.exp-card:disabled { opacity: 0.4; cursor: not-allowed; }
+.exp-icon { font-size: 1.4rem; color: var(--accent); margin-bottom: 2px; }
+.exp-name { font-size: .82rem; font-weight: 500; }
+.exp-n { font-size: .65rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+
+/* Stats */
+.stat-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.stat { text-align: center; padding: 14px 8px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; }
+.stat-n { font-family: 'DM Serif Display', serif; font-size: 1.6rem; color: var(--accent); line-height: 1; margin-bottom: 4px; }
+.stat-l { font-size: .68rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+
+.danger-card { border-color: rgba(244,126,110,0.2); }
+.muted-tag { font-size: .72rem; color: var(--good); }
+
+/* Helpers */
+.muted { color: var(--muted); }
+.small { font-size: .76rem; }
+.center { text-align: center; }
+`;
