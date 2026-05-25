@@ -857,44 +857,20 @@ function PlanTab({ data, goals, onSaveGoals }) {
   const [split, setSplit] = useState(plan.split);
   const [trainingDays, setTrainingDays] = useState(plan.trainingDays);
   const [assignments, setAssignments] = useState(plan.assignments || {});
-  const [notes, setNotes] = useState(plan.notes || "");
-  const [suggesting, setSuggesting] = useState(false);
-  const [rationale, setRationale] = useState("");
 
   // Conversational AI plan builder
   const [prompt, setPrompt] = useState("");
   const [building, setBuilding] = useState(false);
   const [buildResult, setBuildResult] = useState(null);
   const [buildErr, setBuildErr] = useState("");
-  const [saved, setSaved] = useState(false);
+  const [editing, setEditing] = useState(false);
 
   // Rest-day recommendation
   const [rec, setRec] = useState(null);
   const [recLoading, setRecLoading] = useState(false);
 
-  const todayName = WEEKDAYS[(new Date().getDay() + 6) % 7]; // JS Sun=0 → our Mon=0
-
-  function toggleDay(d) {
-    haptic(10);
-    setTrainingDays(prev => prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d].sort((a, b) => WEEKDAYS.indexOf(a) - WEEKDAYS.indexOf(b)));
-  }
-
-  function persist(next) {
-    onSaveGoals({ ...goals, plan: { split, trainingDays, assignments, notes, ...next } });
-    setSaved(true); setTimeout(() => setSaved(false), 1800);
-  }
-
-  async function autoSuggest() {
-    setSuggesting(true); setRationale("");
-    try {
-      const r = await suggestSplitSchedule({ split, trainingDays }, goals);
-      setAssignments(r.assignments || {});
-      setRationale(r.rationale || "");
-      onSaveGoals({ ...goals, plan: { split, trainingDays, assignments: r.assignments || {}, notes } });
-      toast("Schedule suggested");
-    } catch { toast("Couldn't suggest — try again"); }
-    setSuggesting(false);
-  }
+  const todayName = WEEKDAYS[(new Date().getDay() + 6) % 7];
+  const hasPlan = trainingDays.length > 0 && Object.keys(assignments).length > 0;
 
   async function buildPlan() {
     if (!prompt.trim() || building) return;
@@ -912,10 +888,32 @@ function PlanTab({ data, goals, onSaveGoals }) {
     setSplit(buildResult.split || split);
     setTrainingDays(buildResult.trainingDays);
     setAssignments(buildResult.assignments || {});
-    onSaveGoals({ ...goals, plan: { split: buildResult.split || split, trainingDays: buildResult.trainingDays, assignments: buildResult.assignments || {}, notes } });
+    onSaveGoals({ ...goals, plan: { split: buildResult.split || split, trainingDays: buildResult.trainingDays, assignments: buildResult.assignments || {}, notes: "" } });
     setBuildResult(null); setPrompt("");
-    toast("✓ Plan applied");
+    toast("\u2713 Plan saved");
     haptic([12, 30, 12]);
+  }
+
+  function editDay(day, value) {
+    const next = { ...assignments };
+    const nextDays = [...trainingDays];
+    if (value.trim()) {
+      next[day] = value;
+      if (!nextDays.includes(day)) nextDays.push(day);
+    } else {
+      delete next[day];
+      const idx = nextDays.indexOf(day);
+      if (idx >= 0) nextDays.splice(idx, 1);
+    }
+    nextDays.sort((a, b) => WEEKDAYS.indexOf(a) - WEEKDAYS.indexOf(b));
+    setAssignments(next);
+    setTrainingDays(nextDays);
+  }
+
+  function saveEdits() {
+    onSaveGoals({ ...goals, plan: { split, trainingDays, assignments, notes: "" } });
+    setEditing(false);
+    toast("\u2713 Plan saved");
   }
 
   async function getRec() {
@@ -930,44 +928,44 @@ function PlanTab({ data, goals, onSaveGoals }) {
 
   return (
     <div className="stack">
-      {/* TODAY RECOMMENDATION */}
-      <Card title="Today's call" sub="AI looks at your recent load & sleep">
+      {/* TODAY'S CALL */}
+      <Card title="Today's call" sub="AI checks your recent load & sleep">
         {!rec && !recLoading && (
-          <button className="btn-ghost full" onClick={getRec}>✦ Should I train today?</button>
+          <button className="btn-ghost full" onClick={getRec}>\u2726 Should I train today?</button>
         )}
-        {recLoading && <div className="loading-row"><span className="spinner" />Checking your recovery…</div>}
+        {recLoading && <div className="loading-row"><span className="spinner" />Checking your recovery\u2026</div>}
         {rec && !recLoading && (
           <div className="rec-result">
             <div className="rec-badge" style={{ background: `${recColor[rec.recommendation]}22`, color: recColor[rec.recommendation], borderColor: `${recColor[rec.recommendation]}55` }}>
               {recLabel[rec.recommendation] || "Train today"}
             </div>
             <p className="rec-reason">{rec.reason}</p>
-            {rec.tip && <p className="rec-tip">💡 {rec.tip}</p>}
+            {rec.tip && <p className="rec-tip">\ud83d\udca1 {rec.tip}</p>}
             <button className="link-btn" onClick={getRec}>Refresh</button>
           </div>
         )}
       </Card>
 
       {/* AI PLAN BUILDER */}
-      <Card title="✦ Build my week with AI" sub="Describe what you want — the AI designs your whole week">
+      <Card title="\u2726 Build my week" sub="Tell the AI what you want \u2014 it designs your whole week">
         <textarea
           value={prompt}
           onChange={e => setPrompt(e.target.value)}
           rows={3}
-          placeholder={'e.g. "I can train 4 days a week, want to focus on chest and arms, and I play football on Sundays so keep legs away from then"'}
+          placeholder={'e.g. "I can train 4 days a week, focus on chest and arms, and I play football on Sundays so keep legs away from then"'}
         />
         <div className="prompt-chips">
           {[
             "5 days, push/pull/legs, weekends off",
-            "4 days, focus on arms and shoulders",
-            "3 full-body days with max recovery",
-            "I play football Sat & Sun — plan around it",
+            "4 days, focus on arms & shoulders",
+            "3 full-body days, max recovery",
+            "Plan around football Sat & Sun",
           ].map((p, i) => (
             <button key={i} className="prompt-chip" onClick={() => setPrompt(p)}>{p}</button>
           ))}
         </div>
         <button className="btn full" style={{ marginTop: 10 }} onClick={buildPlan} disabled={building || !prompt.trim()}>
-          {building ? <><span className="spinner" />Designing your week…</> : "✦ Design my week"}
+          {building ? <><span className="spinner" />Designing your week\u2026</> : (hasPlan ? "\u2726 Rebuild my week" : "\u2726 Design my week")}
         </button>
         {buildErr && <div className="err">{buildErr}</div>}
 
@@ -979,7 +977,7 @@ function PlanTab({ data, goals, onSaveGoals }) {
                 const w = buildResult.assignments?.[d];
                 const training = buildResult.trainingDays.includes(d);
                 return (
-                  <div key={d} className={`build-day ${training ? "on" : ""}`}>
+                  <div key={d} className={`build-day ${training ? "on" : ""} ${d === todayName ? "today" : ""}`}>
                     <span className="build-day-name">{d}</span>
                     <span className="build-day-w">{training ? (w || "Train") : "Rest"}</span>
                   </div>
@@ -991,62 +989,44 @@ function PlanTab({ data, goals, onSaveGoals }) {
               <ul className="build-tips">{buildResult.tips.map((t, i) => <li key={i}>{t}</li>)}</ul>
             )}
             <div className="row" style={{ marginTop: 12 }}>
-              <button className="btn flex" onClick={applyBuiltPlan}>✓ Use this plan</button>
+              <button className="btn flex" onClick={applyBuiltPlan}>\u2713 Use this plan</button>
               <button className="btn-ghost" onClick={() => setBuildResult(null)}>Discard</button>
             </div>
           </div>
         )}
       </Card>
 
-      {/* SPLIT TYPE */}
-      <Card title="Your split">
-        <label>Training split
-          <select value={split} onChange={e => { setSplit(e.target.value); }}>
-            {SPLIT_TYPES.map(s => <option key={s}>{s}</option>)}
-          </select>
-        </label>
-        <div className="weekgrid-label">Which days can you train?</div>
-        <div className="weekgrid">
-          {WEEKDAYS.map(d => (
-            <button key={d} className={`weekday ${trainingDays.includes(d) ? "on" : ""} ${d === todayName ? "today" : ""}`} onClick={() => toggleDay(d)}>
-              {d}
-            </button>
-          ))}
-        </div>
-        <p className="muted small" style={{ marginTop: 8 }}>{trainingDays.length} training days · {7 - trainingDays.length} rest days</p>
-
-        <button className="btn full" style={{ marginTop: 14 }} onClick={autoSuggest} disabled={suggesting || !trainingDays.length}>
-          {suggesting ? <><span className="spinner" />Planning…</> : "✦ Suggest my weekly schedule"}
-        </button>
-        {rationale && <p className="rec-tip" style={{ marginTop: 10 }}>{rationale}</p>}
-      </Card>
-
-      {/* WEEKLY OUTLINE */}
-      <Card title="Your week" sub="Tap a day's workout to edit it">
-        <div className="week-outline">
-          {WEEKDAYS.map(d => {
-            const isTraining = trainingDays.includes(d);
-            return (
-              <div key={d} className={`wo-day ${d === todayName ? "today" : ""}`}>
-                <div className="wo-day-name">{d}{d === todayName && <span className="wo-today-tag">today</span>}</div>
-                {isTraining ? (
-                  <input className="wo-input" value={assignments[d] || ""} placeholder="e.g. Push, Pull, Legs…"
-                    onChange={e => setAssignments(a => ({ ...a, [d]: e.target.value }))} />
-                ) : (
-                  <div className="wo-rest">Rest day</div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-        <label style={{ marginTop: 14 }}>Notes
-          <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} placeholder="Any changes you want to make, deload weeks, etc." />
-        </label>
-        <button className="btn full" style={{ marginTop: 12 }} onClick={() => persist()}>{saved ? "✓ Plan saved" : "Save plan"}</button>
-      </Card>
+      {/* CURRENT WEEK */}
+      {hasPlan && !buildResult && (
+        <Card title="Your week" sub={split} action={<button className="link-btn" onClick={() => editing ? saveEdits() : setEditing(true)}>{editing ? "Done" : "Edit"}</button>}>
+          <div className="build-week">
+            {WEEKDAYS.map(d => {
+              const training = trainingDays.includes(d);
+              if (editing) {
+                return (
+                  <div key={d} className={`build-day ${d === todayName ? "today" : ""}`}>
+                    <span className="build-day-name">{d}</span>
+                    <input className="wo-input" value={assignments[d] || ""} placeholder="Rest \u2014 type to add"
+                      onChange={e => editDay(d, e.target.value)} />
+                  </div>
+                );
+              }
+              return (
+                <div key={d} className={`build-day ${training ? "on" : ""} ${d === todayName ? "today" : ""}`}>
+                  <span className="build-day-name">{d}</span>
+                  <span className="build-day-w">{training ? (assignments[d] || "Train") : "Rest"}</span>
+                  {d === todayName && <span className="wo-today-tag">today</span>}
+                </div>
+              );
+            })}
+          </div>
+          {editing && <p className="muted small" style={{ marginTop: 10 }}>Type a workout to make it a training day, or clear it for a rest day.</p>}
+        </Card>
+      )}
     </div>
   );
 }
+
 
 // ─── SLEEP FORM ──
 function SleepForm({ onAdd, recent }) {
