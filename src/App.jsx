@@ -15,6 +15,18 @@ const intensityLevels = ["Light", "Moderate", "Intense", "All-out"];
 const TYPE_DOT = { sleep: "#6ee7f7", diet: "#f9c97e", exercise: "#f47e6e", sports: "#8fd989", water: "#5cc8df", supplements: "#b4a8e8" };
 const TYPE_ICON = { sleep: "◐", diet: "◉", exercise: "◆", sports: "◇", water: "◊", supplements: "⊕" };
 
+// ─── AI MODEL PREFERENCE ──────────────────────────────────────────────────────
+const MODELS = {
+  haiku: { id: "claude-haiku-4-5", label: "Haiku", desc: "Fast & cheap — great for everyday logging" },
+  sonnet: { id: "claude-sonnet-4-20250514", label: "Sonnet", desc: "Smartest — best accuracy, costs ~12x more" },
+};
+function loadModelPref() {
+  try { return localStorage.getItem(STORAGE_KEY + "_model") === "sonnet" ? "sonnet" : "haiku"; } catch { return "haiku"; }
+}
+function saveModelPref(key) { localStorage.setItem(STORAGE_KEY + "_model", key); _currentModel = key; }
+let _currentModel = (() => { try { return localStorage.getItem(STORAGE_KEY + "_model") === "sonnet" ? "sonnet" : "haiku"; } catch { return "haiku"; } })();
+function currentModelId() { return MODELS[_currentModel]?.id || MODELS.haiku.id; }
+
 // ─── STORAGE ──────────────────────────────────────────────────────────────────
 function loadData() {
   try { const r = localStorage.getItem(STORAGE_KEY); const p = r ? JSON.parse(r) : defaultData; return { ...defaultData, ...p }; }
@@ -87,40 +99,72 @@ const formatShortDate = ds => new Date(ds + "T00:00:00").toLocaleDateString("en-
 const daysAgo = n => { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().split("T")[0]; };
 
 // ─── CLAUDE API ───────────────────────────────────────────────────────────────
-async function callClaude({ system, userText, imageBase64, imageMediaType, maxTokens = 1000, conversationMessages }) {
+async function callClaude({ system, userText, imageBase64, imageMediaType, maxTokens = 1000, conversationMessages, tools, model }) {
+  const useModel = model || currentModelId();
   const apiMessages = conversationMessages || [{
     role: "user",
     content: imageBase64
       ? [{ type: "image", source: { type: "base64", media_type: imageMediaType, data: imageBase64 } }, { type: "text", text: userText }]
       : userText
   }];
+  const body = { model: useModel, max_tokens: maxTokens, system, messages: apiMessages };
+  if (tools) body.tools = tools;
   const resp = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "claude-haiku-4-5", max_tokens: maxTokens, system, messages: apiMessages })
+    body: JSON.stringify(body)
   });
   const data = await resp.json();
-  return data.content?.map(b => b.text || "").join("") || "";
+  // Concatenate all text blocks (web search adds extra block types we ignore here)
+  return data.content?.filter(b => b.type === "text").map(b => b.text || "").join("") || "";
+}
+
+// The web search tool — lets Claude look up real nutrition data for branded/restaurant foods.
+const WEB_SEARCH_TOOL = [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }];
+
+// Robustly pull a JSON object out of a response that may contain prose around it.
+function extractJSON(raw) {
+  let s = raw.replace(/```json|```/g, "").trim();
+  const start = s.indexOf("{");
+  const end = s.lastIndexOf("}");
+  if (start !== -1 && end !== -1 && end > start) s = s.slice(start, end + 1);
+  return JSON.parse(s);
 }
 
 async function estimateSportsCalories(sport, duration, intensity, weight) {
   try {
     const raw = await callClaude({
-      system: "Sports science expert. Valid JSON only, no markdown.",
-      userText: `Estimate calories: sport="${sport}", ${duration} min, intensity="${intensity}", ${weight}kg. JSON: {"calories":<number>,"note":"<1 sentence>"}`
+      model: currentModelId(),
+      maxTokens: 600,
+      system: "You are a sports physiologist. Calculate calories burned using the correct MET (metabolic equivalent) value for the given sport and intensity. Formula: calories = MET × weight(kg) × hours. Use standard Compendium of Physical Activities MET values. Be accurate, not generous. Reply with ONLY the JSON object.",
+      userText: `Calculate calories burned: sport="${sport}", duration=${duration} min, intensity="${intensity}", bodyweight=${weight}kg. Return JSON: {"calories":<number>,"met":<number>,"note":"<the MET used, 1 sentence>"}`,
     });
-    return JSON.parse(raw.replace(/```json|```/g, "").trim());
+    return extractJSON(raw);
   } catch { return { calories: 0, note: "Could not estimate." }; }
 }
 
-async function analyzeFoodAI(description, imageBase64, imageMediaType) {
+// useWeb = true only when the user opts in (branded/restaurant foods). Keeps cost low by default.
+async function analyzeFoodAI(description, imageBase64, imageMediaType, useWeb = false) {
   try {
     const raw = await callClaude({
-      system: `Nutritionist. Return ONLY JSON: {"food":"<name>","calories":<n>,"protein":<n>,"carbs":<n>,"fat":<n>,"notes":"<brief>"}. Numbers only for macros. No markdown.`,
-      userText: description ? `Analyze nutrition: "${description}"` : "Analyze the food in this image.",
-      imageBase64, imageMediaType
+      model: currentModelId(),
+      maxTokens: useWeb ? 1500 : 700,
+      tools: useWeb ? WEB_SEARCH_TOOL : undefined,
+      system: `You are a meticulous nutritionist. Estimate nutrition as ACCURATELY as possible.
+RULES:
+- ${useWeb ? "For branded/restaurant/packaged foods, search the web for the official published nutrition facts and use those exact numbers." : "Use precise USDA-style values from your knowledge."}
+- Account for cooking method, oil, and realistic portion sizes.
+- If a portion is vague, assume a typical real-world serving and note it.
+- Do NOT round down to be "nice" — restaurant and fried foods are calorie-dense. Be realistic.
+- If multiple items, sum them.
+Reply with ONLY this JSON (after any research):
+{"food":"<concise name>","calories":<n>,"protein":<n>,"carbs":<n>,"fat":<n>,"confidence":"high|medium|low","notes":"<source or assumptions, brief>"}`,
+      userText: description
+        ? `Analyze the nutrition of: "${description}".${useWeb ? " Search for official data if this is a branded or restaurant item." : ""}`
+        : `Identify the food in this image and analyze its nutrition.${useWeb ? " If it's a specific brand or restaurant dish, search for its official nutrition facts." : ""}`,
+      imageBase64, imageMediaType,
     });
-    return JSON.parse(raw.replace(/```json|```/g, "").trim());
+    return extractJSON(raw);
   } catch { return null; }
 }
 
@@ -536,6 +580,7 @@ function DietForm({ onAdd, recent }) {
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState(null);
   const [mode, setMode] = useState("text");
+  const [useWeb, setUseWeb] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
@@ -560,7 +605,7 @@ function DietForm({ onAdd, recent }) {
         b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.onerror = rej; r.readAsDataURL(file); });
         mt = file.type;
       }
-      const r = await analyzeFoodAI(mode === "text" ? text : "", b64, mt);
+      const r = await analyzeFoodAI(mode === "text" ? text : "", b64, mt, useWeb);
       if (r) setResult(r); else setError("Couldn't analyze that. Try again or be more specific.");
     } catch { setError("Network issue. Try again."); }
     setAnalyzing(false);
@@ -615,16 +660,28 @@ function DietForm({ onAdd, recent }) {
       )}
 
       {!result && (
-        <button className="btn full" onClick={analyze} disabled={analyzing || (mode === "text" ? !text.trim() : !file)}>
-          {analyzing ? <><span className="spinner" />Analyzing…</> : "✦ Analyze with AI"}
-        </button>
+        <>
+          <label className="web-toggle">
+            <input type="checkbox" checked={useWeb} onChange={e => setUseWeb(e.target.checked)} />
+            <span className="web-toggle-text">
+              <span className="web-toggle-title">🌐 Search web for exact data</span>
+              <span className="web-toggle-sub">Best for branded / restaurant foods. Slower, costs a bit more.</span>
+            </span>
+          </label>
+          <button className="btn full" onClick={analyze} disabled={analyzing || (mode === "text" ? !text.trim() : !file)}>
+            {analyzing ? <><span className="spinner" />{useWeb ? "Researching nutrition…" : "Analyzing…"}</> : "✦ Analyze with AI"}
+          </button>
+        </>
       )}
 
       {error && <div className="err">{error}</div>}
 
       {result && (
         <div className="ai-card">
-          <div className="ai-card-label">AI analysis</div>
+          <div className="ai-card-label">
+            AI analysis
+            {result.confidence && <span className={`conf-badge conf-${result.confidence}`}>{result.confidence} confidence</span>}
+          </div>
           <div className="ai-card-name">{result.food}</div>
           <div className="macros">
             <div className="macro"><span className="macro-v">{result.calories}</span><span className="macro-l">kcal</span></div>
@@ -705,7 +762,7 @@ function SportsForm({ onAdd, recent }) {
           const r = await estimateSportsCalories(form.sport, +form.duration, form.intensity, +weight || 75);
           setEst(r); setEstimating(false);
         }} disabled={estimating || !form.duration}>
-          {estimating ? <><span className="spinner" />Estimating…</> : "✦ Estimate calories with AI"}
+          {estimating ? <><span className="spinner" />Calculating (MET-based)…</> : "✦ Estimate calories with AI"}
         </button>
       )}
 
@@ -1159,9 +1216,11 @@ Today supplements: ${data.supplements.filter(s => s.date === today).map(s => s.n
         }
       }
       const reply = await callClaude({
-        system: `You are an elite personal trainer and sports nutritionist. The user shares their real fitness tracking data with you AND you have access to your full conversation history (including a summary of older chats). They may send photos — of meals, their physique, gym equipment, supplement labels, workout screens — analyze them helpfully. Reference past discussions naturally. Give direct, specific advice with their actual numbers. Use markdown: **bold** for key points, bullet lists for steps. 2-4 short paragraphs max. Their goal: ${goals.goal}.`,
-        maxTokens: 800,
-        conversationMessages: apiMsgs
+        model: currentModelId(),
+        system: `You are an elite personal trainer and sports nutritionist. The user shares their real fitness tracking data with you AND you have access to your full conversation history (including a summary of older chats). They may send photos — of meals, their physique, gym equipment, supplement labels, workout screens — analyze them helpfully. You CAN search the web, but only do so when you genuinely need a current or specific fact you're unsure about (exact branded nutrition, a specific product, recent research). For general training/nutrition advice, answer directly without searching. Reference past discussions naturally. Give direct, specific advice with their actual numbers. Use markdown: **bold** for key points, bullet lists for steps. Keep it tight — 2-4 short paragraphs. Their goal: ${goals.goal}.`,
+        maxTokens: 1000,
+        conversationMessages: apiMsgs,
+        tools: WEB_SEARCH_TOOL
       });
       setMessages(m => [...m, { role: "assistant", text: reply || "Sorry, try again.", ts: Date.now() }]);
     } catch {
@@ -1191,7 +1250,7 @@ Today supplements: ${data.supplements.filter(s => s.date === today).map(s => s.n
       <div className="coach-bar">
         <div className="coach-bar-l">
           <span className="coach-bar-title">AI Coach</span>
-          <span className="muted small">{messages.length - 1} messages</span>
+          <span className="muted small">{messages.length - 1} messages · {MODELS[_currentModel]?.label}</span>
         </div>
         <div className="coach-bar-r">
           <button className="link-btn" onClick={() => setShowAnalysis(s => !s)}>{showAnalysis ? "← Back to chat" : "📊 Full analysis"}</button>
@@ -1315,7 +1374,7 @@ function SettingsTab({ data, goals, onSaveGoals, onClearAll, onImport, session, 
         <button className={`subtab ${section === "export" ? "active" : ""}`} onClick={() => setSection("export")}>⬇ Export</button>
         <button className={`subtab ${section === "data" ? "active" : ""}`} onClick={() => setSection("data")}>⌗ Data</button>
       </div>
-      {section === "goals" && <GoalsSettings goals={goals} onSave={onSaveGoals} />}
+      {section === "goals" && <><GoalsSettings goals={goals} onSave={onSaveGoals} /><AIModelSettings /></>}
       {section === "export" && <ExportSettings data={data} goals={goals} />}
       {section === "data" && <DataSettings data={data} onClearAll={onClearAll} onImport={onImport} />}
 
@@ -1331,6 +1390,29 @@ function SettingsTab({ data, goals, onSaveGoals, onClearAll, onImport, session, 
         </Card>
       )}
     </div>
+  );
+}
+
+function AIModelSettings() {
+  const [model, setModel] = useState(loadModelPref);
+  function pick(key) { setModel(key); saveModelPref(key); toast(`AI model: ${MODELS[key].label}`); }
+  return (
+    <Card title="AI model" sub="Used for food, sports & coach. Switch anytime.">
+      <div className="model-opts">
+        {Object.entries(MODELS).map(([key, m]) => (
+          <button key={key} className={`model-opt ${model === key ? "active" : ""}`} onClick={() => pick(key)}>
+            <div className="model-opt-top">
+              <span className="model-opt-name">{m.label}</span>
+              {model === key && <span className="model-opt-check">✓</span>}
+            </div>
+            <span className="model-opt-desc">{m.desc}</span>
+          </button>
+        ))}
+      </div>
+      <p className="muted small" style={{ marginTop: 10, lineHeight: 1.5 }}>
+        Haiku is plenty for daily logging. Switch to Sonnet for tricky meals or deeper coaching when accuracy matters most.
+      </p>
+    </Card>
   );
 }
 
@@ -1977,6 +2059,24 @@ select option { background: var(--surface-2); }
 @keyframes aiReveal { from { opacity: 0; transform: translateY(10px) scale(.98); } to { opacity: 1; transform: none; } }
 .ai-card-label { font-size: .68rem; font-weight: 600; color: var(--accent); letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 6px; }
 .ai-card-name { font-size: .95rem; font-weight: 500; margin-bottom: 12px; }
+.conf-badge { font-size: .62rem; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; padding: 2px 7px; border-radius: 8px; margin-left: 8px; }
+.conf-high { background: rgba(143,217,137,0.15); color: var(--good); }
+.conf-medium { background: rgba(249,201,126,0.15); color: var(--warn); }
+.conf-low { background: rgba(244,126,110,0.15); color: var(--bad); }
+.web-toggle { display: flex; align-items: flex-start; gap: 10px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 10px; cursor: pointer; text-transform: none; letter-spacing: normal; }
+.web-toggle input { width: 18px; height: 18px; margin-top: 1px; flex-shrink: 0; accent-color: var(--accent); cursor: pointer; }
+.web-toggle-text { display: flex; flex-direction: column; gap: 2px; }
+.web-toggle-title { font-size: .85rem; font-weight: 500; color: var(--text); }
+.web-toggle-sub { font-size: .72rem; color: var(--muted); line-height: 1.4; }
+.model-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.model-opt { text-align: left; background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 14px; cursor: pointer; font-family: inherit; transition: border-color .15s, background .15s, transform .12s ease; -webkit-tap-highlight-color: transparent; }
+.model-opt:active { transform: scale(.97); }
+.model-opt.active { border-color: var(--accent); background: var(--accent-dim); }
+.model-opt-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px; }
+.model-opt-name { font-size: .95rem; font-weight: 600; color: var(--text); }
+.model-opt-check { color: var(--accent); font-weight: 700; }
+.model-opt-desc { font-size: .73rem; color: var(--muted); line-height: 1.45; }
+@media (max-width: 380px) { .model-opts { grid-template-columns: 1fr; } }
 .ai-card-big { font-family: 'DM Serif Display', serif; font-size: 2.4rem; color: var(--accent); line-height: 1; margin-bottom: 6px; }
 .ai-card-big span { font-family: 'Inter', sans-serif; font-size: .9rem; color: var(--muted); font-weight: 500; }
 .ai-card-note { font-size: .82rem; color: var(--text-2); line-height: 1.55; margin-bottom: 12px; }
