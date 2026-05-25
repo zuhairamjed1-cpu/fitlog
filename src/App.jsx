@@ -1,18 +1,19 @@
 import { useState, useEffect, useRef, useMemo } from "react";
+import { supabase, hasSupabase } from "./supabase";
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const TABS = ["Home", "Log", "History", "Coach", "Settings"];
 const STORAGE_KEY = "fitlog_v5";
-const defaultData = { sleep: [], diet: [], exercise: [], sports: [], weight: [], water: [], supplements: [] };
-const defaultGoals = { calories: 2500, protein: 180, carbs: 250, fat: 80, goal: "Build Muscle", waterGoalMl: 2500, weightUnit: "kg" };
+const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [] };
+const defaultGoals = { calories: 2500, protein: 180, carbs: 250, fat: 80, goal: "Build Muscle", waterGoalMl: 2500 };
 const fitnessGoals = ["Build Muscle", "Lose Fat", "Improve Endurance", "Maintain Weight", "Athletic Performance"];
 const mealTypes = ["Breakfast", "Lunch", "Dinner", "Snack"];
 const sportsOptions = ["Football","Basketball","Tennis","Swimming","Running","Cycling","Yoga","Boxing","Soccer","Volleyball","Badminton","Table Tennis","Golf","Martial Arts","Other"];
 const sleepQuality = ["Poor", "Fair", "Good", "Great", "Excellent"];
 const intensityLevels = ["Light", "Moderate", "Intense", "All-out"];
 
-const TYPE_DOT = { sleep: "#6ee7f7", diet: "#f9c97e", exercise: "#f47e6e", sports: "#8fd989", water: "#5cc8df", weight: "#b4a8e8", supplements: "#b4a8e8" };
-const TYPE_ICON = { sleep: "◐", diet: "◉", exercise: "◆", sports: "◇", water: "◊", weight: "⚖", supplements: "⊕" };
+const TYPE_DOT = { sleep: "#6ee7f7", diet: "#f9c97e", exercise: "#f47e6e", sports: "#8fd989", water: "#5cc8df", supplements: "#b4a8e8" };
+const TYPE_ICON = { sleep: "◐", diet: "◉", exercise: "◆", sports: "◇", water: "◊", supplements: "⊕" };
 
 // ─── STORAGE ──────────────────────────────────────────────────────────────────
 function loadData() {
@@ -25,6 +26,61 @@ function loadGoals() {
 }
 const saveData = d => localStorage.setItem(STORAGE_KEY, JSON.stringify(d));
 const saveGoals = g => localStorage.setItem(STORAGE_KEY + "_goals", JSON.stringify(g));
+
+// ─── CLOUD SYNC ───────────────────────────────────────────────────────────────
+// Tracks the currently signed-in user so any localStorage write can trigger a sync.
+let _currentUserId = null;
+function setCurrentUser(id) { _currentUserId = id; }
+
+// Pushes the full {data, goals, chat} bundle to Supabase for the logged-in user.
+// Debounced so rapid edits don't spam the server.
+let _syncTimer = null;
+function cloudSync(userId) {
+  const uid = userId || _currentUserId;
+  if (!hasSupabase || !uid) return;
+  clearTimeout(_syncTimer);
+  _syncTimer = setTimeout(async () => {
+    try {
+      const payload = {
+        user_id: uid,
+        data: loadData(),
+        goals: loadGoals(),
+        chat: JSON.parse(localStorage.getItem(STORAGE_KEY + "_chat") || "[]"),
+        updated_at: new Date().toISOString(),
+      };
+      await supabase.from("fitlog_data").upsert(payload, { onConflict: "user_id" });
+    } catch (e) { /* offline — will retry on next change */ }
+  }, 1200);
+}
+
+// Pulls cloud data into localStorage. Returns true if cloud had data.
+async function cloudPull(userId) {
+  if (!hasSupabase || !userId) return false;
+  const { data: row, error } = await supabase.from("fitlog_data").select("*").eq("user_id", userId).maybeSingle();
+  if (error || !row) return false;
+  const cloudData = row.data || {};
+  const hasAny = Object.values(cloudData).some(arr => Array.isArray(arr) && arr.length > 0);
+  if (!hasAny && (!row.chat || row.chat.length <= 1)) return false; // cloud effectively empty
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...defaultData, ...cloudData }));
+  localStorage.setItem(STORAGE_KEY + "_goals", JSON.stringify({ ...defaultGoals, ...(row.goals || {}) }));
+  if (row.chat) localStorage.setItem(STORAGE_KEY + "_chat", JSON.stringify(row.chat));
+  return true;
+}
+
+// Pushes current local data up immediately (used on first sign-in when cloud is empty).
+async function cloudPushNow(userId) {
+  if (!hasSupabase || !userId) return;
+  try {
+    await supabase.from("fitlog_data").upsert({
+      user_id: userId,
+      data: loadData(),
+      goals: loadGoals(),
+      chat: JSON.parse(localStorage.getItem(STORAGE_KEY + "_chat") || "[]"),
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "user_id" });
+  } catch (e) {}
+}
+
 const getTodayStr = () => new Date().toISOString().split("T")[0];
 const formatDate = ds => new Date(ds + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 const formatShortDate = ds => new Date(ds + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" });
@@ -75,39 +131,12 @@ async function analyzeAllData(data, goals) {
   const dietLines = last14(data.diet).map(d => `${d.date} ${d.meal}: ${d.food} — ${d.calories}kcal P:${d.protein}g`).join("\n") || "No data";
   const exLines = last14(data.exercise).map(e => `${e.date}: ${e.label}\n${(e.text||"").slice(0,200)}`).join("\n\n") || "No data";
   const spLines = last14(data.sports).map(s => `${s.date}: ${s.sport} ${s.duration}min ${s.intensity}`).join("\n") || "No data";
-  const wLines = last14(data.weight).map(w => `${w.date}: ${w.weight}${w.unit||"kg"}`).join("\n") || "No data";
 
   const system = `You are an elite personal trainer and sports nutritionist. Analyze real fitness data and give specific, actionable advice for ${goals.goal}. Return ONLY JSON:
 {"overallScore":<1-10>,"summary":"<2-3 sentences>","sections":[{"category":"Sleep & Recovery","score":<1-10>,"status":"good|warning|critical","insight":"<specific>","tips":["<tip>","<tip>","<tip>"]},{"category":"Nutrition","score":<1-10>,"status":"good|warning|critical","insight":"<specific>","tips":["<tip>","<tip>","<tip>"]},{"category":"Training","score":<1-10>,"status":"good|warning|critical","insight":"<specific>","tips":["<tip>","<tip>","<tip>"]},{"category":"Calorie Balance","score":<1-10>,"status":"good|warning|critical","insight":"<specific>","tips":["<tip>","<tip>","<tip>"]}],"priorityAction":"<one impactful thing>"}`;
 
-  const raw = await callClaude({ system, maxTokens: 2000, userText: `Goal: ${goals.goal}\nCalorie target: ${goals.calories}kcal\nMacros: P${goals.protein}g C${goals.carbs}g F${goals.fat}g\n\nSLEEP:\n${sleepLines}\n\nDIET:\n${dietLines}\n\nEXERCISE:\n${exLines}\n\nSPORTS:\n${spLines}\n\nWEIGHT:\n${wLines}` });
+  const raw = await callClaude({ system, maxTokens: 2000, userText: `Goal: ${goals.goal}\nCalorie target: ${goals.calories}kcal\nMacros: P${goals.protein}g C${goals.carbs}g F${goals.fat}g\n\nSLEEP:\n${sleepLines}\n\nDIET:\n${dietLines}\n\nEXERCISE:\n${exLines}\n\nSPORTS:\n${spLines}` });
   return JSON.parse(raw.replace(/```json|```/g, "").trim());
-}
-
-async function generateDailyInsight(data, goals) {
-  const today = getTodayStr(), yest = daysAgo(1);
-  const last7 = arr => arr.filter(i => i.date >= daysAgo(6));
-  const yestSleep = data.sleep.find(s => s.date === yest);
-  const todayDiet = data.diet.filter(d => d.date === today);
-  const yestDiet = data.diet.filter(d => d.date === yest);
-  const last3 = data.exercise.slice(0, 3).map(e => `${e.date}: ${e.label}`).join("; ") || "none";
-  const recentSp = data.sports.filter(s => s.date >= daysAgo(2)).map(s => `${s.date}: ${s.sport} ${s.intensity}`).join("; ") || "none";
-  const avg = last7(data.sleep).length ? (last7(data.sleep).reduce((a,s)=>a+s.duration,0)/last7(data.sleep).length).toFixed(1) : "—";
-  const w = data.weight.slice(0, 3).map(w => `${w.date}: ${w.weight}${w.unit||"kg"}`).join("; ") || "none";
-
-  return await callClaude({
-    system: `Elite fitness coach. Give the user ONE specific insight for today in 2-3 conversational sentences. Reference their real numbers. Plain text, no markdown headers. Goal: ${goals.goal}.`,
-    userText: `Today: ${new Date().toLocaleDateString("en-US",{weekday:"long"})}
-Goal: ${goals.goal} | Calorie target: ${goals.calories}
-Yesterday sleep: ${yestSleep ? `${yestSleep.duration}h (${yestSleep.quality})` : "not logged"}
-7-day avg sleep: ${avg}h
-Yesterday calories: ${yestDiet.reduce((a,d)=>a+d.calories,0) || "not logged"}kcal
-Today's meals: ${todayDiet.length ? todayDiet.map(d=>d.meal).join(", ") : "none yet"}
-Last 3 workouts: ${last3}
-Recent sports: ${recentSp}
-Recent weight: ${w}`,
-    maxTokens: 250
-  });
 }
 
 // ─── MARKDOWN ─────────────────────────────────────────────────────────────────
@@ -247,12 +276,64 @@ function Empty({ icon = "✦", title, hint, action }) {
   );
 }
 
+// ─── TOAST (global, no context needed) ────────────────────────────────────────
+let _toastFn = null;
+function toast(msg) { if (_toastFn) _toastFn(msg); }
+
+function ToastHost() {
+  const [items, setItems] = useState([]);
+  useEffect(() => {
+    _toastFn = (msg) => {
+      const id = Date.now() + Math.random();
+      setItems(it => [...it, { id, msg }]);
+      setTimeout(() => setItems(it => it.filter(x => x.id !== id)), 2200);
+    };
+    return () => { _toastFn = null; };
+  }, []);
+  return (
+    <div className="toast-host">
+      {items.map(t => <div key={t.id} className="toast">{t.msg}</div>)}
+    </div>
+  );
+}
+
+// ─── CONFIRM MODAL ────────────────────────────────────────────────────────────
+function ConfirmModal({ open, title, body, confirmLabel = "Confirm", danger, onConfirm, onCancel }) {
+  if (!open) return null;
+  return (
+    <div className="modal-overlay" onClick={onCancel}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <h3 className="modal-title">{title}</h3>
+        {body && <p className="modal-body">{body}</p>}
+        <div className="modal-actions">
+          <button className="btn-ghost flex" onClick={onCancel}>Cancel</button>
+          <button className={danger ? "btn-danger flex" : "btn flex"} onClick={onConfirm}>{confirmLabel}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Hook for confirm flow
+function useConfirm() {
+  const [state, setState] = useState({ open: false });
+  const confirm = (opts) => new Promise(resolve => {
+    setState({
+      open: true, ...opts,
+      onConfirm: () => { setState({ open: false }); resolve(true); },
+      onCancel: () => { setState({ open: false }); resolve(false); },
+    });
+  });
+  const modal = <ConfirmModal {...state} />;
+  return [confirm, modal];
+}
+
 // ─── HOME TAB ─────────────────────────────────────────────────────────────────
-function HomeTab({ data, goals, onAddWater, onAddWeight, onNav }) {
+function HomeTab({ data, goals, onAddWater, onNav }) {
   const today = getTodayStr();
   const now = new Date();
   const hr = now.getHours();
-  const greeting = hr < 5 ? "Still up?" : hr < 12 ? "Good morning" : hr < 17 ? "Good afternoon" : hr < 21 ? "Good evening" : "Good night";
+  const greeting = hr < 5 ? "Late night" : hr < 12 ? "Good morning" : hr < 17 ? "Good afternoon" : hr < 21 ? "Good evening" : "Good night";
 
   const todayDiet = data.diet.filter(d => d.date === today);
   const todayCal = todayDiet.reduce((a, m) => a + m.calories, 0);
@@ -267,27 +348,13 @@ function HomeTab({ data, goals, onAddWater, onAddWeight, onNav }) {
   const prtPct = Math.min(100, Math.round((todayProtein / goals.protein) * 100));
   const waterPct = Math.min(100, Math.round((todayWaterMl / goals.waterGoalMl) * 100));
 
-  const sortedWeight = [...data.weight].sort((a, b) => a.date < b.date ? 1 : -1);
-  const latestWeight = sortedWeight[0];
-  const prevWeight = sortedWeight[1];
-  const todayHasWeight = data.weight.some(w => w.date === today);
+  const nothingToday = !todaySleep && todayDiet.length === 0 && !todayWorkout && !todaySport && todaySupps.length === 0;
+  const ringsEmpty = todayCal === 0 && todayProtein === 0 && todayWaterMl === 0;
 
-  // Daily insight
-  const insightKey = STORAGE_KEY + "_insight_" + today;
-  const [insight, setInsight] = useState(() => localStorage.getItem(insightKey) || "");
-  const [insLoading, setInsLoading] = useState(false);
-
-  async function getInsight() {
-    setInsLoading(true);
-    try {
-      const t = await generateDailyInsight(data, goals);
-      setInsight(t); localStorage.setItem(insightKey, t);
-    } catch {}
-    setInsLoading(false);
+  function addWater() {
+    onAddWater({ id: Date.now(), date: today, ml: 250, ts: Date.now() });
+    toast("💧 +250ml water logged");
   }
-
-  const [showWeight, setShowWeight] = useState(false);
-  const [wt, setWt] = useState("");
 
   return (
     <div className="stack">
@@ -298,18 +365,22 @@ function HomeTab({ data, goals, onAddWater, onAddWeight, onNav }) {
         <p className="greeting-goal">{goals.goal}</p>
       </div>
 
-      {/* PRIMARY RINGS — 3 only, all today */}
+      {/* PRIMARY RINGS */}
       <Card>
         <div className="rings-row">
-          <Ring pct={calPct} label="Calories" value={todayCal || "—"} unit="" big />
-          <Ring pct={prtPct} label="Protein" value={todayProtein || "—"} unit={todayProtein ? "g" : ""} big />
-          <Ring pct={waterPct} label="Water" value={todayWaterMl ? (todayWaterMl >= 1000 ? (todayWaterMl/1000).toFixed(1) : todayWaterMl) : "—"} unit={todayWaterMl ? (todayWaterMl >= 1000 ? "L" : "ml") : ""} big />
+          <Ring pct={calPct} label="Calories" value={todayCal || "0"} unit="" big />
+          <Ring pct={prtPct} label="Protein" value={todayProtein || "0"} unit="g" big />
+          <Ring pct={waterPct} label="Water" value={todayWaterMl ? (todayWaterMl >= 1000 ? (todayWaterMl/1000).toFixed(1) : todayWaterMl) : "0"} unit={todayWaterMl >= 1000 ? "L" : "ml"} big />
         </div>
-        <div className="ring-targets">
-          <span>{todayCal}/{goals.calories} kcal</span>
-          <span>{todayProtein}/{goals.protein}g protein</span>
-          <span>{todayWaterMl}/{goals.waterGoalMl}ml</span>
-        </div>
+        {ringsEmpty ? (
+          <p className="rings-zero">Your day's a clean slate — log a meal or some water to start filling these. 💪</p>
+        ) : (
+          <div className="ring-targets">
+            <span>{todayCal}/{goals.calories} kcal</span>
+            <span>{todayProtein}/{goals.protein}g protein</span>
+            <span>{todayWaterMl}/{goals.waterGoalMl}ml</span>
+          </div>
+        )}
       </Card>
 
       {/* QUICK ACTIONS */}
@@ -317,7 +388,7 @@ function HomeTab({ data, goals, onAddWater, onAddWeight, onNav }) {
         <button className="qa qa-primary" onClick={() => onNav("Log", "diet")}>
           <span className="qa-icon">◉</span><span>Log meal</span>
         </button>
-        <button className="qa" onClick={() => onAddWater({ id: Date.now(), date: today, ml: 250, ts: Date.now() })}>
+        <button className="qa" onClick={addWater}>
           <span className="qa-icon">◊</span><span>+ 250ml water</span>
         </button>
         <button className="qa" onClick={() => onNav("Log", "exercise")}>
@@ -328,52 +399,17 @@ function HomeTab({ data, goals, onAddWater, onAddWeight, onNav }) {
         </button>
       </div>
 
-      {/* AI INSIGHT */}
-      <Card title="✦ Today's insight" action={insight && <button className="link-btn" onClick={() => { localStorage.removeItem(insightKey); setInsight(""); getInsight(); }} disabled={insLoading}>Refresh</button>}>
-        {!insight && !insLoading && (
-          <button className="btn-ghost full" onClick={getInsight}>Generate insight from your data</button>
-        )}
-        {insLoading && <div className="loading-row"><span className="spinner" />Thinking…</div>}
-        {insight && !insLoading && <div className="md insight">{renderMarkdown(insight)}</div>}
-      </Card>
-
       {/* TODAY LOGGED */}
-      <Card title="Today" sub={todayDiet.length || todaySleep || todayWorkout || todaySport ? null : "Nothing logged yet"}>
-        {(todaySleep || todayDiet.length > 0 || todayWorkout || todaySport || todaySupps.length > 0) && (
+      <Card title="Today">
+        {nothingToday ? (
+          <Empty title="Nothing logged yet" hint="Tap a quick action above to get started" />
+        ) : (
           <div className="today-items">
             {todaySleep && <div className="today-item"><span className="today-dot" style={{ background: TYPE_DOT.sleep }} /><span className="today-text">{todaySleep.duration}h sleep · {todaySleep.quality.toLowerCase()}</span></div>}
             {todayDiet.map(m => <div key={m.id} className="today-item"><span className="today-dot" style={{ background: TYPE_DOT.diet }} /><span className="today-text">{m.meal} · {m.calories} kcal · {m.food.slice(0, 30)}{m.food.length > 30 ? "…" : ""}</span></div>)}
             {todayWorkout && <div className="today-item"><span className="today-dot" style={{ background: TYPE_DOT.exercise }} /><span className="today-text">Workout · {todayWorkout.label}</span></div>}
             {todaySport && <div className="today-item"><span className="today-dot" style={{ background: TYPE_DOT.sports }} /><span className="today-text">{todaySport.sport} · {todaySport.duration}min</span></div>}
             {todaySupps.length > 0 && <div className="today-item"><span className="today-dot" style={{ background: TYPE_DOT.supplements }} /><span className="today-text">{todaySupps.length} supplement{todaySupps.length === 1 ? "" : "s"} · {todaySupps.map(s => s.name).join(", ")}</span></div>}
-          </div>
-        )}
-      </Card>
-
-      {/* WEIGHT */}
-      <Card title="⚖ Weight" action={!todayHasWeight && !showWeight ? <button className="link-btn" onClick={() => setShowWeight(true)}>+ Log today</button> : todayHasWeight ? <span className="muted-tag">✓ logged</span> : null}>
-        {latestWeight ? (
-          <div className="weight-row">
-            <div className="weight-big">{latestWeight.weight}<span>{latestWeight.unit || goals.weightUnit}</span></div>
-            <div className="weight-meta">
-              {prevWeight && (() => {
-                const diff = latestWeight.weight - prevWeight.weight;
-                if (diff === 0) return <span className="muted">no change</span>;
-                const goodDir = (goals.goal === "Lose Fat") ? diff < 0 : (goals.goal === "Build Muscle") ? diff > 0 : null;
-                const cls = goodDir === null ? "" : goodDir ? "good" : "warn";
-                return <span className={`weight-diff ${cls}`}>{diff > 0 ? "+" : ""}{diff.toFixed(1)}{latestWeight.unit || goals.weightUnit} since last</span>;
-              })()}
-              <span className="muted">{formatDate(latestWeight.date)}</span>
-            </div>
-          </div>
-        ) : (
-          <Empty icon="⚖" title="No weight logged" hint="Log it daily to track your progress" />
-        )}
-        {showWeight && (
-          <div className="inline-form">
-            <input type="number" step="0.1" value={wt} onChange={e => setWt(e.target.value)} placeholder={`weight in ${goals.weightUnit}`} autoFocus />
-            <button className="btn" onClick={() => { if (wt) { onAddWeight({ id: Date.now(), date: today, weight: parseFloat(wt), unit: goals.weightUnit }); setWt(""); setShowWeight(false); } }} disabled={!wt}>Save</button>
-            <button className="btn-ghost" onClick={() => { setShowWeight(false); setWt(""); }}>Cancel</button>
           </div>
         )}
       </Card>
@@ -391,6 +427,20 @@ const LOG_SUBTABS = [
   { key: "supplement", label: "Supplement", icon: "⊕" },
 ];
 
+function RecentList({ entries, render }) {
+  if (!entries || entries.length === 0) return null;
+  return (
+    <div className="recent-after">
+      <div className="recent-after-label">Recent</div>
+      <div className="recent-after-list">
+        {entries.slice(0, 3).map(e => (
+          <div key={e.id} className="recent-after-item">{render(e)}</div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function LogTab({ data, goals, addEntry, deleteEntry, initialSub }) {
   const [sub, setSub] = useState(initialSub || "diet");
   useEffect(() => { if (initialSub) setSub(initialSub); }, [initialSub]);
@@ -405,10 +455,10 @@ function LogTab({ data, goals, addEntry, deleteEntry, initialSub }) {
         ))}
       </div>
 
-      {sub === "diet" && <DietForm onAdd={addEntry("diet")} />}
-      {sub === "sleep" && <SleepForm onAdd={addEntry("sleep")} />}
-      {sub === "exercise" && <ExerciseForm onAdd={addEntry("exercise")} />}
-      {sub === "sports" && <SportsForm onAdd={addEntry("sports")} />}
+      {sub === "diet" && <DietForm onAdd={addEntry("diet")} recent={data.diet} />}
+      {sub === "sleep" && <SleepForm onAdd={addEntry("sleep")} recent={data.sleep} />}
+      {sub === "exercise" && <ExerciseForm onAdd={addEntry("exercise")} recent={data.exercise} />}
+      {sub === "sports" && <SportsForm onAdd={addEntry("sports")} recent={data.sports} />}
       {sub === "water" && <WaterForm data={data} goals={goals} onAdd={addEntry("water")} onDelete={deleteEntry("water")} />}
       {sub === "supplement" && <SupplementForm data={data} onAdd={addEntry("supplements")} onDelete={deleteEntry("supplements")} />}
     </div>
@@ -416,30 +466,38 @@ function LogTab({ data, goals, addEntry, deleteEntry, initialSub }) {
 }
 
 // ─── SLEEP FORM ──
-function SleepForm({ onAdd }) {
+function SleepForm({ onAdd, recent }) {
   const [form, setForm] = useState({ date: getTodayStr(), bedtime: "22:30", wakeTime: "06:30", quality: "Good", notes: "" });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const dur = (() => {
     const [bh, bm] = form.bedtime.split(":").map(Number), [wh, wm] = form.wakeTime.split(":").map(Number);
     let m = (wh * 60 + wm) - (bh * 60 + bm); if (m < 0) m += 1440; return (m / 60).toFixed(1);
   })();
+  function save() {
+    onAdd({ ...form, duration: parseFloat(dur), id: Date.now() });
+    toast("◐ Sleep logged");
+    setForm(f => ({ ...f, notes: "" }));
+  }
   return (
-    <Card title="Log sleep">
-      <div className="field-grid">
-        <label>Date<input type="date" value={form.date} onChange={e => set("date", e.target.value)} /></label>
-        <label>Quality<select value={form.quality} onChange={e => set("quality", e.target.value)}>{sleepQuality.map(q => <option key={q}>{q}</option>)}</select></label>
-        <label>Bedtime<input type="time" value={form.bedtime} onChange={e => set("bedtime", e.target.value)} /></label>
-        <label>Wake time<input type="time" value={form.wakeTime} onChange={e => set("wakeTime", e.target.value)} /></label>
-      </div>
-      <div className="duration-pill"><span>{dur}h</span> sleep</div>
-      <label>Notes<textarea value={form.notes} onChange={e => set("notes", e.target.value)} placeholder="How did you sleep?" rows={2} /></label>
-      <button className="btn full" onClick={() => onAdd({ ...form, duration: parseFloat(dur), id: Date.now() })}>Save sleep</button>
-    </Card>
+    <>
+      <Card title="Log sleep">
+        <div className="field-grid">
+          <label>Date<input type="date" value={form.date} onChange={e => set("date", e.target.value)} /></label>
+          <label>Quality<select value={form.quality} onChange={e => set("quality", e.target.value)}>{sleepQuality.map(q => <option key={q}>{q}</option>)}</select></label>
+          <label>Bedtime<input type="time" value={form.bedtime} onChange={e => set("bedtime", e.target.value)} /></label>
+          <label>Wake time<input type="time" value={form.wakeTime} onChange={e => set("wakeTime", e.target.value)} /></label>
+        </div>
+        <div className="duration-pill"><span>{dur}h</span> sleep</div>
+        <label>Notes<textarea value={form.notes} onChange={e => set("notes", e.target.value)} placeholder="How did you sleep?" rows={2} /></label>
+        <button className="btn full" onClick={save}>Save sleep</button>
+      </Card>
+      <RecentList entries={recent} render={s => <><span className="ra-main">{s.duration}h · {s.quality}</span><span className="ra-date">{formatShortDate(s.date)}</span></>} />
+    </>
   );
 }
 
 // ─── DIET FORM ──
-function DietForm({ onAdd }) {
+function DietForm({ onAdd, recent }) {
   const [date, setDate] = useState(getTodayStr());
   const [meal, setMeal] = useState("Breakfast");
   const [text, setText] = useState("");
@@ -470,10 +528,12 @@ function DietForm({ onAdd }) {
   function save() {
     if (!result) return;
     onAdd({ date, meal, food: result.food, calories: result.calories, protein: result.protein, carbs: result.carbs, fat: result.fat, notes: result.notes || "", id: Date.now() });
+    toast("◉ " + result.food.slice(0, 24) + " added");
     setResult(null); setText(""); setFile(null); setPreview(null); setError("");
   }
 
   return (
+    <>
     <Card title="Log meal" sub="Describe what you ate or upload a photo">
       <div className="field-grid">
         <label>Date<input type="date" value={date} onChange={e => setDate(e.target.value)} /></label>
@@ -521,16 +581,25 @@ function DietForm({ onAdd }) {
           </div>
         </div>
       )}
-    </Card>
+      </Card>
+      <RecentList entries={recent} render={m => <><span className="ra-main">{m.meal} · {m.calories} kcal · {m.food.slice(0, 26)}{m.food.length > 26 ? "…" : ""}</span><span className="ra-date">{formatShortDate(m.date)}</span></>} />
+    </>
   );
 }
 
 // ─── EXERCISE (paste from Strong) ──
-function ExerciseForm({ onAdd }) {
+function ExerciseForm({ onAdd, recent }) {
   const [date, setDate] = useState(getTodayStr());
   const [label, setLabel] = useState("");
   const [text, setText] = useState("");
+  function save() {
+    if (!text.trim()) return;
+    onAdd({ id: Date.now(), date, label: label.trim() || "Workout", text: text.trim() });
+    toast("◆ Workout saved");
+    setText(""); setLabel("");
+  }
   return (
+    <>
     <Card title="Log workout" sub="Paste from Strong, or write your own">
       <div className="field-grid">
         <label>Date<input type="date" value={date} onChange={e => setDate(e.target.value)} /></label>
@@ -541,13 +610,15 @@ function ExerciseForm({ onAdd }) {
           placeholder={"Push Day A\n1h 12m\n\nBench Press (Barbell)\nSet 1: 60 kg × 10\nSet 2: 80 kg × 8"}
           style={{ fontFamily: "ui-monospace, monospace", fontSize: "0.84rem" }} />
       </label>
-      <button className="btn full" onClick={() => { if (!text.trim()) return; onAdd({ id: Date.now(), date, label: label.trim() || "Workout", text: text.trim() }); setText(""); setLabel(""); }} disabled={!text.trim()}>Save workout</button>
+      <button className="btn full" onClick={save} disabled={!text.trim()}>Save workout</button>
     </Card>
+    <RecentList entries={recent} render={w => <><span className="ra-main">{w.label}</span><span className="ra-date">{formatShortDate(w.date)}</span></>} />
+    </>
   );
 }
 
 // ─── SPORTS ──
-function SportsForm({ onAdd }) {
+function SportsForm({ onAdd, recent }) {
   const [form, setForm] = useState({ date: getTodayStr(), sport: "Basketball", duration: "60", intensity: "Moderate", result: "", opponent: "", score: "", notes: "" });
   const [weight, setWeight] = useState("75");
   const [est, setEst] = useState(null);
@@ -555,6 +626,7 @@ function SportsForm({ onAdd }) {
   const set = (k, v) => { setForm(f => ({ ...f, [k]: v })); setEst(null); };
 
   return (
+    <>
     <Card title="Log sport">
       <div className="field-grid">
         <label>Date<input type="date" value={form.date} onChange={e => set("date", e.target.value)} /></label>
@@ -585,12 +657,14 @@ function SportsForm({ onAdd }) {
           <div className="ai-card-big">{est.calories}<span> kcal</span></div>
           <p className="ai-card-note">{est.note}</p>
           <div className="row">
-            <button className="btn flex" onClick={() => { onAdd({ ...form, id: Date.now(), duration: +form.duration || 0, calories: est.calories }); setForm(f => ({ ...f, opponent: "", score: "", result: "", notes: "" })); setEst(null); }}>+ Save sport</button>
+            <button className="btn flex" onClick={() => { onAdd({ ...form, id: Date.now(), duration: +form.duration || 0, calories: est.calories }); toast("◇ " + form.sport + " logged"); setForm(f => ({ ...f, opponent: "", score: "", result: "", notes: "" })); setEst(null); }}>+ Save sport</button>
             <button className="btn-ghost" onClick={() => setEst(null)}>Redo</button>
           </div>
         </div>
       )}
     </Card>
+    <RecentList entries={recent} render={s => <><span className="ra-main">{s.sport} · {s.duration}min · {s.calories} kcal</span><span className="ra-date">{formatShortDate(s.date)}</span></>} />
+    </>
   );
 }
 
@@ -603,7 +677,7 @@ function WaterForm({ data, goals, onAdd, onDelete }) {
   const [custom, setCustom] = useState("");
   const [unit, setUnit] = useState("ml");
 
-  const add = ml => onAdd({ id: Date.now(), date: today, ml, ts: Date.now() });
+  const add = ml => { onAdd({ id: Date.now(), date: today, ml, ts: Date.now() }); toast(`💧 +${ml}ml water`); };
   const past7 = Array.from({ length: 7 }, (_, i) => {
     const d = daysAgo(6 - i);
     const ml = data.water.filter(w => w.date === d).reduce((a, w) => a + w.ml, 0);
@@ -681,7 +755,7 @@ function SupplementForm({ data, onAdd, onDelete }) {
           <label>Name<input type="text" value={name} onChange={e => setName(e.target.value)} placeholder="Creatine, Multi, Whey" /></label>
           <label>Dose / notes<input type="text" value={dose} onChange={e => setDose(e.target.value)} placeholder="5g, 1 cap" /></label>
         </div>
-        <button className="btn full" onClick={() => { if (!name.trim()) return; onAdd({ id: Date.now(), date: getTodayStr(), name: name.trim(), dose: dose.trim(), ts: Date.now() }); setName(""); setDose(""); }} disabled={!name.trim()}>Save</button>
+        <button className="btn full" onClick={() => { if (!name.trim()) return; onAdd({ id: Date.now(), date: getTodayStr(), name: name.trim(), dose: dose.trim(), ts: Date.now() }); toast("⊕ " + name.trim() + " logged"); setName(""); setDose(""); }} disabled={!name.trim()}>Save</button>
       </Card>
 
       {todaySupps.length > 0 && (
@@ -716,13 +790,13 @@ function HistoryTab({ data, goals, addEntry, deleteEntry }) {
         <button className={`subtab ${view === "trends" ? "active" : ""}`} onClick={() => setView("trends")}>📊 Trends</button>
         <button className={`subtab ${view === "lists" ? "active" : ""}`} onClick={() => setView("lists")}>≡ Lists</button>
       </div>
-      {view === "trends" && <TrendsView data={data} goals={goals} addEntry={addEntry} />}
+      {view === "trends" && <TrendsView data={data} goals={goals} />}
       {view === "lists" && <ListsView data={data} deleteEntry={deleteEntry} />}
     </div>
   );
 }
 
-function TrendsView({ data, goals, addEntry }) {
+function TrendsView({ data, goals }) {
   const [range, setRange] = useState(14);
   const series = useMemo(() => Array.from({ length: range }, (_, i) => daysAgo(range - 1 - i)), [range]);
 
@@ -730,7 +804,6 @@ function TrendsView({ data, goals, addEntry }) {
   const calPts = series.map(d => { const day = data.diet.filter(x => x.date === d); return { value: day.length ? day.reduce((a, m) => a + (m.calories || 0), 0) : null }; });
   const proteinPts = series.map(d => { const day = data.diet.filter(x => x.date === d); return { value: day.length ? day.reduce((a, m) => a + (m.protein || 0), 0) : null }; });
   const workoutPts = series.map(d => ({ value: data.exercise.filter(x => x.date === d).length + data.sports.filter(x => x.date === d).length }));
-  const weightPts = series.map(d => { const w = data.weight.find(x => x.date === d); return { value: w ? w.weight : null }; });
   const waterPts = series.map(d => { const ml = data.water.filter(x => x.date === d).reduce((a, w) => a + w.ml, 0); return { value: ml || null }; });
 
   const sleepVals = sleepPts.map(p => p.value).filter(v => v != null);
@@ -744,12 +817,6 @@ function TrendsView({ data, goals, addEntry }) {
   const proteinLogged = proteinPts.filter(p => p.value != null).length;
 
   const totalWorkouts = workoutPts.reduce((a, p) => a + p.value, 0);
-
-  const weightFilled = weightPts.filter(p => p.value != null);
-  const weightChange = weightFilled.length >= 2 ? +(weightFilled[weightFilled.length - 1].value - weightFilled[0].value).toFixed(1) : null;
-
-  const [showWt, setShowWt] = useState(false);
-  const [wtVal, setWtVal] = useState("");
 
   // Sleep × workout correlation
   const corr = (() => {
@@ -813,25 +880,6 @@ function TrendsView({ data, goals, addEntry }) {
         </div>
       </Card>
 
-      <Card title="⚖ Body weight" action={<button className="link-btn" onClick={() => setShowWt(s => !s)}>{showWt ? "Cancel" : "+ Log"}</button>}>
-        <div className="trend-stats">
-          {weightChange != null && (
-            <div className="ts"><span className="ts-l">Change</span>
-              <span className={`ts-v ${weightChange === 0 ? "neutral" : (goals.goal === "Lose Fat" ? (weightChange < 0 ? "good" : "warn") : (weightChange > 0 ? "good" : "warn"))}`}>
-                {weightChange > 0 ? "+" : ""}{weightChange}{goals.weightUnit}
-              </span>
-            </div>
-          )}
-        </div>
-        <MiniChart points={weightPts} />
-        {showWt && (
-          <div className="inline-form" style={{ marginTop: 12 }}>
-            <input type="number" step="0.1" value={wtVal} onChange={e => setWtVal(e.target.value)} placeholder={`weight (${goals.weightUnit})`} autoFocus />
-            <button className="btn" onClick={() => { if (wtVal) { addEntry("weight")({ id: Date.now(), date: getTodayStr(), weight: parseFloat(wtVal), unit: goals.weightUnit }); setWtVal(""); setShowWt(false); } }}>Save</button>
-          </div>
-        )}
-      </Card>
-
       <Card title="💧 Water">
         <div className="trend-stats">
           <div className="ts"><span className="ts-l">Daily target</span><span className="ts-v">{goals.waterGoalMl}ml</span></div>
@@ -856,32 +904,47 @@ function TrendsView({ data, goals, addEntry }) {
 
 function ListsView({ data, deleteEntry }) {
   const [cat, setCat] = useState("diet");
+  const [limit, setLimit] = useState(50);
+  const [confirm, confirmModal] = useConfirm();
   const cats = [
     { key: "diet", label: "Meals", icon: "◉" },
     { key: "sleep", label: "Sleep", icon: "◐" },
     { key: "exercise", label: "Workouts", icon: "◆" },
     { key: "sports", label: "Sports", icon: "◇" },
-    { key: "weight", label: "Weight", icon: "⚖" },
     { key: "water", label: "Water", icon: "◊" },
     { key: "supplements", label: "Supplements", icon: "⊕" },
   ];
   const entries = data[cat] || [];
+  const shown = entries.slice(0, limit);
+  const label = cats.find(c => c.key === cat).label;
+
+  async function handleDelete(item) {
+    const ok = await confirm({ title: "Delete this entry?", body: "This can't be undone.", confirmLabel: "Delete", danger: true });
+    if (ok) { deleteEntry(cat)(item.id); toast("Entry deleted"); }
+  }
+
   return (
     <>
+      {confirmModal}
       <div className="subtabs">
         {cats.map(c => (
-          <button key={c.key} className={`subtab ${cat === c.key ? "active" : ""}`} onClick={() => setCat(c.key)}>
+          <button key={c.key} className={`subtab ${cat === c.key ? "active" : ""}`} onClick={() => { setCat(c.key); setLimit(50); }}>
             <span className="subtab-icon">{c.icon}</span>{c.label}
           </button>
         ))}
       </div>
-      <Card title={cats.find(c => c.key === cat).label} sub={`${entries.length} ${entries.length === 1 ? "entry" : "entries"}`}>
+      <Card title={label} sub={`${entries.length} ${entries.length === 1 ? "entry" : "entries"}`}>
         {entries.length === 0 ? (
-          <Empty title={`No ${cats.find(c => c.key === cat).label.toLowerCase()} logged yet`} hint="Head to the Log tab to add some" />
+          <Empty title={`No ${label.toLowerCase()} logged yet`} hint="Head to the Log tab to add some" />
         ) : (
-          <div className="hist-list">
-            {entries.map(item => <HistItem key={item.id} item={item} type={cat} onDelete={() => deleteEntry(cat)(item.id)} />)}
-          </div>
+          <>
+            <div className="hist-list">
+              {shown.map(item => <HistItem key={item.id} item={item} type={cat} onDelete={() => handleDelete(item)} />)}
+            </div>
+            {entries.length > limit && (
+              <button className="btn-ghost full" style={{ marginTop: 10 }} onClick={() => setLimit(l => l + 50)}>Show more ({entries.length - limit} remaining)</button>
+            )}
+          </>
         )}
       </Card>
     </>
@@ -907,9 +970,6 @@ function HistItem({ item, type, onDelete }) {
     main = `${item.sport} · ${item.duration}min`;
     tags = [item.intensity, item.result || "Practice", `${item.calories} kcal`].filter(Boolean);
     detail = [item.opponent && `vs ${item.opponent}`, item.score && `Score: ${item.score}`, item.notes].filter(Boolean).join(" · ");
-  } else if (type === "weight") {
-    main = `${item.weight}${item.unit || "kg"}`;
-    tags = [];
   } else if (type === "water") {
     main = `${item.ml}ml`;
     tags = item.ts ? [new Date(item.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })] : [];
@@ -933,7 +993,7 @@ function HistItem({ item, type, onDelete }) {
         <div className="hist-tags">
           {tags.map((t, i) => <span key={i} className="hist-tag">{t}</span>)}
           {hasDetail && <span className="muted">{open ? "▲" : "▼"}</span>}
-          <button className="x" onClick={(e) => { e.stopPropagation(); if (confirm("Delete?")) onDelete(); }}>×</button>
+          <button className="x" onClick={(e) => { e.stopPropagation(); onDelete(); }}>×</button>
         </div>
       </div>
       {open && hasDetail && (
@@ -949,7 +1009,7 @@ const COACH_GREETING = { role: "assistant", text: "Hey! I'm your AI coach. Ask m
 function loadMessages() {
   try { const r = localStorage.getItem(STORAGE_KEY + "_chat"); const p = r ? JSON.parse(r) : null; return Array.isArray(p) && p.length ? p : [COACH_GREETING]; } catch { return [COACH_GREETING]; }
 }
-const saveMessages = m => localStorage.setItem(STORAGE_KEY + "_chat", JSON.stringify(m));
+const saveMessages = m => { localStorage.setItem(STORAGE_KEY + "_chat", JSON.stringify(m)); cloudSync(); };
 
 function CoachTab({ data, goals }) {
   const [messages, setMessages] = useState(loadMessages);
@@ -959,6 +1019,7 @@ function CoachTab({ data, goals }) {
   const [analysis, setAnalysis] = useState(null);
   const [analysisLoad, setAnalysisLoad] = useState(false);
   const [analysisErr, setAnalysisErr] = useState("");
+  const [confirm, confirmModal] = useConfirm();
   const endRef = useRef(null);
 
   useEffect(() => { saveMessages(messages); }, [messages]);
@@ -976,7 +1037,6 @@ Sleep (14d): ${l14(data.sleep).map(s => `${s.date}:${s.duration}h(${s.quality})`
 Diet (14d): ${l14(data.diet).map(d => `${d.date} ${d.meal}: ${d.food} ${d.calories}kcal P${d.protein}g`).join(" | ") || "none"}
 Workouts (14d): ${l14(data.exercise).map(e => `${e.date}: ${e.label}`).join(", ") || "none"}
 Sports (14d): ${l14(data.sports).map(s => `${s.date}: ${s.sport} ${s.duration}min ${s.intensity}`).join(", ") || "none"}
-Weight recent: ${data.weight.slice(0, 5).map(w => `${w.date}: ${w.weight}${w.unit||"kg"}`).join(", ") || "none"}
 Today water: ${todayWater}/${goals.waterGoalMl}ml
 Today supplements: ${data.supplements.filter(s => s.date === today).map(s => s.name).join(", ") || "none"}`;
   }
@@ -1020,8 +1080,9 @@ Today supplements: ${data.supplements.filter(s => s.date === today).map(s => s.n
     setLoading(false);
   }
 
-  function clearChat() {
-    if (confirm("Clear all chat history? This can't be undone.")) setMessages([COACH_GREETING]);
+  async function clearChat() {
+    const ok = await confirm({ title: "Clear chat history?", body: "All messages will be deleted. This can't be undone.", confirmLabel: "Clear", danger: true });
+    if (ok) { setMessages([COACH_GREETING]); toast("Chat cleared"); }
   }
 
   async function runAnalysis() {
@@ -1036,6 +1097,7 @@ Today supplements: ${data.supplements.filter(s => s.date === today).map(s => s.n
 
   return (
     <div className="coach-wrap">
+      {confirmModal}
       <div className="coach-bar">
         <div className="coach-bar-l">
           <span className="coach-bar-title">AI Coach</span>
@@ -1138,7 +1200,7 @@ Today supplements: ${data.supplements.filter(s => s.date === today).map(s => s.n
 }
 
 // ─── SETTINGS TAB ─────────────────────────────────────────────────────────────
-function SettingsTab({ data, goals, onSaveGoals, onClearAll, onImport }) {
+function SettingsTab({ data, goals, onSaveGoals, onClearAll, onImport, session, onSignOut }) {
   const [section, setSection] = useState("goals");
 
   return (
@@ -1151,6 +1213,18 @@ function SettingsTab({ data, goals, onSaveGoals, onClearAll, onImport }) {
       {section === "goals" && <GoalsSettings goals={goals} onSave={onSaveGoals} />}
       {section === "export" && <ExportSettings data={data} goals={goals} />}
       {section === "data" && <DataSettings data={data} onClearAll={onClearAll} onImport={onImport} />}
+
+      {session && (
+        <Card title="Account">
+          <div className="account-row">
+            <div>
+              <div className="account-email">{session.user?.email}</div>
+              <div className="muted small">☁ Synced across your devices</div>
+            </div>
+            <button className="btn-ghost" onClick={onSignOut}>Sign out</button>
+          </div>
+        </Card>
+      )}
     </div>
   );
 }
@@ -1204,7 +1278,6 @@ function GoalsSettings({ goals, onSave }) {
       <div className="divider" />
       <div className="field-grid">
         <label>Daily water (ml)<input type="number" step="100" value={form.waterGoalMl} onChange={e => set("waterGoalMl", +e.target.value)} /></label>
-        <label>Weight unit<select value={form.weightUnit} onChange={e => set("weightUnit", e.target.value)}><option value="kg">kg</option><option value="lb">lb</option></select></label>
       </div>
 
       <button className="btn full" onClick={() => { onSave(form); setSaved(true); setTimeout(() => setSaved(false), 2000); }}>{saved ? "✓ Saved" : "Save goals"}</button>
@@ -1225,7 +1298,6 @@ function ExportSettings({ data, goals }) {
   const dlDiet = () => dl(`fitlog-diet-${t}.csv`, csv(data.diet, ["date","meal","food","calories","protein","carbs","fat","notes"]));
   const dlExer = () => dl(`fitlog-workouts-${t}.csv`, csv(data.exercise, ["date","label","text"]));
   const dlSp = () => dl(`fitlog-sports-${t}.csv`, csv(data.sports, ["date","sport","duration","intensity","calories","result","opponent","score","notes"]));
-  const dlWt = () => dl(`fitlog-weight-${t}.csv`, csv(data.weight, ["date","weight","unit"]));
   const dlWater = () => dl(`fitlog-water-${t}.csv`, csv(data.water.map(w => ({ ...w, time: w.ts ? new Date(w.ts).toISOString() : "" })), ["date","time","ml"]));
   const dlSupp = () => dl(`fitlog-supplements-${t}.csv`, csv(data.supplements.map(s => ({ ...s, time: s.ts ? new Date(s.ts).toISOString() : "" })), ["date","time","name","dose"]));
   const dlChat = () => {
@@ -1235,7 +1307,7 @@ function ExportSettings({ data, goals }) {
     } catch { alert("Could not export chat."); }
   };
   const dlAll = () => {
-    [dlSleep, dlDiet, dlExer, dlSp, dlWt, dlWater, dlSupp, dlChat].forEach((fn, i) => setTimeout(fn, i * 200));
+    [dlSleep, dlDiet, dlExer, dlSp, dlWater, dlSupp, dlChat].forEach((fn, i) => setTimeout(fn, i * 200));
   };
   const dlJson = () => dl(`fitlog-backup-${t}.json`, JSON.stringify({ exportedAt: new Date().toISOString(), goals, data, chat: JSON.parse(localStorage.getItem(STORAGE_KEY + "_chat") || "[]") }, null, 2), "application/json");
 
@@ -1247,7 +1319,6 @@ function ExportSettings({ data, goals }) {
     { label: "Meals", icon: "◉", n: data.diet.length, fn: dlDiet },
     { label: "Workouts", icon: "◆", n: data.exercise.length, fn: dlExer },
     { label: "Sports", icon: "◇", n: data.sports.length, fn: dlSp },
-    { label: "Weight", icon: "⚖", n: data.weight.length, fn: dlWt },
     { label: "Water", icon: "◊", n: data.water.length, fn: dlWater },
     { label: "Supps", icon: "⊕", n: data.supplements.length, fn: dlSupp },
     { label: "Chat", icon: "✦", n: Math.max(0, chatCount - 1), fn: dlChat },
@@ -1275,28 +1346,37 @@ function ExportSettings({ data, goals }) {
 
 function DataSettings({ data, onClearAll, onImport }) {
   const fileRef = useRef();
-  const total = Object.values(data).reduce((a, arr) => a + arr.length, 0);
+  const [confirm, confirmModal] = useConfirm();
+  const total = Object.values(data).reduce((a, arr) => a + (Array.isArray(arr) ? arr.length : 0), 0);
   let chatCount = 0;
   try { chatCount = Math.max(0, JSON.parse(localStorage.getItem(STORAGE_KEY + "_chat") || "[]").length - 1); } catch {}
 
   function importFile(e) {
     const f = e.target.files[0]; if (!f) return;
     const r = new FileReader();
-    r.onload = ev => {
+    r.onload = async ev => {
       try {
         const p = JSON.parse(ev.target.result);
         if (!p.data || !p.goals) throw new Error();
-        if (!confirm("This will REPLACE all your current data with the backup. Continue?")) return;
+        const ok = await confirm({ title: "Restore this backup?", body: "This replaces all your current data with the contents of the file.", confirmLabel: "Restore" });
+        if (!ok) return;
         onImport(p);
-        alert("Backup restored.");
-      } catch { alert("Couldn't read that file. Use a fitlog JSON backup."); }
+      } catch { toast("Couldn't read that file"); }
     };
     r.readAsText(f);
     e.target.value = "";
   }
 
+  async function clearAll() {
+    const ok1 = await confirm({ title: "Delete everything?", body: "All tracked data and chat history will be permanently erased. Goals remain.", confirmLabel: "Continue", danger: true });
+    if (!ok1) return;
+    const ok2 = await confirm({ title: "Are you absolutely sure?", body: "This cannot be undone. Export a backup first if you're unsure.", confirmLabel: "Delete everything", danger: true });
+    if (ok2) onClearAll();
+  }
+
   return (
     <>
+      {confirmModal}
       <Card title="Your data">
         <div className="stat-row">
           <div className="stat"><div className="stat-n">{total}</div><div className="stat-l">Total entries</div></div>
@@ -1311,9 +1391,9 @@ function DataSettings({ data, onClearAll, onImport }) {
 
       <Card title="⚠ Danger zone" className="danger-card">
         <p className="muted" style={{ marginBottom: 12, fontSize: ".85rem", lineHeight: 1.6 }}>
-          Permanently delete all sleep, meals, workouts, sports, water, supplements, weight, and chat history. Goals remain. <strong>Export a backup first.</strong>
+          Permanently delete all sleep, meals, workouts, sports, water, supplements, and chat history. Goals remain. <strong>Export a backup first.</strong>
         </p>
-        <button className="btn-danger full" onClick={() => { if (confirm("Delete ALL tracked data and chat history?") && confirm("Are you absolutely sure?")) onClearAll(); }}>Clear everything</button>
+        <button className="btn-danger full" onClick={clearAll}>Clear everything</button>
       </Card>
 
       <p className="muted small center" style={{ marginTop: 8 }}>Your data lives in your browser's storage on this device only. No cloud sync.</p>
@@ -1323,26 +1403,143 @@ function DataSettings({ data, onClearAll, onImport }) {
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function FitnessTracker() {
+  // ─── Auth & sync state ──
+  const [authChecked, setAuthChecked] = useState(false);
+  const [session, setSession] = useState(null);
+  const [syncing, setSyncing] = useState(false);
+  const [bootKey, setBootKey] = useState(0); // bumped after cloud pull to reload local state
+
+  // Check auth on mount + subscribe to changes
+  useEffect(() => {
+    if (!hasSupabase) { setAuthChecked(true); return; }
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setAuthChecked(true);
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  // When a session appears, pull cloud data (or push local up if cloud is empty)
+  useEffect(() => {
+    if (!session?.user?.id) { setCurrentUser(null); return; }
+    const uid = session.user.id;
+    setCurrentUser(uid);
+    (async () => {
+      setSyncing(true);
+      try {
+        const pulled = await cloudPull(uid);
+        if (!pulled) {
+          // First time on this account → push whatever's in this browser up
+          await cloudPushNow(uid);
+        }
+        setBootKey(k => k + 1); // reload local-derived state
+      } catch (e) {}
+      setSyncing(false);
+    })();
+  }, [session?.user?.id]);
+
+  if (!authChecked) {
+    return <><style>{styles}</style><div className="boot"><span className="spinner" /></div></>;
+  }
+
+  // If Supabase is configured but no session, show login
+  if (hasSupabase && !session) {
+    return <><style>{styles}</style><AuthScreen /></>;
+  }
+
+  return <AppShell key={bootKey} session={session} syncing={syncing} />;
+}
+
+// ─── AUTH SCREEN ──────────────────────────────────────────────────────────────
+function AuthScreen() {
+  const [mode, setMode] = useState("signin"); // signin | signup
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit() {
+    setError("");
+    if (!email.trim() || !password) { setError("Enter your email and password."); return; }
+    if (password.length < 6) { setError("Password must be at least 6 characters."); return; }
+    setBusy(true);
+    try {
+      if (mode === "signup") {
+        const { error } = await supabase.auth.signUp({ email: email.trim(), password });
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+        if (error) throw error;
+      }
+    } catch (e) {
+      setError(e.message || "Something went wrong. Try again.");
+    }
+    setBusy(false);
+  }
+
+  return (
+    <div className="auth">
+      <div className="auth-box">
+        <h1 className="auth-brand">FitLog</h1>
+        <p className="auth-sub">{mode === "signup" ? "Create your account" : "Welcome back"}</p>
+        <label>Email<input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@email.com" autoComplete="email" /></label>
+        <label>Password<input type="password" value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === "Enter" && submit()} placeholder="••••••••" autoComplete={mode === "signup" ? "new-password" : "current-password"} /></label>
+        {error && <div className="err">{error}</div>}
+        <button className="btn full" onClick={submit} disabled={busy} style={{ marginTop: 14 }}>
+          {busy ? <span className="spinner" /> : mode === "signup" ? "Create account" : "Sign in"}
+        </button>
+        <p className="auth-switch">
+          {mode === "signup" ? "Already have an account?" : "New here?"}
+          <button className="link-btn" onClick={() => { setMode(mode === "signup" ? "signin" : "signup"); setError(""); }}>
+            {mode === "signup" ? "Sign in" : "Create one"}
+          </button>
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ─── APP SHELL (the actual app once authed) ───────────────────────────────────
+function AppShell({ session, syncing }) {
   const [activeTab, setActiveTab] = useState("Home");
   const [logSub, setLogSub] = useState(null);
   const [data, setData] = useState(loadData);
   const [goals, setGoals] = useState(loadGoals);
-  useEffect(() => { saveData(data); }, [data]);
-  useEffect(() => { saveGoals(goals); }, [goals]);
+  const firstData = useRef(true);
+  const firstGoals = useRef(true);
+
+  useEffect(() => {
+    saveData(data);
+    if (firstData.current) { firstData.current = false; return; }
+    cloudSync();
+  }, [data]);
+  useEffect(() => {
+    saveGoals(goals);
+    if (firstGoals.current) { firstGoals.current = false; return; }
+    cloudSync();
+  }, [goals]);
 
   const addEntry = type => entry => setData(d => ({ ...d, [type]: [entry, ...(d[type] || [])] }));
   const deleteEntry = type => id => setData(d => ({ ...d, [type]: (d[type] || []).filter(e => e.id !== id) }));
   const clearAll = () => {
     setData(defaultData);
     localStorage.removeItem(STORAGE_KEY + "_chat");
-    setTimeout(() => window.location.reload(), 100);
+    cloudSync();
+    setTimeout(() => window.location.reload(), 200);
   };
   const importData = backup => {
     if (backup.data) setData({ ...defaultData, ...backup.data });
     if (backup.goals) setGoals({ ...defaultGoals, ...backup.goals });
     if (backup.chat) localStorage.setItem(STORAGE_KEY + "_chat", JSON.stringify(backup.chat));
-    setTimeout(() => window.location.reload(), 100);
+    cloudSync();
+    setTimeout(() => window.location.reload(), 300);
   };
+
+  async function signOut() {
+    if (hasSupabase) await supabase.auth.signOut();
+    window.location.reload();
+  }
 
   function navTo(tab, sub) {
     setActiveTab(tab);
@@ -1353,23 +1550,25 @@ export default function FitnessTracker() {
   return (
     <>
       <style>{styles}</style>
+      <ToastHost />
       <div className="app">
         <header className="topbar">
           <h1 className="brand">FitLog</h1>
+          {syncing && <span className="sync-badge"><span className="spinner" />syncing</span>}
         </header>
 
         <main className="main">
-          {activeTab === "Home" && <HomeTab data={data} goals={goals} onAddWater={addEntry("water")} onAddWeight={addEntry("weight")} onNav={navTo} />}
+          {activeTab === "Home" && <HomeTab data={data} goals={goals} onAddWater={addEntry("water")} onNav={navTo} />}
           {activeTab === "Log" && <LogTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} initialSub={logSub} />}
           {activeTab === "History" && <HistoryTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />}
           {activeTab === "Coach" && <CoachTab data={data} goals={goals} />}
-          {activeTab === "Settings" && <SettingsTab data={data} goals={goals} onSaveGoals={setGoals} onClearAll={clearAll} onImport={importData} />}
+          {activeTab === "Settings" && <SettingsTab data={data} goals={goals} onSaveGoals={setGoals} onClearAll={clearAll} onImport={importData} session={session} onSignOut={signOut} />}
         </main>
 
         <nav className="tabbar">
           {TABS.map(tab => (
             <button key={tab} className={`tabbtn ${activeTab === tab ? "active" : ""}`} onClick={() => { setActiveTab(tab); if (tab !== "Log") setLogSub(null); window.scrollTo({ top: 0, behavior: "smooth" }); }}>
-              <span className="tabbtn-icon">{tab === "Home" ? "⌂" : tab === "Log" ? "+" : tab === "History" ? "≡" : tab === "Coach" ? "✦" : "⚙"}</span>
+              <TabIcon name={tab} active={activeTab === tab} />
               <span className="tabbtn-label">{tab}</span>
             </button>
           ))}
@@ -1377,6 +1576,18 @@ export default function FitnessTracker() {
       </div>
     </>
   );
+}
+
+// ─── TAB ICONS (inline SVG, consistent across devices) ───────────────────────
+function TabIcon({ name, active }) {
+  const s = active ? "var(--accent)" : "var(--muted)";
+  const common = { width: 22, height: 22, viewBox: "0 0 24 24", fill: "none", stroke: s, strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round" };
+  if (name === "Home") return <svg {...common}><path d="M3 10.5 12 3l9 7.5" /><path d="M5 9.5V20a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9.5" /></svg>;
+  if (name === "Log") return <svg {...common}><circle cx="12" cy="12" r="9" /><path d="M12 8v8M8 12h8" /></svg>;
+  if (name === "History") return <svg {...common}><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 4v4h4" /><path d="M12 8v4l3 2" /></svg>;
+  if (name === "Coach") return <svg {...common}><path d="M12 3l2.1 5.4L19.5 9l-4 3.6 1.2 5.4L12 15.8 7.3 18l1.2-5.4L4.5 9l5.4-.6L12 3z" /></svg>;
+  if (name === "Settings") return <svg {...common}><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z" /></svg>;
+  return null;
 }
 
 // ─── STYLES ───────────────────────────────────────────────────────────────────
@@ -1406,7 +1617,7 @@ const styles = `
 html, body { background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
 body { font-size: 15px; line-height: 1.5; }
 
-.app { min-height: 100vh; max-width: 720px; margin: 0 auto; padding: 0 18px 96px; padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
+.app { min-height: 100vh; min-height: 100dvh; max-width: 720px; margin: 0 auto; padding: 0 18px 96px; padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
 
 /* Top */
 .topbar { padding: 22px 0 14px; }
@@ -1484,13 +1695,6 @@ body { font-size: 15px; line-height: 1.5; }
 .today-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
 .today-text { color: var(--text-2); }
 
-/* Weight */
-.weight-row { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
-.weight-big { font-family: 'DM Serif Display', serif; font-size: 2.1rem; color: var(--text); line-height: 1; }
-.weight-big span { font-family: 'Inter', sans-serif; font-size: .85rem; color: var(--muted); margin-left: 4px; font-weight: 500; }
-.weight-meta { display: flex; flex-direction: column; gap: 2px; font-size: .8rem; }
-.weight-diff.good { color: var(--good); }
-.weight-diff.warn { color: var(--warn); }
 
 /* Insight */
 .insight { font-size: .9rem; line-height: 1.6; color: var(--text); }
@@ -1657,7 +1861,7 @@ select option { background: var(--surface-2); }
 .md-code { background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-size: .82em; font-family: ui-monospace, monospace; }
 
 /* Coach */
-.coach-wrap { display: flex; flex-direction: column; min-height: calc(100vh - 220px); }
+.coach-wrap { display: flex; flex-direction: column; min-height: calc(100dvh - 200px); }
 .coach-bar { display: flex; justify-content: space-between; align-items: center; padding: 0 4px 14px; }
 .coach-bar-l { display: flex; flex-direction: column; }
 .coach-bar-title { font-size: .92rem; font-weight: 600; }
@@ -1679,7 +1883,8 @@ select option { background: var(--surface-2); }
 .sugg { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 6px 12px; color: var(--text-2); font-family: inherit; font-size: .78rem; cursor: pointer; transition: all .15s; }
 .sugg:hover { color: var(--accent); border-color: rgba(110,231,247,0.3); }
 
-.composer { display: flex; gap: 8px; padding: 10px 2px 8px; position: sticky; bottom: 80px; background: linear-gradient(transparent, var(--bg) 25%); padding-top: 14px; }
+.composer { display: flex; gap: 8px; padding: 12px 2px 8px; position: sticky; bottom: calc(80px + env(safe-area-inset-bottom)); background: var(--bg); margin-top: auto; }
+.composer::before { content: ""; position: absolute; left: 0; right: 0; top: -16px; height: 16px; background: linear-gradient(transparent, var(--bg)); pointer-events: none; }
 .composer input { flex: 1; }
 .send { width: 38px; height: 38px; min-width: 38px; border-radius: 10px; background: var(--accent); color: #0a1418; border: none; font-size: 1.1rem; font-weight: 700; cursor: pointer; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
 .send:disabled { opacity: 0.35; cursor: not-allowed; }
@@ -1732,4 +1937,52 @@ select option { background: var(--surface-2); }
 .muted { color: var(--muted); }
 .small { font-size: .76rem; }
 .center { text-align: center; }
+
+/* Tab icons */
+.tabbtn-icon { line-height: 0; }
+.tabbtn svg { display: block; }
+
+/* Rings zero-state */
+.rings-zero { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); font-size: .82rem; color: var(--muted); text-align: center; line-height: 1.5; }
+
+/* Recent-after (under log forms) */
+.recent-after { margin-top: 4px; }
+.recent-after-label { font-size: .68rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; padding: 0 4px 6px; }
+.recent-after-list { display: flex; flex-direction: column; gap: 4px; }
+.recent-after-item { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 9px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; font-size: .82rem; }
+.ra-main { color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ra-date { color: var(--muted); font-size: .72rem; white-space: nowrap; flex-shrink: 0; }
+
+/* Toast */
+.toast-host { position: fixed; left: 0; right: 0; bottom: calc(96px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; align-items: center; gap: 8px; z-index: 200; pointer-events: none; padding: 0 18px; }
+.toast { background: var(--surface-2); border: 1px solid var(--border-strong); color: var(--text); border-radius: 12px; padding: 10px 18px; font-size: .85rem; font-weight: 500; box-shadow: 0 8px 24px rgba(0,0,0,0.4); animation: toastIn .25s cubic-bezier(.2,.8,.2,1); max-width: 100%; }
+@keyframes toastIn { from { opacity: 0; transform: translateY(12px) scale(.96); } to { opacity: 1; transform: none; } }
+
+/* Modal */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 300; animation: fade .15s ease; }
+.modal { background: var(--surface); border: 1px solid var(--border-strong); border-radius: 16px; padding: 22px; max-width: 360px; width: 100%; animation: modalIn .2s cubic-bezier(.2,.8,.2,1); }
+@keyframes modalIn { from { opacity: 0; transform: scale(.94); } to { opacity: 1; transform: none; } }
+.modal-title { font-family: 'DM Serif Display', serif; font-size: 1.2rem; font-weight: 400; margin-bottom: 8px; }
+.modal-body { color: var(--text-2); font-size: .88rem; line-height: 1.55; margin-bottom: 18px; }
+.modal-actions { display: flex; gap: 8px; }
+
+/* Boot spinner */
+.boot { min-height: 100vh; min-height: 100dvh; display: flex; align-items: center; justify-content: center; color: var(--accent); }
+
+/* Auth screen */
+.auth { min-height: 100vh; min-height: 100dvh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.auth-box { width: 100%; max-width: 360px; }
+.auth-brand { font-family: 'DM Serif Display', serif; font-size: 2.4rem; color: var(--text); text-align: center; font-weight: 400; }
+.auth-sub { text-align: center; color: var(--muted); margin: 4px 0 24px; font-size: .9rem; }
+.auth-box label { margin-bottom: 12px; }
+.auth-switch { text-align: center; margin-top: 16px; font-size: .85rem; color: var(--muted); }
+.auth-switch .link-btn { font-size: .85rem; margin-left: 4px; }
+
+/* Sync badge */
+.sync-badge { display: inline-flex; align-items: center; gap: 6px; font-size: .72rem; color: var(--muted); margin-left: 12px; }
+.topbar { display: flex; align-items: center; }
+
+/* Account */
+.account-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.account-email { font-size: .9rem; font-weight: 500; color: var(--text); margin-bottom: 3px; }
 `;
