@@ -346,6 +346,39 @@ Return ONLY JSON mapping each available day to a short workout label:
   return JSON.parse(raw.replace(/```json|```/g, "").trim());
 }
 
+// Conversational plan builder — the user describes what they want in plain English,
+// and the AI designs the entire week: which days to train, the split, day-by-day workouts, and why.
+async function buildPlanFromPrompt(prompt, goals, current) {
+  const sys = `You are an expert strength & conditioning coach. The user will describe in their own words how they want their training week to look. Design a complete, sensible weekly plan for them.
+
+Their stated fitness goal: ${goals.goal}.
+${current?.trainingDays?.length ? `Their current plan (they may want to keep or change it): split="${current.split}", training days=${current.trainingDays.join(", ")}.` : ""}
+
+Rules:
+- Honor explicit constraints (number of days, specific days, sports, muscle priorities, time limits, injuries).
+- Pick the most appropriate split for what they describe (Push/Pull/Legs, Upper/Lower, Full Body, Bro Split, Arnold, or a Custom arrangement).
+- Optimize recovery: avoid hammering the same muscles on consecutive days; place rest days sensibly; account for any sports they mention as extra fatigue.
+- Use the 7 day keys exactly: Mon, Tue, Wed, Thu, Fri, Sat, Sun.
+- For rest days, omit them from "assignments" (only include training days).
+- Keep workout labels short (e.g. "Push", "Upper A", "Legs + Core", "Chest & Back").
+
+Return ONLY valid JSON, no markdown:
+{
+  "split": "<chosen split name>",
+  "trainingDays": ["Mon","Wed",...],
+  "assignments": {"Mon":"Push","Wed":"Pull",...},
+  "summary": "<2-3 sentences explaining the plan and why it fits what they asked>",
+  "tips": ["<short actionable tip>","<tip>"]
+}`;
+  const raw = await callClaude({
+    model: currentModelId(),
+    system: sys,
+    maxTokens: 1200,
+    userText: `Here's what I want for my training week:\n\n"${prompt}"\n\nDesign my week.`,
+  });
+  return JSON.parse(raw.replace(/```json|```/g, "").trim());
+}
+
 // Looks at recent training + sleep to recommend whether to train, go light, or rest/deload today.
 async function recommendRest(data, goals) {
   const last10 = arr => arr.filter(i => i.date >= daysAgo(9));
@@ -827,6 +860,12 @@ function PlanTab({ data, goals, onSaveGoals }) {
   const [notes, setNotes] = useState(plan.notes || "");
   const [suggesting, setSuggesting] = useState(false);
   const [rationale, setRationale] = useState("");
+
+  // Conversational AI plan builder
+  const [prompt, setPrompt] = useState("");
+  const [building, setBuilding] = useState(false);
+  const [buildResult, setBuildResult] = useState(null);
+  const [buildErr, setBuildErr] = useState("");
   const [saved, setSaved] = useState(false);
 
   // Rest-day recommendation
@@ -857,6 +896,28 @@ function PlanTab({ data, goals, onSaveGoals }) {
     setSuggesting(false);
   }
 
+  async function buildPlan() {
+    if (!prompt.trim() || building) return;
+    setBuilding(true); setBuildErr(""); setBuildResult(null);
+    try {
+      const r = await buildPlanFromPrompt(prompt, goals, { split, trainingDays });
+      if (!r || !r.trainingDays?.length) throw new Error();
+      setBuildResult(r);
+    } catch { setBuildErr("Couldn't build that plan. Try rephrasing what you want."); }
+    setBuilding(false);
+  }
+
+  function applyBuiltPlan() {
+    if (!buildResult) return;
+    setSplit(buildResult.split || split);
+    setTrainingDays(buildResult.trainingDays);
+    setAssignments(buildResult.assignments || {});
+    onSaveGoals({ ...goals, plan: { split: buildResult.split || split, trainingDays: buildResult.trainingDays, assignments: buildResult.assignments || {}, notes } });
+    setBuildResult(null); setPrompt("");
+    toast("✓ Plan applied");
+    haptic([12, 30, 12]);
+  }
+
   async function getRec() {
     setRecLoading(true);
     try { setRec(await recommendRest(data, goals)); }
@@ -883,6 +944,56 @@ function PlanTab({ data, goals, onSaveGoals }) {
             <p className="rec-reason">{rec.reason}</p>
             {rec.tip && <p className="rec-tip">💡 {rec.tip}</p>}
             <button className="link-btn" onClick={getRec}>Refresh</button>
+          </div>
+        )}
+      </Card>
+
+      {/* AI PLAN BUILDER */}
+      <Card title="✦ Build my week with AI" sub="Describe what you want — the AI designs your whole week">
+        <textarea
+          value={prompt}
+          onChange={e => setPrompt(e.target.value)}
+          rows={3}
+          placeholder={'e.g. "I can train 4 days a week, want to focus on chest and arms, and I play football on Sundays so keep legs away from then"'}
+        />
+        <div className="prompt-chips">
+          {[
+            "5 days, push/pull/legs, weekends off",
+            "4 days, focus on arms and shoulders",
+            "3 full-body days with max recovery",
+            "I play football Sat & Sun — plan around it",
+          ].map((p, i) => (
+            <button key={i} className="prompt-chip" onClick={() => setPrompt(p)}>{p}</button>
+          ))}
+        </div>
+        <button className="btn full" style={{ marginTop: 10 }} onClick={buildPlan} disabled={building || !prompt.trim()}>
+          {building ? <><span className="spinner" />Designing your week…</> : "✦ Design my week"}
+        </button>
+        {buildErr && <div className="err">{buildErr}</div>}
+
+        {buildResult && (
+          <div className="build-result">
+            <div className="build-split-tag">{buildResult.split}</div>
+            <div className="build-week">
+              {WEEKDAYS.map(d => {
+                const w = buildResult.assignments?.[d];
+                const training = buildResult.trainingDays.includes(d);
+                return (
+                  <div key={d} className={`build-day ${training ? "on" : ""}`}>
+                    <span className="build-day-name">{d}</span>
+                    <span className="build-day-w">{training ? (w || "Train") : "Rest"}</span>
+                  </div>
+                );
+              })}
+            </div>
+            {buildResult.summary && <p className="build-summary">{buildResult.summary}</p>}
+            {buildResult.tips?.length > 0 && (
+              <ul className="build-tips">{buildResult.tips.map((t, i) => <li key={i}>{t}</li>)}</ul>
+            )}
+            <div className="row" style={{ marginTop: 12 }}>
+              <button className="btn flex" onClick={applyBuiltPlan}>✓ Use this plan</button>
+              <button className="btn-ghost" onClick={() => setBuildResult(null)}>Discard</button>
+            </div>
           </div>
         )}
       </Card>
@@ -3114,4 +3225,20 @@ input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
 .pr-banner { background: rgba(249,201,126,0.12); border: 1px solid rgba(249,201,126,0.3); color: var(--warn); border-radius: 8px; padding: 8px 10px; font-size: .8rem; font-weight: 500; margin-bottom: 10px; }
 .ex-detail-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
 .ex-detail-row { display: flex; justify-content: space-between; gap: 8px; font-size: .82rem; }
+
+/* ─── AI plan builder ─── */
+.prompt-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.prompt-chip { background: var(--surface-2); border: 1px solid var(--border); border-radius: 14px; padding: 6px 11px; color: var(--text-2); font-family: inherit; font-size: .74rem; cursor: pointer; transition: color .15s, border-color .15s; text-align: left; -webkit-tap-highlight-color: transparent; }
+.prompt-chip:hover { color: var(--accent); border-color: rgba(110,231,247,0.3); }
+.build-result { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); animation: riseIn .35s var(--ease-out) both; }
+.build-split-tag { display: inline-block; background: var(--accent-dim); border: 1px solid rgba(110,231,247,0.3); color: var(--accent); font-size: .76rem; font-weight: 600; padding: 4px 12px; border-radius: 14px; margin-bottom: 12px; }
+.build-week { display: flex; flex-direction: column; gap: 5px; }
+.build-day { display: flex; align-items: center; gap: 12px; padding: 9px 12px; border-radius: 9px; background: var(--surface-2); border: 1px solid var(--border); }
+.build-day.on { background: var(--accent-dim); border-color: rgba(110,231,247,0.25); }
+.build-day-name { width: 42px; font-size: .8rem; font-weight: 600; color: var(--text); flex-shrink: 0; }
+.build-day-w { font-size: .85rem; color: var(--text-2); }
+.build-day.on .build-day-w { color: var(--text); font-weight: 500; }
+.build-summary { font-size: .86rem; line-height: 1.55; color: var(--text); margin-top: 12px; }
+.build-tips { margin: 10px 0 0; padding-left: 18px; }
+.build-tips li { font-size: .82rem; color: var(--text-2); line-height: 1.5; margin: 4px 0; }
 `;
