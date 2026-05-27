@@ -8,7 +8,7 @@ const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], 
 const defaultGoals = { calories: 2500, protein: 180, carbs: 250, fat: 80, goal: "Build Muscle", waterGoalMl: 2500 };
 const fitnessGoals = ["Build Muscle", "Lose Fat", "Improve Endurance", "Maintain Weight", "Athletic Performance"];
 const mealTypes = ["Breakfast", "Lunch", "Dinner", "Snack"];
-const sportsOptions = ["Football","Basketball","Tennis","Swimming","Running","Cycling","Yoga","Boxing","Soccer","Volleyball","Badminton","Table Tennis","Golf","Martial Arts","Other"];
+const sportsOptions = ["Running","Football","Basketball","Tennis","Swimming","Cycling","Yoga","Boxing","Soccer","Volleyball","Badminton","Table Tennis","Golf","Martial Arts","Hiking","Walking","Rowing","Climbing","Other"];
 const sleepQuality = ["Poor", "Fair", "Good", "Great", "Excellent"];
 const intensityLevels = ["Light", "Moderate", "Intense", "All-out"];
 
@@ -284,15 +284,24 @@ async function fileToResizedBase64(file, maxDim = 1280, quality = 0.85) {
 // the model would otherwise have to derive from raw data — so every feature gets
 // the same sharp understanding of where the user is right now.
 function buildBrain(data, goals) {
+  const now = new Date();
   const today = getTodayStr();
   const yesterday = daysAgo(1);
-  const todayName = WEEKDAYS[(new Date().getDay() + 6) % 7];
+  const todayName = WEEKDAYS[(now.getDay() + 6) % 7];
+  const hour = now.getHours();
+  const minute = now.getMinutes();
+  const timeNow = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  const timeOfDay = hour < 5 ? "late night" : hour < 11 ? "morning" : hour < 14 ? "midday" : hour < 18 ? "afternoon" : hour < 22 ? "evening" : "night";
+  const isWeekend = todayName === "Sat" || todayName === "Sun";
 
   // ── Time windows
   const inWindow = (arr, days) => arr.filter(i => i.date >= daysAgo(days - 1));
   const last7 = a => inWindow(a, 7);
   const last14 = a => inWindow(a, 14);
   const last30 = a => inWindow(a, 30);
+
+  // Helper: parse HH:MM into minutes since midnight, or null
+  const minsOf = t => { if (!t) return null; const m = /^(\d{1,2}):(\d{2})/.exec(t); return m ? +m[1] * 60 + +m[2] : null; };
 
   // ── TODAY: nutrition + intake so far
   const todayDiet = data.diet.filter(d => d.date === today);
@@ -306,135 +315,251 @@ function buildBrain(data, goals) {
   const fRemaining = (goals.fat || 0) - todayF;
   const todayWaterMl = data.water.filter(w => w.date === today).reduce((a, w) => a + w.ml, 0);
   const waterRemainingMl = (goals.waterGoalMl || 0) - todayWaterMl;
-  const todaySupps = data.supplements.filter(s => s.date === today).map(s => s.name);
+  const todaySupps = data.supplements.filter(s => s.date === today);
   const todaySleep = data.sleep.find(s => s.date === today);
   const yestSleep = data.sleep.find(s => s.date === yesterday);
   const todayWorkout = data.exercise.find(e => e.date === today);
   const todaySport = data.sports.find(s => s.date === today);
 
-  // ── PLAN: what's scheduled today
+  // Time since last meal
+  const todayMealsWithTime = todayDiet.filter(m => m.time).sort((a, b) => (a.time || "").localeCompare(b.time || ""));
+  const lastMealTime = todayMealsWithTime.length ? todayMealsWithTime[todayMealsWithTime.length - 1].time : null;
+  const hoursSinceLastMeal = (() => {
+    if (!lastMealTime) return null;
+    const m = minsOf(lastMealTime);
+    const nowMins = hour * 60 + minute;
+    const diff = nowMins - m;
+    return diff >= 0 ? +(diff / 60).toFixed(1) : null;
+  })();
+
+  // ── PLAN
   const plan = goals.plan || null;
   const isTrainingDay = plan?.trainingDays?.includes(todayName) || false;
   const todayPlanLabel = plan?.assignments?.[todayName] || (isTrainingDay ? "Training day" : "Rest day");
-  const tomorrowName = WEEKDAYS[(new Date().getDay() + 7) % 7];
+  const tomorrowName = WEEKDAYS[(now.getDay() + 7) % 7];
   const tomorrowPlanLabel = plan?.assignments?.[tomorrowName] || (plan?.trainingDays?.includes(tomorrowName) ? "Training" : "Rest");
 
-  // ── 7-DAY AVERAGES (nutrition)
+  // ── DAILY TIMELINES — chronological event list per day (last 7 days)
+  // This is the heart of "mapping everything out." Each day becomes a sequence:
+  //   08:15 Breakfast 450kcal P25g | 10:30 Workout (Push) | 13:00 Lunch 700kcal | ...
+  function buildTimeline(date) {
+    const events = [];
+    data.diet.filter(d => d.date === date).forEach(m => events.push({ t: m.time || "??:??", kind: "meal", text: `${m.meal} ${m.calories}kcal P${m.protein}g`, sortKey: minsOf(m.time) ?? 9999 }));
+    data.exercise.filter(e => e.date === date).forEach(e => {
+      const p = e._parsed || parseWorkout(e.text || "");
+      events.push({ t: e.time || "??:??", kind: "workout", text: `Workout: ${e.label}${p.totalVolume ? ` (${p.totalVolume}kg vol)` : ""}${e.prs?.length ? ` 🏆${e.prs.length}` : ""}`, sortKey: minsOf(e.time) ?? 9999 });
+    });
+    data.sports.filter(s => s.date === date).forEach(s => events.push({ t: s.time || "??:??", kind: "sport", text: `${s.sport} ${s.duration}min ${s.intensity}${s.calories ? ` ${s.calories}kcal` : ""}`, sortKey: minsOf(s.time) ?? 9999 }));
+    data.water.filter(w => w.date === date).forEach(w => {
+      const t = w.ts ? new Date(w.ts) : null;
+      const ts = t ? `${String(t.getHours()).padStart(2,"0")}:${String(t.getMinutes()).padStart(2,"0")}` : "??:??";
+      events.push({ t: ts, kind: "water", text: `Water ${w.ml}ml`, sortKey: t ? t.getHours() * 60 + t.getMinutes() : 9999 });
+    });
+    data.supplements.filter(s => s.date === date).forEach(s => {
+      const t = s.ts ? new Date(s.ts) : null;
+      const ts = t ? `${String(t.getHours()).padStart(2,"0")}:${String(t.getMinutes()).padStart(2,"0")}` : "??:??";
+      events.push({ t: ts, kind: "supp", text: `Supp: ${s.name}${s.dose ? ` ${s.dose}` : ""}`, sortKey: t ? t.getHours() * 60 + t.getMinutes() : 9999 });
+    });
+    const slp = data.sleep.find(s => s.date === date);
+    if (slp) events.push({ t: slp.bedtime || "??:??", kind: "sleep", text: `Slept ${slp.duration}h (${slp.quality}) until ${slp.wakeTime || "?"}`, sortKey: 0 });
+    return events.sort((a, b) => a.sortKey - b.sortKey);
+  }
+
+  // Aggregate water by day for compactness, since dozens of entries would bloat the timeline
+  function compactTimeline(events) {
+    const waters = events.filter(e => e.kind === "water");
+    const totalWater = waters.reduce((a, e) => { const m = /Water (\d+)ml/.exec(e.text); return a + (m ? +m[1] : 0); }, 0);
+    const out = events.filter(e => e.kind !== "water");
+    if (totalWater > 0) out.push({ t: "—", kind: "water", text: `Total water ${totalWater}ml`, sortKey: 9999 });
+    return out;
+  }
+
+  const timelines = Array.from({ length: 7 }, (_, i) => {
+    const d = daysAgo(6 - i);
+    const events = compactTimeline(buildTimeline(d));
+    return { date: d, dayName: WEEKDAYS[(new Date(d + "T00:00:00").getDay() + 6) % 7], events };
+  });
+
+  // ── 7-DAY NUTRITION
   const last7Diet = last7(data.diet);
   const dietByDay7 = {};
   last7Diet.forEach(d => {
-    if (!dietByDay7[d.date]) dietByDay7[d.date] = { cal: 0, p: 0, c: 0, f: 0 };
-    dietByDay7[d.date].cal += d.calories || 0;
-    dietByDay7[d.date].p += d.protein || 0;
-    dietByDay7[d.date].c += d.carbs || 0;
-    dietByDay7[d.date].f += d.fat || 0;
+    if (!dietByDay7[d.date]) dietByDay7[d.date] = { cal: 0, p: 0, c: 0, f: 0, meals: 0, firstMeal: null, lastMeal: null };
+    const day = dietByDay7[d.date];
+    day.cal += d.calories || 0;
+    day.p += d.protein || 0;
+    day.c += d.carbs || 0;
+    day.f += d.fat || 0;
+    day.meals++;
+    if (d.time) {
+      if (!day.firstMeal || d.time < day.firstMeal) day.firstMeal = d.time;
+      if (!day.lastMeal || d.time > day.lastMeal) day.lastMeal = d.time;
+    }
   });
   const dietDays7 = Object.values(dietByDay7);
   const avgCal7 = dietDays7.length ? Math.round(dietDays7.reduce((a, d) => a + d.cal, 0) / dietDays7.length) : null;
   const avgP7 = dietDays7.length ? Math.round(dietDays7.reduce((a, d) => a + d.p, 0) / dietDays7.length) : null;
   const proteinHits7 = dietDays7.filter(d => d.p >= (goals.protein || 0)).length;
-  const calDeficit7 = avgCal7 != null ? (goals.calories || 0) - avgCal7 : null; // positive = under target
+  const calDeficit7 = avgCal7 != null ? (goals.calories || 0) - avgCal7 : null;
+  // Average first/last meal times across the week
+  const firstMealTimes = dietDays7.map(d => d.firstMeal).filter(Boolean);
+  const lastMealTimes = dietDays7.map(d => d.lastMeal).filter(Boolean);
+  const avgFirstMeal = firstMealTimes.length ? avgTimeHHMM(firstMealTimes) : null;
+  const avgLastMeal = lastMealTimes.length ? avgTimeHHMM(lastMealTimes) : null;
+
+  // ── 14-day calorie trend (rising/falling)
+  const last14Diet = last14(data.diet);
+  const trendBucket = (start, end) => {
+    const days = {};
+    last14Diet.filter(d => d.date >= start && d.date <= end).forEach(d => { days[d.date] = (days[d.date] || 0) + (d.calories || 0); });
+    const vs = Object.values(days);
+    return vs.length ? Math.round(vs.reduce((a, b) => a + b, 0) / vs.length) : null;
+  };
+  const recentHalf = trendBucket(daysAgo(6), today);
+  const olderHalf = trendBucket(daysAgo(13), daysAgo(7));
+  const calorieTrend = (recentHalf && olderHalf) ? (recentHalf - olderHalf) : null;
 
   // ── SLEEP
   const last7Sleep = last7(data.sleep);
   const avgSleep7 = last7Sleep.length ? +(last7Sleep.reduce((a, s) => a + s.duration, 0) / last7Sleep.length).toFixed(1) : null;
   const sleepDebt7 = last7Sleep.reduce((d, s) => d + (8 - s.duration), 0);
   const sleepPatternIssue = last7Sleep.length >= 3 && avgSleep7 != null && avgSleep7 < 7;
+  // Average bedtime / wake time across the week
+  const bedtimes = last7Sleep.map(s => s.bedtime).filter(Boolean);
+  const wakeTimes = last7Sleep.map(s => s.wakeTime).filter(Boolean);
+  const avgBedtime = bedtimes.length ? avgTimeHHMM(bedtimes, true) : null;
+  const avgWakeTime = wakeTimes.length ? avgTimeHHMM(wakeTimes) : null;
+  // Weekend vs weekday sleep gap
+  const weekdaySleeps = last7Sleep.filter(s => { const wd = WEEKDAYS[(new Date(s.date + "T00:00:00").getDay() + 6) % 7]; return wd !== "Sat" && wd !== "Sun"; });
+  const weekendSleeps = last7Sleep.filter(s => { const wd = WEEKDAYS[(new Date(s.date + "T00:00:00").getDay() + 6) % 7]; return wd === "Sat" || wd === "Sun"; });
+  const wkdayAvgSleep = weekdaySleeps.length ? +(weekdaySleeps.reduce((a, s) => a + s.duration, 0) / weekdaySleeps.length).toFixed(1) : null;
+  const wkendAvgSleep = weekendSleeps.length ? +(weekendSleeps.reduce((a, s) => a + s.duration, 0) / weekendSleeps.length).toFixed(1) : null;
 
   // ── TRAINING
   const last7Lifts = last7(data.exercise);
   const last7Sports = last7(data.sports);
   const last14Lifts = last14(data.exercise);
   const last7TotalSessions = last7Lifts.length + last7Sports.length;
-  // Total volume last 7d (with fallback if _parsed missing)
-  const volume7 = last7Lifts.reduce((sum, e) => {
-    const p = e._parsed || parseWorkout(e.text || "");
-    return sum + (p.totalVolume || 0);
-  }, 0);
-  // Consecutive days trained (including/up-to-today)
+  const volume7 = last7Lifts.reduce((sum, e) => sum + ((e._parsed || parseWorkout(e.text || "")).totalVolume || 0), 0);
+  const volume7_olderHalf = inWindow(data.exercise, 14).filter(e => e.date < daysAgo(6)).reduce((sum, e) => sum + ((e._parsed || parseWorkout(e.text || "")).totalVolume || 0), 0);
+  const volumeTrend = (volume7 && volume7_olderHalf) ? volume7 - volume7_olderHalf : null;
   const trainingDates = new Set([...data.exercise.map(e => e.date), ...data.sports.map(s => s.date)]);
   let consecutiveTrained = 0;
   {
-    let cur = new Date();
-    if (!trainingDates.has(getTodayStr())) cur.setDate(cur.getDate() - 1);
-    for (;;) {
-      const ds = cur.toISOString().split("T")[0];
-      if (trainingDates.has(ds)) { consecutiveTrained++; cur.setDate(cur.getDate() - 1); }
-      else break;
-    }
+    let cur = new Date(); if (!trainingDates.has(getTodayStr())) cur.setDate(cur.getDate() - 1);
+    for (;;) { const ds = cur.toISOString().split("T")[0]; if (trainingDates.has(ds)) { consecutiveTrained++; cur.setDate(cur.getDate() - 1); } else break; }
   }
   const daysSinceLastRest = (() => {
     let c = 0; const cur = new Date();
     for (let i = 0; i < 14; i++) {
       const ds = cur.toISOString().split("T")[0];
-      if (trainingDates.has(ds)) c++;
-      else return c;
+      if (trainingDates.has(ds)) c++; else return c;
       cur.setDate(cur.getDate() - 1);
     }
     return c;
   })();
-  // Recent PRs
   const recentPRs = last14Lifts.flatMap(e => (e.prs || []).map(pr => ({ date: e.date, ...pr }))).slice(0, 5);
 
-  // ── STREAK (consecutive days with ANY log)
+  // ── WATER PATTERNS
+  const last7Water = last7(data.water);
+  const waterByDay7 = {};
+  last7Water.forEach(w => { waterByDay7[w.date] = (waterByDay7[w.date] || 0) + w.ml; });
+  const avgWaterMl7 = Object.values(waterByDay7).length ? Math.round(Object.values(waterByDay7).reduce((a, b) => a + b, 0) / Object.values(waterByDay7).length) : null;
+
+  // ── STREAK
   const dayHas = {};
   [...data.diet, ...data.sleep, ...data.exercise, ...data.sports, ...data.water, ...data.supplements].forEach(e => { if (e.date) dayHas[e.date] = true; });
   let streak = 0;
   {
-    let cur = new Date();
-    if (!dayHas[getTodayStr()]) cur.setDate(cur.getDate() - 1);
-    for (;;) {
-      const ds = cur.toISOString().split("T")[0];
-      if (dayHas[ds]) { streak++; cur.setDate(cur.getDate() - 1); }
-      else break;
-    }
+    let cur = new Date(); if (!dayHas[getTodayStr()]) cur.setDate(cur.getDate() - 1);
+    for (;;) { const ds = cur.toISOString().split("T")[0]; if (dayHas[ds]) { streak++; cur.setDate(cur.getDate() - 1); } else break; }
   }
 
-  // ── DERIVED INSIGHTS — the high-signal flags an AI should immediately notice
+  // ── CROSS-CATEGORY PATTERNS
+  // Sleep-on-training-day vs rest-day
+  const trainNightSleep = last7Sleep.filter(s => trainingDates.has(s.date));
+  const restNightSleep = last7Sleep.filter(s => !trainingDates.has(s.date));
+  const trainNightAvg = trainNightSleep.length ? +(trainNightSleep.reduce((a, s) => a + s.duration, 0) / trainNightSleep.length).toFixed(1) : null;
+  const restNightAvg = restNightSleep.length ? +(restNightSleep.reduce((a, s) => a + s.duration, 0) / restNightSleep.length).toFixed(1) : null;
+
+  // ── DERIVED INSIGHTS — high-signal flags
   const insights = [];
   if (calDeficit7 != null && Math.abs(calDeficit7) > 200) {
-    insights.push(`7-day calorie average ${avgCal7} is ${Math.abs(calDeficit7)}kcal ${calDeficit7 > 0 ? "BELOW" : "ABOVE"} target — ${calDeficit7 > 0 ? "may be under-eating for goal" : "may be over-eating for goal"}`);
+    insights.push(`7-day avg calories ${avgCal7} is ${Math.abs(calDeficit7)}kcal ${calDeficit7 > 0 ? "BELOW" : "ABOVE"} target`);
+  }
+  if (calorieTrend != null && Math.abs(calorieTrend) > 200) {
+    insights.push(`Calorie trend: ${calorieTrend > 0 ? "+" : ""}${calorieTrend}kcal/day vs previous week (${calorieTrend > 0 ? "eating more" : "eating less"})`);
+  }
+  if (volumeTrend != null && Math.abs(volumeTrend) > 1000) {
+    insights.push(`Training volume ${volumeTrend > 0 ? "UP" : "DOWN"} ${Math.round(Math.abs(volumeTrend)).toLocaleString()}kg vs previous week`);
   }
   if (avgP7 != null && goals.protein && avgP7 < goals.protein * 0.85) {
     insights.push(`Protein consistently low: ${avgP7}g avg vs ${goals.protein}g target (${proteinHits7}/${dietDays7.length} days hit goal)`);
   }
   if (sleepDebt7 > 5) insights.push(`Sleep debt accumulating: ${sleepDebt7.toFixed(1)}h short over last week`);
-  if (sleepPatternIssue) insights.push(`Average sleep ${avgSleep7}h is below 7h — recovery likely compromised`);
+  if (sleepPatternIssue) insights.push(`Avg sleep ${avgSleep7}h is below 7h — recovery likely compromised`);
   if (consecutiveTrained >= 4) insights.push(`Trained ${consecutiveTrained} days in a row with no rest — deload signal`);
-  if (last7TotalSessions === 0 && plan?.trainingDays?.length) insights.push(`No training logged in last 7 days despite ${plan.trainingDays.length}-day/week plan`);
+  if (last7TotalSessions === 0 && plan?.trainingDays?.length) insights.push(`No training in 7 days despite ${plan.trainingDays.length}-day/week plan`);
   if (recentPRs.length > 0) insights.push(`${recentPRs.length} recent PR${recentPRs.length === 1 ? "" : "s"}: ${recentPRs.slice(0, 2).map(p => `${p.name} ${p.weight}${p.unit}×${p.reps}`).join(", ")}`);
+  if (avgLastMeal && minsOf(avgLastMeal) > 21 * 60) insights.push(`Eating late: avg last meal at ${avgLastMeal} — may affect sleep/recovery`);
+  if (trainNightAvg != null && restNightAvg != null && Math.abs(trainNightAvg - restNightAvg) > 0.8) {
+    insights.push(`Sleep ${trainNightAvg > restNightAvg ? "BETTER" : "WORSE"} on training days (${trainNightAvg}h) vs rest days (${restNightAvg}h)`);
+  }
+  if (wkdayAvgSleep != null && wkendAvgSleep != null && Math.abs(wkdayAvgSleep - wkendAvgSleep) > 1.2) {
+    insights.push(`Weekend sleep ${wkendAvgSleep > wkdayAvgSleep ? "much longer" : "much shorter"} than weekdays (${wkdayAvgSleep}h vs ${wkendAvgSleep}h) — circadian disruption`);
+  }
+  if (avgWaterMl7 != null && goals.waterGoalMl && avgWaterMl7 < goals.waterGoalMl * 0.7) {
+    insights.push(`Hydration low: avg ${avgWaterMl7}ml/day vs ${goals.waterGoalMl}ml target`);
+  }
 
   return {
-    today, todayName, tomorrowName,
+    // Real-time awareness
+    now: { iso: now.toISOString(), date: today, dayName: todayName, time: timeNow, hour, timeOfDay, isWeekend },
     goal: goals.goal,
     targets: { calories: goals.calories, protein: goals.protein, carbs: goals.carbs, fat: goals.fat, waterMl: goals.waterGoalMl },
     todayProgress: {
       cal: todayCal, protein: todayP, carbs: todayC, fat: todayF,
       calRemaining, pRemaining, cRemaining, fRemaining,
       waterMl: todayWaterMl, waterRemainingMl,
-      supplements: todaySupps,
-      sleep: todaySleep ? { duration: todaySleep.duration, quality: todaySleep.quality } : null,
-      yesterdaySleep: yestSleep ? { duration: yestSleep.duration, quality: yestSleep.quality } : null,
+      supplements: todaySupps.map(s => `${s.name}${s.dose ? ` (${s.dose})` : ""}`),
+      sleep: todaySleep ? { duration: todaySleep.duration, quality: todaySleep.quality, bedtime: todaySleep.bedtime, wakeTime: todaySleep.wakeTime } : null,
+      yesterdaySleep: yestSleep ? { duration: yestSleep.duration, quality: yestSleep.quality, bedtime: yestSleep.bedtime, wakeTime: yestSleep.wakeTime } : null,
       workoutLogged: !!todayWorkout, sportLogged: !!todaySport,
       meals: todayDiet.map(d => ({ time: d.time, meal: d.meal, food: d.food, cal: d.calories, p: d.protein })),
+      lastMealTime, hoursSinceLastMeal,
     },
-    plan: plan ? { split: plan.split, todayLabel: todayPlanLabel, tomorrowLabel: tomorrowPlanLabel, trainingDays: plan.trainingDays, isTrainingDay } : null,
+    plan: plan ? { split: plan.split, todayLabel: todayPlanLabel, tomorrowLabel: tomorrowPlanLabel, trainingDays: plan.trainingDays, isTrainingDay, tomorrowName } : null,
+    timelines, // chronological event sequence for each of the last 7 days
     week: {
       avgCal: avgCal7, avgProtein: avgP7, proteinHitDays: proteinHits7, daysLogged: dietDays7.length,
       avgSleep: avgSleep7, sleepDebt: +sleepDebt7.toFixed(1),
-      sessions: last7TotalSessions, volumeKg: Math.round(volume7),
+      avgBedtime, avgWakeTime, wkdayAvgSleep, wkendAvgSleep,
+      avgFirstMeal, avgLastMeal,
+      sessions: last7TotalSessions, volumeKg: Math.round(volume7), volumeTrend, calorieTrend,
       consecutiveTrained, daysSinceLastRest,
       recentPRs, streak,
+      avgWaterMl: avgWaterMl7,
+      trainNightSleep: trainNightAvg, restNightSleep: restNightAvg,
     },
     insights,
-    // Raw last 7 days for deeper inspection (compact)
-    raw7: {
-      sleep: last7Sleep.map(s => `${s.date}:${s.duration}h(${s.quality})`).join(", ") || "none",
-      diet: Object.entries(dietByDay7).map(([d, v]) => `${d}: ${v.cal}kcal P${v.p}g`).join(" | ") || "none",
-      workouts: last7Lifts.map(e => `${e.date}: ${e.label}`).join(", ") || "none",
-      sports: last7Sports.map(s => `${s.date}: ${s.sport} ${s.duration}min ${s.intensity}`).join(", ") || "none",
-    },
   };
+}
+
+// Helpers for time math. avgTimeHHMM averages a list of "HH:MM" strings.
+// `wrapPM` handles bedtime (treating 00:00–05:00 as the same night, after midnight, by adding 24h).
+function avgTimeHHMM(times, wrapPM = false) {
+  if (!times || !times.length) return null;
+  const mins = times.map(t => {
+    const m = /^(\d{1,2}):(\d{2})/.exec(t);
+    if (!m) return null;
+    let v = +m[1] * 60 + +m[2];
+    if (wrapPM && v < 5 * 60) v += 24 * 60; // bedtime after midnight counts as previous night
+    return v;
+  }).filter(v => v != null);
+  if (!mins.length) return null;
+  let avg = Math.round(mins.reduce((a, b) => a + b, 0) / mins.length);
+  if (avg >= 24 * 60) avg -= 24 * 60;
+  return `${String(Math.floor(avg / 60)).padStart(2, "0")}:${String(avg % 60).padStart(2, "0")}`;
 }
 
 // Turns the brain object into a tight text block every AI prompt gets.
@@ -442,42 +567,87 @@ function buildBrain(data, goals) {
 function formatBrainText(brain) {
   const tp = brain.todayProgress;
   const w = brain.week;
+  const n = brain.now;
   const lines = [];
-  lines.push(`USER GOAL: ${brain.goal}`);
-  lines.push(`TARGETS — calories ${brain.targets.calories}kcal, protein ${brain.targets.protein}g, carbs ${brain.targets.carbs}g, fat ${brain.targets.fat}g, water ${brain.targets.waterMl}ml`);
+
+  // ─── RIGHT NOW ────────────────────────────────────────────────────────────
+  lines.push(`== RIGHT NOW ==`);
+  lines.push(`Date: ${n.date} (${n.dayName}${n.isWeekend ? ", weekend" : ""}) | Time: ${n.time} (${n.timeOfDay})`);
+  lines.push(`Goal: ${brain.goal}`);
+  lines.push(`Targets — ${brain.targets.calories}kcal | P${brain.targets.protein}g C${brain.targets.carbs}g F${brain.targets.fat}g | water ${brain.targets.waterMl}ml`);
   if (brain.plan) {
-    lines.push(`PLAN — ${brain.plan.split} | Today (${brain.todayName}): ${brain.plan.todayLabel} | Tomorrow (${brain.tomorrowName}): ${brain.plan.tomorrowLabel} | Training days: ${brain.plan.trainingDays.join(", ")}`);
+    lines.push(`Plan: ${brain.plan.split} | Today: ${brain.plan.todayLabel} | Tomorrow (${brain.plan.tomorrowName}): ${brain.plan.tomorrowLabel} | Training days: ${brain.plan.trainingDays.join(", ")}`);
   }
+
+  // ─── TODAY SO FAR ─────────────────────────────────────────────────────────
   lines.push("");
   lines.push("== TODAY SO FAR ==");
-  lines.push(`Nutrition: ${tp.cal}/${brain.targets.calories} kcal (${tp.calRemaining >= 0 ? tp.calRemaining + " remaining" : Math.abs(tp.calRemaining) + " OVER"}) | P ${tp.protein}/${brain.targets.protein}g (${tp.pRemaining >= 0 ? tp.pRemaining + "g to go" : "hit"}) | C ${tp.carbs}g | F ${tp.fat}g`);
-  lines.push(`Water: ${tp.waterMl}/${brain.targets.waterMl}ml (${tp.waterRemainingMl >= 0 ? tp.waterRemainingMl + "ml to go" : "hit"})`);
+  lines.push(`Nutrition: ${tp.cal}/${brain.targets.calories} kcal (${tp.calRemaining >= 0 ? tp.calRemaining + " remaining" : Math.abs(tp.calRemaining) + " OVER"}) | P ${tp.protein}/${brain.targets.protein}g (${tp.pRemaining > 0 ? tp.pRemaining + "g to go" : "hit"}) | C ${tp.carbs}g | F ${tp.fat}g`);
+  lines.push(`Water: ${tp.waterMl}/${brain.targets.waterMl}ml (${tp.waterRemainingMl > 0 ? tp.waterRemainingMl + "ml to go" : "hit"})`);
   if (tp.supplements.length) lines.push(`Supplements today: ${tp.supplements.join(", ")}`);
-  if (tp.sleep) lines.push(`Slept ${tp.sleep.duration}h (${tp.sleep.quality}) last night`);
-  else if (tp.yesterdaySleep) lines.push(`Slept ${tp.yesterdaySleep.duration}h (${tp.yesterdaySleep.quality}) the night before`);
-  if (tp.workoutLogged) lines.push(`✓ Logged workout today`);
-  if (tp.sportLogged) lines.push(`✓ Logged sport today`);
-  if (tp.meals.length) lines.push(`Meals today: ${tp.meals.map(m => `${m.time || "?"} ${m.meal} ${m.cal}kcal P${m.p}g`).join(" | ")}`);
-  lines.push("");
-  lines.push("== 7-DAY AVERAGES ==");
-  lines.push(`Calories: ${w.avgCal ?? "—"} avg (target ${brain.targets.calories}) over ${w.daysLogged} logged days`);
-  lines.push(`Protein: ${w.avgProtein ?? "—"}g avg, hit goal ${w.proteinHitDays}/${w.daysLogged} days`);
-  lines.push(`Sleep: ${w.avgSleep ?? "—"}h avg, debt ${w.sleepDebt}h`);
-  lines.push(`Training: ${w.sessions} sessions, ${w.volumeKg.toLocaleString()}kg total volume, ${w.consecutiveTrained}-day current streak, ${w.daysSinceLastRest} days since rest`);
-  if (w.recentPRs.length) lines.push(`Recent PRs: ${w.recentPRs.slice(0, 3).map(p => `${p.name} ${p.weight}${p.unit}×${p.reps}`).join("; ")}`);
-  lines.push(`Logging streak: ${w.streak} day${w.streak === 1 ? "" : "s"}`);
+  if (tp.sleep) lines.push(`Slept last night: ${tp.sleep.duration}h (${tp.sleep.quality})${tp.sleep.bedtime ? `, ${tp.sleep.bedtime}→${tp.sleep.wakeTime}` : ""}`);
+  else if (tp.yesterdaySleep) lines.push(`Last sleep on record: ${tp.yesterdaySleep.duration}h (${tp.yesterdaySleep.quality})`);
+  if (tp.workoutLogged) lines.push(`✓ Workout logged today`);
+  if (tp.sportLogged) lines.push(`✓ Sport logged today`);
+  if (tp.lastMealTime) lines.push(`Last meal: ${tp.lastMealTime}${tp.hoursSinceLastMeal != null ? ` (${tp.hoursSinceLastMeal}h ago)` : ""}`);
+
+  // ─── KEY SIGNALS ─────────────────────────────────────────────────────────
   if (brain.insights.length) {
     lines.push("");
-    lines.push("== KEY SIGNALS (high-priority) ==");
+    lines.push("== KEY SIGNALS — lead with these ==");
     brain.insights.forEach(s => lines.push("• " + s));
   }
+
+  // ─── 7-DAY OVERVIEW ───────────────────────────────────────────────────────
   lines.push("");
-  lines.push("== RECENT DETAIL (last 7d) ==");
-  lines.push(`Sleep: ${brain.raw7.sleep}`);
-  lines.push(`Diet by day: ${brain.raw7.diet}`);
-  lines.push(`Workouts: ${brain.raw7.workouts}`);
-  lines.push(`Sports: ${brain.raw7.sports}`);
+  lines.push("== 7-DAY OVERVIEW ==");
+  lines.push(`Calories: ${w.avgCal ?? "—"} avg (target ${brain.targets.calories}) across ${w.daysLogged} logged days${w.calorieTrend != null ? ` | trend vs prev wk: ${w.calorieTrend > 0 ? "+" : ""}${w.calorieTrend}kcal/day` : ""}`);
+  lines.push(`Protein: ${w.avgProtein ?? "—"}g avg, hit goal ${w.proteinHitDays}/${w.daysLogged} days`);
+  lines.push(`Sleep: ${w.avgSleep ?? "—"}h avg, debt ${w.sleepDebt}h${w.avgBedtime ? ` | avg bedtime ${w.avgBedtime}, wake ${w.avgWakeTime}` : ""}`);
+  if (w.wkdayAvgSleep != null && w.wkendAvgSleep != null) {
+    lines.push(`  Weekday sleep ${w.wkdayAvgSleep}h vs weekend ${w.wkendAvgSleep}h`);
+  }
+  if (w.trainNightSleep != null && w.restNightSleep != null) {
+    lines.push(`  Sleep on training nights ${w.trainNightSleep}h vs rest nights ${w.restNightSleep}h`);
+  }
+  if (w.avgFirstMeal && w.avgLastMeal) {
+    lines.push(`Meal timing: avg first meal ${w.avgFirstMeal}, avg last meal ${w.avgLastMeal} (eating window ~${meanGap(w.avgFirstMeal, w.avgLastMeal)}h)`);
+  }
+  lines.push(`Training: ${w.sessions} sessions | ${w.volumeKg.toLocaleString()}kg volume${w.volumeTrend != null ? ` (${w.volumeTrend > 0 ? "+" : ""}${w.volumeTrend.toLocaleString()}kg vs prev wk)` : ""} | ${w.consecutiveTrained}-day streak | ${w.daysSinceLastRest} days since rest`);
+  if (w.avgWaterMl != null) lines.push(`Water: ${w.avgWaterMl}ml/day avg`);
+  if (w.recentPRs.length) lines.push(`Recent PRs: ${w.recentPRs.slice(0, 3).map(p => `${p.name} ${p.weight}${p.unit}×${p.reps} on ${p.date}`).join("; ")}`);
+  lines.push(`Logging streak: ${w.streak} day${w.streak === 1 ? "" : "s"}`);
+
+  // ─── DAY-BY-DAY TIMELINES — the chronological "map" the user asked for ───
+  // For each of the last 7 days, list every event in order. Lets the model
+  // see meal-to-workout gaps, late dinners, training-after-poor-sleep, etc.
+  if (brain.timelines?.length) {
+    lines.push("");
+    lines.push("== DAY-BY-DAY TIMELINE (last 7 days, chronological) ==");
+    lines.push("Each day shows events as they happened. Look for cross-category patterns: meal timing vs sleep, training vs energy intake, water gaps, etc.");
+    brain.timelines.forEach(day => {
+      if (!day.events.length) {
+        lines.push(`${day.date} (${day.dayName}): no logs`);
+        return;
+      }
+      lines.push(`${day.date} (${day.dayName}):`);
+      day.events.forEach(e => {
+        lines.push(`  ${e.t}  ${e.text}`);
+      });
+    });
+  }
+
   return lines.join("\n");
+}
+
+// Compute hours between two HH:MM times (last minus first), wrapping over midnight is not an issue here
+// since first/last meal of a day are by definition same-day.
+function meanGap(first, last) {
+  const m1 = /^(\d{1,2}):(\d{2})/.exec(first);
+  const m2 = /^(\d{1,2}):(\d{2})/.exec(last);
+  if (!m1 || !m2) return "?";
+  const mins = (+m2[1] * 60 + +m2[2]) - (+m1[1] * 60 + +m1[2]);
+  return Math.max(0, +(mins / 60).toFixed(1));
 }
 
 // ─── CLAUDE API ───────────────────────────────────────────────────────────────
@@ -1511,6 +1681,10 @@ function DietForm({ onAdd, recent, goals, data, todayDiet = [] }) {
 // ─── EXERCISE (paste from Strong) ──
 function ExerciseForm({ onAdd, recent }) {
   const [date, setDate] = useState(getTodayStr());
+  const [time, setTime] = useState(() => {
+    const d = new Date();
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  });
   const [label, setLabel] = useState("");
   const [text, setText] = useState("");
 
@@ -1520,7 +1694,7 @@ function ExerciseForm({ onAdd, recent }) {
     if (!text.trim()) return;
     const p = parseWorkout(text);
     const prs = detectPRs(p, recent || []);
-    onAdd({ id: Date.now(), date, label: label.trim() || "Workout", text: text.trim(), _parsed: p, prs });
+    onAdd({ id: Date.now(), date, time, label: label.trim() || "Workout", text: text.trim(), _parsed: p, prs });
     if (prs.length) {
       haptic([18, 40, 18]);
       toast(`🏆 New PR: ${prs[0].name} ${prs[0].weight}${prs[0].unit} × ${prs[0].reps}`);
@@ -1533,8 +1707,9 @@ function ExerciseForm({ onAdd, recent }) {
   return (
     <>
     <Card title="Log workout" sub="Paste from Strong, or write your own">
-      <div className="field-grid">
+      <div className="field-grid three">
         <label>Date<input type="date" value={date} onChange={e => setDate(e.target.value)} /></label>
+        <label>Time<input type="time" value={time} onChange={e => setTime(e.target.value)} /></label>
         <label>Label<input type="text" value={label} onChange={e => setLabel(e.target.value)} placeholder="e.g. Push Day A" /></label>
       </div>
       <label>Workout details
@@ -1572,7 +1747,10 @@ function ExerciseForm({ onAdd, recent }) {
 
 // ─── SPORTS ──
 function SportsForm({ onAdd, recent }) {
-  const [form, setForm] = useState({ date: getTodayStr(), sport: "Basketball", duration: "60", intensity: "Moderate", result: "", opponent: "", score: "", notes: "" });
+  const [form, setForm] = useState(() => {
+    const d = new Date();
+    return { date: getTodayStr(), time: `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`, sport: "Basketball", duration: "60", intensity: "Moderate", result: "", opponent: "", score: "", notes: "" };
+  });
   const [weight, setWeight] = useState("75");
   const [est, setEst] = useState(null);
   const [estimating, setEstimating] = useState(false);
@@ -1583,6 +1761,7 @@ function SportsForm({ onAdd, recent }) {
     <Card title="Log sport">
       <div className="field-grid">
         <label>Date<input type="date" value={form.date} onChange={e => set("date", e.target.value)} /></label>
+        <label>Time<input type="time" value={form.time} onChange={e => set("time", e.target.value)} /></label>
         <label>Sport<select value={form.sport} onChange={e => set("sport", e.target.value)}>{sportsOptions.map(s => <option key={s}>{s}</option>)}</select></label>
         <label>Duration (min)<input type="number" value={form.duration} onChange={e => set("duration", e.target.value)} /></label>
         <label>Intensity<select value={form.intensity} onChange={e => set("intensity", e.target.value)}>{intensityLevels.map(l => <option key={l}>{l}</option>)}</select></label>
