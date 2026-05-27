@@ -251,6 +251,34 @@ function computeAchievements(data, goals, streak) {
 
 
 
+// ─── IMAGE RESIZE ────────────────────────────────────────────────────────────
+// Phone cameras produce huge images. Resize before sending to API for speed + reliability.
+// Returns { base64, mediaType }.
+async function fileToResizedBase64(file, maxDim = 1280, quality = 0.85) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = reject;
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onerror = reject;
+      img.onload = () => {
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        const w = Math.round(img.width * scale);
+        const h = Math.round(img.height * scale);
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, w, h);
+        // Use JPEG for photos — much smaller than PNG
+        const dataUrl = canvas.toDataURL("image/jpeg", quality);
+        resolve({ base64: dataUrl.split(",")[1], mediaType: "image/jpeg", preview: dataUrl });
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 // ─── CLAUDE API ───────────────────────────────────────────────────────────────
 async function callClaude({ system, userText, imageBase64, imageMediaType, maxTokens = 1000, conversationMessages, tools, model }) {
   const useModel = model || currentModelId();
@@ -298,27 +326,39 @@ async function estimateSportsCalories(sport, duration, intensity, weight) {
 
 // useWeb = true only when the user opts in (branded/restaurant foods). Keeps cost low by default.
 async function analyzeFoodAI(description, imageBase64, imageMediaType, useWeb = false) {
+  const isImage = !!imageBase64;
   try {
     const raw = await callClaude({
       model: currentModelId(),
-      maxTokens: useWeb ? 1500 : 700,
+      maxTokens: useWeb ? 1500 : 1000,
       tools: useWeb ? WEB_SEARCH_TOOL : undefined,
-      system: `You are a meticulous nutritionist. Estimate nutrition as ACCURATELY as possible.
+      system: `You are a meticulous nutritionist analyzing real meals. Estimate nutrition as ACCURATELY as possible.
+
+${isImage ? `STEP 1 — LOOK CAREFULLY AT THE PHOTO. Before estimating, identify:
+- Every food item you can see (don't miss sides, drinks, condiments, garnishes)
+- The cooking method (fried/grilled/baked/raw — affects calories a lot)
+- Portion size (compare to plate/utensils/hand in frame)
+- Visible ingredients like oil, butter, sauce, cheese, dressing
+STEP 2 — Combine everything into total numbers for the whole meal shown.` : ""}
+
 RULES:
-- ${useWeb ? "For branded/restaurant/packaged foods, search the web for the official published nutrition facts and use those exact numbers." : "Use precise USDA-style values from your knowledge."}
-- Account for cooking method, oil, and realistic portion sizes.
-- If a portion is vague, assume a typical real-world serving and note it.
+- ${useWeb ? "For branded/restaurant/packaged foods, search the web for the official published nutrition facts and use those exact numbers." : "Use precise USDA-style values from your knowledge of real foods."}
+- Account for cooking method, oil/butter, sauces, and realistic portion sizes.
+- If a portion is vague, assume a typical real-world serving and note your assumption.
 - Do NOT round down to be "nice" — restaurant and fried foods are calorie-dense. Be realistic.
-- If multiple items, sum them.
-Reply with ONLY this JSON (after any research):
-{"food":"<concise name>","calories":<n>,"protein":<n>,"carbs":<n>,"fat":<n>,"confidence":"high|medium|low","notes":"<source or assumptions, brief>"}`,
+- If multiple items are visible, SUM them all.
+- If you genuinely cannot tell what the food is from the photo, set confidence to "low" and explain in notes.
+
+Reply with ONLY this JSON object (no prose before or after, no markdown fence):
+{"food":"<concise meal name, list main items>","calories":<integer>,"protein":<integer grams>,"carbs":<integer grams>,"fat":<integer grams>,"confidence":"high|medium|low","notes":"<what you identified, portions assumed, or limitations — 1-2 sentences>"}`,
       userText: description
         ? `Analyze the nutrition of: "${description}".${useWeb ? " Search for official data if this is a branded or restaurant item." : ""}`
-        : `Identify the food in this image and analyze its nutrition.${useWeb ? " If it's a specific brand or restaurant dish, search for its official nutrition facts." : ""}`,
+        : `Identify EVERY food item in this image and analyze the total nutrition for the whole meal shown.${useWeb ? " If you recognize a branded or restaurant dish, search for its official nutrition facts." : ""}`,
       imageBase64, imageMediaType,
     });
+    if (!raw || !raw.trim()) return null;
     return extractJSON(raw);
-  } catch { return null; }
+  } catch (e) { return null; }
 }
 
 async function analyzeAllData(data, goals) {
@@ -395,6 +435,33 @@ async function recommendRest(data, goals) {
 Return ONLY JSON: {"recommendation":"train|light|rest","reason":"<2-3 sentences referencing their actual recent data>","tip":"<one concrete suggestion>"}`;
   const raw = await callClaude({ system: sys, maxTokens: 600, userText: `Today is ${new Date().toLocaleDateString("en-US", { weekday: "long" })}.\nConsecutive days trained (ending today): ${consecutiveTrained}\n\nRecent training:\n${trainingLines}\n\nRecent sleep:\n${sleep}` });
   return JSON.parse(raw.replace(/```json|```/g, "").trim());
+}
+
+// Analyzes a physique photo and recommends specific actions toward the user's goal.
+async function analyzePhysique(imageBase64, imageMediaType, goals, recentContext) {
+  const sys = `You are an experienced physique coach (think competitive bodybuilding meets pragmatic personal training). The user has shared a photo of themselves and wants honest, useful feedback toward their goal: ${goals.goal}.
+
+Be respectful but honest. Avoid generic flattery. Give them specific observations and ACTIONABLE next steps. Focus on what they can change.
+
+If you can't clearly see the body or the photo isn't appropriate for physique analysis, say so politely and ask for a better photo (e.g. relaxed front-facing in good light, fitted clothing or shirtless if comfortable).
+
+Reply with ONLY this JSON, no markdown fence:
+{
+  "observations": ["<short specific visual observation>", "<observation>", "<observation>"],
+  "strengths": ["<what's already developed/looking good>", "<...>"],
+  "focusAreas": ["<specific muscle group or aspect to prioritize>", "<...>"],
+  "nutritionAdvice": "<2-3 sentences with concrete diet direction for their goal>",
+  "trainingAdvice": "<2-3 sentences with concrete training priorities>",
+  "summary": "<1 sentence honest overall take + an encouraging closer>"
+}`;
+  const raw = await callClaude({
+    model: currentModelId(),
+    maxTokens: 1500,
+    system: sys,
+    userText: `My goal is ${goals.goal}. ${recentContext ? `Recent context: ${recentContext}.` : ""} Give me your honest physique analysis and specific advice.`,
+    imageBase64, imageMediaType,
+  });
+  return extractJSON(raw);
 }
 
 // ─── MARKDOWN ─────────────────────────────────────────────────────────────────
@@ -766,7 +833,7 @@ function HomeTab({ data, goals, onAddWater, onNav }) {
         ) : (
           <div className="today-items">
             {todaySleep && <div className="today-item"><span className="today-dot" style={{ background: TYPE_DOT.sleep }} /><span className="today-text">{todaySleep.duration}h sleep · {todaySleep.quality.toLowerCase()}</span></div>}
-            {todayDiet.map(m => <div key={m.id} className="today-item"><span className="today-dot" style={{ background: TYPE_DOT.diet }} /><span className="today-text">{m.meal} · {m.calories} kcal · {m.food.slice(0, 30)}{m.food.length > 30 ? "…" : ""}</span></div>)}
+            {todayDiet.map(m => <div key={m.id} className="today-item"><span className="today-dot" style={{ background: TYPE_DOT.diet }} /><span className="today-text">{m.time ? `${m.time} · ` : ""}{m.meal} · {m.calories} kcal · {m.food.slice(0, 28)}{m.food.length > 28 ? "…" : ""}</span></div>)}
             {todayWorkout && <div className="today-item"><span className="today-dot" style={{ background: TYPE_DOT.exercise }} /><span className="today-text">Workout · {todayWorkout.label}</span></div>}
             {todaySport && <div className="today-item"><span className="today-dot" style={{ background: TYPE_DOT.sports }} /><span className="today-text">{todaySport.sport} · {todaySport.duration}min</span></div>}
             {todaySupps.length > 0 && <div className="today-item"><span className="today-dot" style={{ background: TYPE_DOT.supplements }} /><span className="today-text">{todaySupps.length} supplement{todaySupps.length === 1 ? "" : "s"} · {todaySupps.map(s => s.name).join(", ")}</span></div>}
@@ -803,13 +870,12 @@ function HomeTab({ data, goals, onAddWater, onNav }) {
   );
 }
 const LOG_SUBTABS = [
-  { key: "plan", label: "Plan", icon: "🗓" },
-  { key: "diet", label: "Meal", icon: "◉" },
-  { key: "sleep", label: "Sleep", icon: "◐" },
-  { key: "exercise", label: "Workout", icon: "◆" },
-  { key: "sports", label: "Sport", icon: "◇" },
-  { key: "water", label: "Water", icon: "◊" },
-  { key: "supplement", label: "Supplement", icon: "⊕" },
+  { key: "plan", label: "Plan" },
+  { key: "diet", label: "Meal" },
+  { key: "sleep", label: "Sleep" },
+  { key: "exercise", label: "Workout" },
+  { key: "sports", label: "Sport" },
+  { key: "intake", label: "Intake" },
 ];
 
 function RecentList({ entries, render }) {
@@ -835,7 +901,7 @@ function LogTab({ data, goals, addEntry, deleteEntry, initialSub, onSaveGoals })
       <div className="subtabs">
         {LOG_SUBTABS.map(t => (
           <button key={t.key} className={`subtab ${sub === t.key ? "active" : ""}`} onClick={() => setSub(t.key)}>
-            <span className="subtab-icon">{t.icon}</span>{t.label}
+            {t.label}
           </button>
         ))}
       </div>
@@ -845,8 +911,7 @@ function LogTab({ data, goals, addEntry, deleteEntry, initialSub, onSaveGoals })
       {sub === "sleep" && <SleepForm onAdd={addEntry("sleep")} recent={data.sleep} />}
       {sub === "exercise" && <ExerciseForm onAdd={addEntry("exercise")} recent={data.exercise} />}
       {sub === "sports" && <SportsForm onAdd={addEntry("sports")} recent={data.sports} />}
-      {sub === "water" && <WaterForm data={data} goals={goals} onAdd={addEntry("water")} onDelete={deleteEntry("water")} />}
-      {sub === "supplement" && <SupplementForm data={data} onAdd={addEntry("supplements")} onDelete={deleteEntry("supplements")} />}
+      {sub === "intake" && <IntakeTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />}
     </div>
   );
 }
@@ -1062,6 +1127,10 @@ function SleepForm({ onAdd, recent }) {
 // ─── DIET FORM ──
 function DietForm({ onAdd, recent, goals, todayDiet = [] }) {
   const [date, setDate] = useState(getTodayStr());
+  const [time, setTime] = useState(() => {
+    const d = new Date();
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  });
   const [meal, setMeal] = useState("Breakfast");
   const [text, setText] = useState("");
   const [file, setFile] = useState(null);
@@ -1089,18 +1158,23 @@ function DietForm({ onAdd, recent, goals, todayDiet = [] }) {
     try {
       let b64 = null, mt = null;
       if (mode === "image" && file) {
-        b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.onerror = rej; r.readAsDataURL(file); });
-        mt = file.type;
+        // Resize before sending — phone photos are huge and the API chokes on them.
+        const resized = await fileToResizedBase64(file, 1280, 0.85);
+        b64 = resized.base64;
+        mt = resized.mediaType;
       }
       const r = await analyzeFoodAI(mode === "text" ? text : "", b64, mt, useWeb);
-      if (r) setResult(r); else setError("Couldn't analyze that. Try again or be more specific.");
-    } catch { setError("Network issue. Try again."); }
+      if (r && typeof r.calories === "number") setResult(r);
+      else setError(mode === "image" ? "Couldn't read that photo well. Try a clearer shot, or describe the meal in words." : "Couldn't analyze that. Try being more specific (portion size, cooking method).");
+    } catch (e) { setError("Network issue. Try again."); }
     setAnalyzing(false);
   }
 
   function save() {
     if (!result) return;
-    onAdd({ date, meal, food: result.food, calories: result.calories, protein: result.protein, carbs: result.carbs, fat: result.fat, notes: result.notes || "", id: Date.now() });
+    // Combine date + time into a timestamp
+    const ts = (() => { try { return new Date(`${date}T${time}:00`).getTime(); } catch { return Date.now(); } })();
+    onAdd({ date, time, ts, meal, food: result.food, calories: result.calories, protein: result.protein, carbs: result.carbs, fat: result.fat, notes: result.notes || "", id: Date.now() });
     toast("◉ " + result.food.slice(0, 24) + " added");
     setResult(null); setText(""); setFile(null); setPreview(null); setError("");
   }
@@ -1140,8 +1214,9 @@ function DietForm({ onAdd, recent, goals, todayDiet = [] }) {
       </div>
     )}
     <Card title="Log meal" sub="Describe what you ate or upload a photo">
-      <div className="field-grid">
+      <div className="field-grid three">
         <label>Date<input type="date" value={date} onChange={e => setDate(e.target.value)} /></label>
+        <label>Time<input type="time" value={time} onChange={e => setTime(e.target.value)} /></label>
         <label>Meal<select value={meal} onChange={e => setMeal(e.target.value)}>{mealTypes.map(m => <option key={m}>{m}</option>)}</select></label>
       </div>
 
@@ -1338,6 +1413,20 @@ function SportsForm({ onAdd, recent }) {
 }
 
 // ─── WATER ──
+function IntakeTab({ data, goals, addEntry, deleteEntry }) {
+  const [view, setView] = useState("water");
+  return (
+    <div className="stack">
+      <div className="seg">
+        <button className={`seg-btn ${view === "water" ? "active" : ""}`} onClick={() => setView("water")}>💧 Water</button>
+        <button className={`seg-btn ${view === "supp" ? "active" : ""}`} onClick={() => setView("supp")}>⊕ Supplements</button>
+      </div>
+      {view === "water" && <WaterForm data={data} goals={goals} onAdd={addEntry("water")} onDelete={deleteEntry("water")} />}
+      {view === "supp" && <SupplementForm data={data} onAdd={addEntry("supplements")} onDelete={deleteEntry("supplements")} />}
+    </div>
+  );
+}
+
 function WaterForm({ data, goals, onAdd, onDelete }) {
   const today = getTodayStr();
   const todayWater = data.water.filter(w => w.date === today);
@@ -1679,7 +1768,7 @@ function HistItem({ item, type, onDelete }) {
     detail = item.notes;
   } else if (type === "diet") {
     main = `${item.meal} · ${item.food}`;
-    tags = [`${item.calories} kcal`, `P ${item.protein}g`, `C ${item.carbs}g`, `F ${item.fat}g`];
+    tags = [item.time, `${item.calories} kcal`, `P ${item.protein}g`].filter(Boolean);
     detail = (
       <div className="diet-detail">
         <MacroDonut protein={item.protein} carbs={item.carbs} fat={item.fat} size={72} />
@@ -1765,15 +1854,23 @@ function CoachTab({ data, goals }) {
   const [messages, setMessages] = useState(loadMessages);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [showAnalysis, setShowAnalysis] = useState(false);
+  const [view, setView] = useState("chat"); // chat | analysis | physique
   const [analysis, setAnalysis] = useState(null);
   const [analysisLoad, setAnalysisLoad] = useState(false);
   const [analysisErr, setAnalysisErr] = useState("");
   const [confirm, confirmModal] = useConfirm();
-  const [attached, setAttached] = useState(null); // { b64, mediaType, preview }
+  const [attached, setAttached] = useState(null);
+  // Physique state
+  const [physFile, setPhysFile] = useState(null);
+  const [physPreview, setPhysPreview] = useState(null);
+  const [physResult, setPhysResult] = useState(null);
+  const [physLoading, setPhysLoading] = useState(false);
+  const [physErr, setPhysErr] = useState("");
   const endRef = useRef(null);
   const camRef = useRef();
   const galRef = useRef();
+  const physCamRef = useRef();
+  const physGalRef = useRef();
 
   function attachFile(f) {
     if (!f) return;
@@ -1871,6 +1968,33 @@ Today supplements: ${data.supplements.filter(s => s.date === today).map(s => s.n
     setAnalysisLoad(false);
   }
 
+  async function handlePhysFile(f) {
+    if (!f) return;
+    setPhysFile(f); setPhysResult(null); setPhysErr("");
+    const r = new FileReader();
+    r.onload = ev => setPhysPreview(ev.target.result);
+    r.readAsDataURL(f);
+  }
+
+  async function analyzePhys() {
+    if (!physFile) return;
+    setPhysLoading(true); setPhysErr(""); setPhysResult(null);
+    try {
+      const resized = await fileToResizedBase64(physFile, 1280, 0.85);
+      // Build short recent context for the model
+      const cut = new Date(); cut.setDate(cut.getDate() - 14);
+      const last14 = arr => arr.filter(i => new Date(i.date + "T00:00:00") >= cut);
+      const ctx = `${last14(data.exercise).length} workouts and ${last14(data.sports).length} sport sessions in the last 14 days; current calorie target ${goals.calories}kcal, protein ${goals.protein}g.`;
+      const r = await analyzePhysique(resized.base64, resized.mediaType, goals, ctx);
+      if (r) setPhysResult(r); else setPhysErr("Couldn't analyze that photo. Try a clearer one in better light.");
+    } catch { setPhysErr("Couldn't analyze that photo. Try again."); }
+    setPhysLoading(false);
+  }
+
+  function clearPhys() {
+    setPhysFile(null); setPhysPreview(null); setPhysResult(null); setPhysErr("");
+  }
+
   const suggestions = ["Should I train today or rest?", "Am I eating enough protein?", "What should I eat pre-workout?", "How can I improve my sleep?"];
   const statusColor = { good: "var(--good)", warning: "var(--warn)", critical: "var(--bad)" };
 
@@ -1880,15 +2004,18 @@ Today supplements: ${data.supplements.filter(s => s.date === today).map(s => s.n
       <div className="coach-bar">
         <div className="coach-bar-l">
           <span className="coach-bar-title">AI Coach</span>
-          <span className="muted small">{messages.length - 1} messages · {MODELS[_currentModel]?.label}</span>
+          <span className="muted small">{view === "chat" ? `${messages.length - 1} messages · ${MODELS[_currentModel]?.label}` : MODELS[_currentModel]?.label}</span>
         </div>
-        <div className="coach-bar-r">
-          <button className="link-btn" onClick={() => setShowAnalysis(s => !s)}>{showAnalysis ? "← Back to chat" : "📊 Full analysis"}</button>
-          {!showAnalysis && messages.length > 1 && <button className="link-btn" onClick={clearChat}>Clear</button>}
-        </div>
+        {view === "chat" && messages.length > 1 && <button className="link-btn" onClick={clearChat}>Clear</button>}
       </div>
 
-      {!showAnalysis && (
+      <div className="seg coach-seg">
+        <button className={`seg-btn ${view === "chat" ? "active" : ""}`} onClick={() => setView("chat")}>💬 Chat</button>
+        <button className={`seg-btn ${view === "analysis" ? "active" : ""}`} onClick={() => setView("analysis")}>📊 Analysis</button>
+        <button className={`seg-btn ${view === "physique" ? "active" : ""}`} onClick={() => setView("physique")}>📸 Physique</button>
+      </div>
+
+      {view === "chat" && (
         <>
           <div className="msgs">
             {messages.map((m, i) => (
@@ -1936,7 +2063,7 @@ Today supplements: ${data.supplements.filter(s => s.date === today).map(s => s.n
         </>
       )}
 
-      {showAnalysis && (
+      {view === "analysis" && (
         <div className="stack analysis-stack">
           <Card title="Full data analysis" sub={`Reviews your last 14 days vs your ${goals.goal} goal`}>
             {!hasData ? <Empty title="No data yet" hint="Log some sleep, food, or workouts first" /> : (
@@ -1987,6 +2114,85 @@ Today supplements: ${data.supplements.filter(s => s.date === today).map(s => s.n
               ))}
             </>
           )}
+        </div>
+      )}
+
+      {view === "physique" && (
+        <div className="stack analysis-stack">
+          <Card title="Physique check" sub="Upload a photo for AI feedback toward your goal">
+            {!physResult && !physPreview && (
+              <>
+                <p className="muted small" style={{ marginBottom: 12, lineHeight: 1.5 }}>
+                  Tip: front-facing, relaxed, good lighting, fitted clothing or shirtless gives the most useful read. The AI is your coach — it'll be honest, not flattering.
+                </p>
+                <div className="photo-choices">
+                  <button className="photo-choice" onClick={() => physCamRef.current.click()}>
+                    <span className="photo-choice-icon">📷</span><span>Take photo</span>
+                  </button>
+                  <button className="photo-choice" onClick={() => physGalRef.current.click()}>
+                    <span className="photo-choice-icon">🖼️</span><span>Choose photo</span>
+                  </button>
+                </div>
+                <input ref={physCamRef} type="file" accept="image/*" capture="environment" hidden onChange={e => handlePhysFile(e.target.files[0])} />
+                <input ref={physGalRef} type="file" accept="image/*" hidden onChange={e => handlePhysFile(e.target.files[0])} />
+                <p className="muted small" style={{ marginTop: 12, fontSize: ".72rem", lineHeight: 1.5 }}>
+                  🔒 The photo is sent only to the AI for this analysis. It's not stored on your device or in the cloud after.
+                </p>
+              </>
+            )}
+
+            {physPreview && !physResult && (
+              <>
+                <img src={physPreview} alt="" className="phys-img" />
+                {physErr && <div className="err">{physErr}</div>}
+                <div className="row" style={{ marginTop: 10 }}>
+                  <button className="btn flex" onClick={analyzePhys} disabled={physLoading}>
+                    {physLoading ? <><span className="spinner" />Analyzing your physique…</> : "✦ Analyze"}
+                  </button>
+                  <button className="btn-ghost" onClick={clearPhys} disabled={physLoading}>Cancel</button>
+                </div>
+              </>
+            )}
+
+            {physResult && (
+              <>
+                <div className="phys-result">
+                  {physResult.summary && <p className="phys-summary">{physResult.summary}</p>}
+                  {physResult.strengths?.length > 0 && (
+                    <div className="phys-section">
+                      <div className="phys-section-h">💪 Strengths</div>
+                      <ul className="phys-list">{physResult.strengths.map((s, i) => <li key={i}>{s}</li>)}</ul>
+                    </div>
+                  )}
+                  {physResult.observations?.length > 0 && (
+                    <div className="phys-section">
+                      <div className="phys-section-h">👀 What I see</div>
+                      <ul className="phys-list">{physResult.observations.map((s, i) => <li key={i}>{s}</li>)}</ul>
+                    </div>
+                  )}
+                  {physResult.focusAreas?.length > 0 && (
+                    <div className="phys-section">
+                      <div className="phys-section-h">🎯 Focus areas</div>
+                      <ul className="phys-list">{physResult.focusAreas.map((s, i) => <li key={i}>{s}</li>)}</ul>
+                    </div>
+                  )}
+                  {physResult.trainingAdvice && (
+                    <div className="phys-section">
+                      <div className="phys-section-h">🏋️ Training direction</div>
+                      <p className="phys-p">{physResult.trainingAdvice}</p>
+                    </div>
+                  )}
+                  {physResult.nutritionAdvice && (
+                    <div className="phys-section">
+                      <div className="phys-section-h">🍎 Nutrition direction</div>
+                      <p className="phys-p">{physResult.nutritionAdvice}</p>
+                    </div>
+                  )}
+                </div>
+                <button className="btn-ghost full" style={{ marginTop: 14 }} onClick={clearPhys}>Analyze another photo</button>
+              </>
+            )}
+          </Card>
         </div>
       )}
     </div>
@@ -2112,7 +2318,7 @@ function ExportSettings({ data, goals }) {
   };
   const t = getTodayStr();
   const dlSleep = () => dl(`fitlog-sleep-${t}.csv`, csv(data.sleep, ["date","duration","bedtime","wakeTime","quality","notes"]));
-  const dlDiet = () => dl(`fitlog-diet-${t}.csv`, csv(data.diet, ["date","meal","food","calories","protein","carbs","fat","notes"]));
+  const dlDiet = () => dl(`fitlog-diet-${t}.csv`, csv(data.diet, ["date","time","meal","food","calories","protein","carbs","fat","notes"]));
   const dlExer = () => dl(`fitlog-workouts-${t}.csv`, csv(data.exercise, ["date","label","text"]));
   const dlSp = () => dl(`fitlog-sports-${t}.csv`, csv(data.sports, ["date","sport","duration","intensity","calories","result","opponent","score","notes"]));
   const dlWater = () => dl(`fitlog-water-${t}.csv`, csv(data.water.map(w => ({ ...w, time: w.ts ? new Date(w.ts).toISOString() : "" })), ["date","time","ml"]));
@@ -3221,4 +3427,19 @@ input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
 .build-summary { font-size: .86rem; line-height: 1.55; color: var(--text); margin-top: 12px; }
 .build-tips { margin: 10px 0 0; padding-left: 18px; }
 .build-tips li { font-size: .82rem; color: var(--text-2); line-height: 1.5; margin: 4px 0; }
+
+/* ─── Coach view segmented ─── */
+.coach-seg { margin-bottom: 14px; }
+
+/* ─── Physique check ─── */
+.phys-img { width: 100%; max-height: 360px; object-fit: contain; border-radius: 12px; background: var(--surface-2); margin-bottom: 6px; }
+.phys-result { animation: riseIn .35s var(--ease-out) both; }
+.phys-summary { font-size: .92rem; line-height: 1.55; color: var(--text); margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+.phys-section { margin-bottom: 14px; }
+.phys-section:last-child { margin-bottom: 0; }
+.phys-section-h { font-size: .76rem; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px; }
+.phys-list { margin: 0; padding-left: 0; list-style: none; }
+.phys-list li { position: relative; padding-left: 14px; margin: 5px 0; font-size: .86rem; line-height: 1.55; color: var(--text); }
+.phys-list li::before { content: "→"; position: absolute; left: 0; color: var(--accent); font-weight: 700; }
+.phys-p { font-size: .86rem; line-height: 1.55; color: var(--text); }
 `;
