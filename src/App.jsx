@@ -279,6 +279,207 @@ async function fileToResizedBase64(file, maxDim = 1280, quality = 0.85) {
   });
 }
 
+// ─── THE BRAIN ────────────────────────────────────────────────────────────────
+// Single source of truth for every AI call. Pre-computes the patterns and insights
+// the model would otherwise have to derive from raw data — so every feature gets
+// the same sharp understanding of where the user is right now.
+function buildBrain(data, goals) {
+  const today = getTodayStr();
+  const yesterday = daysAgo(1);
+  const todayName = WEEKDAYS[(new Date().getDay() + 6) % 7];
+
+  // ── Time windows
+  const inWindow = (arr, days) => arr.filter(i => i.date >= daysAgo(days - 1));
+  const last7 = a => inWindow(a, 7);
+  const last14 = a => inWindow(a, 14);
+  const last30 = a => inWindow(a, 30);
+
+  // ── TODAY: nutrition + intake so far
+  const todayDiet = data.diet.filter(d => d.date === today);
+  const todayCal = todayDiet.reduce((a, m) => a + (m.calories || 0), 0);
+  const todayP = todayDiet.reduce((a, m) => a + (m.protein || 0), 0);
+  const todayC = todayDiet.reduce((a, m) => a + (m.carbs || 0), 0);
+  const todayF = todayDiet.reduce((a, m) => a + (m.fat || 0), 0);
+  const calRemaining = (goals.calories || 0) - todayCal;
+  const pRemaining = (goals.protein || 0) - todayP;
+  const cRemaining = (goals.carbs || 0) - todayC;
+  const fRemaining = (goals.fat || 0) - todayF;
+  const todayWaterMl = data.water.filter(w => w.date === today).reduce((a, w) => a + w.ml, 0);
+  const waterRemainingMl = (goals.waterGoalMl || 0) - todayWaterMl;
+  const todaySupps = data.supplements.filter(s => s.date === today).map(s => s.name);
+  const todaySleep = data.sleep.find(s => s.date === today);
+  const yestSleep = data.sleep.find(s => s.date === yesterday);
+  const todayWorkout = data.exercise.find(e => e.date === today);
+  const todaySport = data.sports.find(s => s.date === today);
+
+  // ── PLAN: what's scheduled today
+  const plan = goals.plan || null;
+  const isTrainingDay = plan?.trainingDays?.includes(todayName) || false;
+  const todayPlanLabel = plan?.assignments?.[todayName] || (isTrainingDay ? "Training day" : "Rest day");
+  const tomorrowName = WEEKDAYS[(new Date().getDay() + 7) % 7];
+  const tomorrowPlanLabel = plan?.assignments?.[tomorrowName] || (plan?.trainingDays?.includes(tomorrowName) ? "Training" : "Rest");
+
+  // ── 7-DAY AVERAGES (nutrition)
+  const last7Diet = last7(data.diet);
+  const dietByDay7 = {};
+  last7Diet.forEach(d => {
+    if (!dietByDay7[d.date]) dietByDay7[d.date] = { cal: 0, p: 0, c: 0, f: 0 };
+    dietByDay7[d.date].cal += d.calories || 0;
+    dietByDay7[d.date].p += d.protein || 0;
+    dietByDay7[d.date].c += d.carbs || 0;
+    dietByDay7[d.date].f += d.fat || 0;
+  });
+  const dietDays7 = Object.values(dietByDay7);
+  const avgCal7 = dietDays7.length ? Math.round(dietDays7.reduce((a, d) => a + d.cal, 0) / dietDays7.length) : null;
+  const avgP7 = dietDays7.length ? Math.round(dietDays7.reduce((a, d) => a + d.p, 0) / dietDays7.length) : null;
+  const proteinHits7 = dietDays7.filter(d => d.p >= (goals.protein || 0)).length;
+  const calDeficit7 = avgCal7 != null ? (goals.calories || 0) - avgCal7 : null; // positive = under target
+
+  // ── SLEEP
+  const last7Sleep = last7(data.sleep);
+  const avgSleep7 = last7Sleep.length ? +(last7Sleep.reduce((a, s) => a + s.duration, 0) / last7Sleep.length).toFixed(1) : null;
+  const sleepDebt7 = last7Sleep.reduce((d, s) => d + (8 - s.duration), 0);
+  const sleepPatternIssue = last7Sleep.length >= 3 && avgSleep7 != null && avgSleep7 < 7;
+
+  // ── TRAINING
+  const last7Lifts = last7(data.exercise);
+  const last7Sports = last7(data.sports);
+  const last14Lifts = last14(data.exercise);
+  const last7TotalSessions = last7Lifts.length + last7Sports.length;
+  // Total volume last 7d (with fallback if _parsed missing)
+  const volume7 = last7Lifts.reduce((sum, e) => {
+    const p = e._parsed || parseWorkout(e.text || "");
+    return sum + (p.totalVolume || 0);
+  }, 0);
+  // Consecutive days trained (including/up-to-today)
+  const trainingDates = new Set([...data.exercise.map(e => e.date), ...data.sports.map(s => s.date)]);
+  let consecutiveTrained = 0;
+  {
+    let cur = new Date();
+    if (!trainingDates.has(getTodayStr())) cur.setDate(cur.getDate() - 1);
+    for (;;) {
+      const ds = cur.toISOString().split("T")[0];
+      if (trainingDates.has(ds)) { consecutiveTrained++; cur.setDate(cur.getDate() - 1); }
+      else break;
+    }
+  }
+  const daysSinceLastRest = (() => {
+    let c = 0; const cur = new Date();
+    for (let i = 0; i < 14; i++) {
+      const ds = cur.toISOString().split("T")[0];
+      if (trainingDates.has(ds)) c++;
+      else return c;
+      cur.setDate(cur.getDate() - 1);
+    }
+    return c;
+  })();
+  // Recent PRs
+  const recentPRs = last14Lifts.flatMap(e => (e.prs || []).map(pr => ({ date: e.date, ...pr }))).slice(0, 5);
+
+  // ── STREAK (consecutive days with ANY log)
+  const dayHas = {};
+  [...data.diet, ...data.sleep, ...data.exercise, ...data.sports, ...data.water, ...data.supplements].forEach(e => { if (e.date) dayHas[e.date] = true; });
+  let streak = 0;
+  {
+    let cur = new Date();
+    if (!dayHas[getTodayStr()]) cur.setDate(cur.getDate() - 1);
+    for (;;) {
+      const ds = cur.toISOString().split("T")[0];
+      if (dayHas[ds]) { streak++; cur.setDate(cur.getDate() - 1); }
+      else break;
+    }
+  }
+
+  // ── DERIVED INSIGHTS — the high-signal flags an AI should immediately notice
+  const insights = [];
+  if (calDeficit7 != null && Math.abs(calDeficit7) > 200) {
+    insights.push(`7-day calorie average ${avgCal7} is ${Math.abs(calDeficit7)}kcal ${calDeficit7 > 0 ? "BELOW" : "ABOVE"} target — ${calDeficit7 > 0 ? "may be under-eating for goal" : "may be over-eating for goal"}`);
+  }
+  if (avgP7 != null && goals.protein && avgP7 < goals.protein * 0.85) {
+    insights.push(`Protein consistently low: ${avgP7}g avg vs ${goals.protein}g target (${proteinHits7}/${dietDays7.length} days hit goal)`);
+  }
+  if (sleepDebt7 > 5) insights.push(`Sleep debt accumulating: ${sleepDebt7.toFixed(1)}h short over last week`);
+  if (sleepPatternIssue) insights.push(`Average sleep ${avgSleep7}h is below 7h — recovery likely compromised`);
+  if (consecutiveTrained >= 4) insights.push(`Trained ${consecutiveTrained} days in a row with no rest — deload signal`);
+  if (last7TotalSessions === 0 && plan?.trainingDays?.length) insights.push(`No training logged in last 7 days despite ${plan.trainingDays.length}-day/week plan`);
+  if (recentPRs.length > 0) insights.push(`${recentPRs.length} recent PR${recentPRs.length === 1 ? "" : "s"}: ${recentPRs.slice(0, 2).map(p => `${p.name} ${p.weight}${p.unit}×${p.reps}`).join(", ")}`);
+
+  return {
+    today, todayName, tomorrowName,
+    goal: goals.goal,
+    targets: { calories: goals.calories, protein: goals.protein, carbs: goals.carbs, fat: goals.fat, waterMl: goals.waterGoalMl },
+    todayProgress: {
+      cal: todayCal, protein: todayP, carbs: todayC, fat: todayF,
+      calRemaining, pRemaining, cRemaining, fRemaining,
+      waterMl: todayWaterMl, waterRemainingMl,
+      supplements: todaySupps,
+      sleep: todaySleep ? { duration: todaySleep.duration, quality: todaySleep.quality } : null,
+      yesterdaySleep: yestSleep ? { duration: yestSleep.duration, quality: yestSleep.quality } : null,
+      workoutLogged: !!todayWorkout, sportLogged: !!todaySport,
+      meals: todayDiet.map(d => ({ time: d.time, meal: d.meal, food: d.food, cal: d.calories, p: d.protein })),
+    },
+    plan: plan ? { split: plan.split, todayLabel: todayPlanLabel, tomorrowLabel: tomorrowPlanLabel, trainingDays: plan.trainingDays, isTrainingDay } : null,
+    week: {
+      avgCal: avgCal7, avgProtein: avgP7, proteinHitDays: proteinHits7, daysLogged: dietDays7.length,
+      avgSleep: avgSleep7, sleepDebt: +sleepDebt7.toFixed(1),
+      sessions: last7TotalSessions, volumeKg: Math.round(volume7),
+      consecutiveTrained, daysSinceLastRest,
+      recentPRs, streak,
+    },
+    insights,
+    // Raw last 7 days for deeper inspection (compact)
+    raw7: {
+      sleep: last7Sleep.map(s => `${s.date}:${s.duration}h(${s.quality})`).join(", ") || "none",
+      diet: Object.entries(dietByDay7).map(([d, v]) => `${d}: ${v.cal}kcal P${v.p}g`).join(" | ") || "none",
+      workouts: last7Lifts.map(e => `${e.date}: ${e.label}`).join(", ") || "none",
+      sports: last7Sports.map(s => `${s.date}: ${s.sport} ${s.duration}min ${s.intensity}`).join(", ") || "none",
+    },
+  };
+}
+
+// Turns the brain object into a tight text block every AI prompt gets.
+// Pre-digested signals at the top so the model immediately knows what matters.
+function formatBrainText(brain) {
+  const tp = brain.todayProgress;
+  const w = brain.week;
+  const lines = [];
+  lines.push(`USER GOAL: ${brain.goal}`);
+  lines.push(`TARGETS — calories ${brain.targets.calories}kcal, protein ${brain.targets.protein}g, carbs ${brain.targets.carbs}g, fat ${brain.targets.fat}g, water ${brain.targets.waterMl}ml`);
+  if (brain.plan) {
+    lines.push(`PLAN — ${brain.plan.split} | Today (${brain.todayName}): ${brain.plan.todayLabel} | Tomorrow (${brain.tomorrowName}): ${brain.plan.tomorrowLabel} | Training days: ${brain.plan.trainingDays.join(", ")}`);
+  }
+  lines.push("");
+  lines.push("== TODAY SO FAR ==");
+  lines.push(`Nutrition: ${tp.cal}/${brain.targets.calories} kcal (${tp.calRemaining >= 0 ? tp.calRemaining + " remaining" : Math.abs(tp.calRemaining) + " OVER"}) | P ${tp.protein}/${brain.targets.protein}g (${tp.pRemaining >= 0 ? tp.pRemaining + "g to go" : "hit"}) | C ${tp.carbs}g | F ${tp.fat}g`);
+  lines.push(`Water: ${tp.waterMl}/${brain.targets.waterMl}ml (${tp.waterRemainingMl >= 0 ? tp.waterRemainingMl + "ml to go" : "hit"})`);
+  if (tp.supplements.length) lines.push(`Supplements today: ${tp.supplements.join(", ")}`);
+  if (tp.sleep) lines.push(`Slept ${tp.sleep.duration}h (${tp.sleep.quality}) last night`);
+  else if (tp.yesterdaySleep) lines.push(`Slept ${tp.yesterdaySleep.duration}h (${tp.yesterdaySleep.quality}) the night before`);
+  if (tp.workoutLogged) lines.push(`✓ Logged workout today`);
+  if (tp.sportLogged) lines.push(`✓ Logged sport today`);
+  if (tp.meals.length) lines.push(`Meals today: ${tp.meals.map(m => `${m.time || "?"} ${m.meal} ${m.cal}kcal P${m.p}g`).join(" | ")}`);
+  lines.push("");
+  lines.push("== 7-DAY AVERAGES ==");
+  lines.push(`Calories: ${w.avgCal ?? "—"} avg (target ${brain.targets.calories}) over ${w.daysLogged} logged days`);
+  lines.push(`Protein: ${w.avgProtein ?? "—"}g avg, hit goal ${w.proteinHitDays}/${w.daysLogged} days`);
+  lines.push(`Sleep: ${w.avgSleep ?? "—"}h avg, debt ${w.sleepDebt}h`);
+  lines.push(`Training: ${w.sessions} sessions, ${w.volumeKg.toLocaleString()}kg total volume, ${w.consecutiveTrained}-day current streak, ${w.daysSinceLastRest} days since rest`);
+  if (w.recentPRs.length) lines.push(`Recent PRs: ${w.recentPRs.slice(0, 3).map(p => `${p.name} ${p.weight}${p.unit}×${p.reps}`).join("; ")}`);
+  lines.push(`Logging streak: ${w.streak} day${w.streak === 1 ? "" : "s"}`);
+  if (brain.insights.length) {
+    lines.push("");
+    lines.push("== KEY SIGNALS (high-priority) ==");
+    brain.insights.forEach(s => lines.push("• " + s));
+  }
+  lines.push("");
+  lines.push("== RECENT DETAIL (last 7d) ==");
+  lines.push(`Sleep: ${brain.raw7.sleep}`);
+  lines.push(`Diet by day: ${brain.raw7.diet}`);
+  lines.push(`Workouts: ${brain.raw7.workouts}`);
+  lines.push(`Sports: ${brain.raw7.sports}`);
+  return lines.join("\n");
+}
+
 // ─── CLAUDE API ───────────────────────────────────────────────────────────────
 async function callClaude({ system, userText, imageBase64, imageMediaType, maxTokens = 1000, conversationMessages, tools, model }) {
   const useModel = model || currentModelId();
@@ -325,12 +526,14 @@ async function estimateSportsCalories(sport, duration, intensity, weight) {
 }
 
 // useWeb = true only when the user opts in (branded/restaurant foods). Keeps cost low by default.
-async function analyzeFoodAI(description, imageBase64, imageMediaType, useWeb = false) {
+async function analyzeFoodAI(description, imageBase64, imageMediaType, useWeb = false, brain = null) {
   const isImage = !!imageBase64;
+  const brainText = brain ? formatBrainText(brain) : "";
+  const todayPart = brain ? `\n\nFor context, the user's current day so far (don't waste tokens repeating these unless commenting on fit):\n${brainText}` : "";
   try {
     const raw = await callClaude({
       model: currentModelId(),
-      maxTokens: useWeb ? 1500 : 1000,
+      maxTokens: useWeb ? 1500 : 1100,
       tools: useWeb ? WEB_SEARCH_TOOL : undefined,
       system: `You are a meticulous nutritionist analyzing real meals. Estimate nutrition as ACCURATELY as possible.
 
@@ -344,13 +547,12 @@ STEP 2 — Combine everything into total numbers for the whole meal shown.` : ""
 RULES:
 - ${useWeb ? "For branded/restaurant/packaged foods, search the web for the official published nutrition facts and use those exact numbers." : "Use precise USDA-style values from your knowledge of real foods."}
 - Account for cooking method, oil/butter, sauces, and realistic portion sizes.
-- If a portion is vague, assume a typical real-world serving and note your assumption.
-- Do NOT round down to be "nice" — restaurant and fried foods are calorie-dense. Be realistic.
+- Be realistic — restaurant and fried foods are calorie-dense.
 - If multiple items are visible, SUM them all.
-- If you genuinely cannot tell what the food is from the photo, set confidence to "low" and explain in notes.
+- The "notes" field MUST briefly comment on how this meal fits the user's remaining day (e.g. "fits your protein goal", "puts you 400 cal over today", "leaves room for a light dinner"). Use the targets/remaining in the context.
 
 Reply with ONLY this JSON object (no prose before or after, no markdown fence):
-{"food":"<concise meal name, list main items>","calories":<integer>,"protein":<integer grams>,"carbs":<integer grams>,"fat":<integer grams>,"confidence":"high|medium|low","notes":"<what you identified, portions assumed, or limitations — 1-2 sentences>"}`,
+{"food":"<concise meal name>","calories":<integer>,"protein":<integer grams>,"carbs":<integer grams>,"fat":<integer grams>,"confidence":"high|medium|low","notes":"<fit-to-day comment in 1-2 sentences>"}${todayPart}`,
       userText: description
         ? `Analyze the nutrition of: "${description}".${useWeb ? " Search for official data if this is a branded or restaurant item." : ""}`
         : `Identify EVERY food item in this image and analyze the total nutrition for the whole meal shown.${useWeb ? " If you recognize a branded or restaurant dish, search for its official nutrition facts." : ""}`,
@@ -362,17 +564,14 @@ Reply with ONLY this JSON object (no prose before or after, no markdown fence):
 }
 
 async function analyzeAllData(data, goals) {
-  const cut = new Date(); cut.setDate(cut.getDate() - 14);
-  const last14 = arr => arr.filter(i => new Date(i.date + "T00:00:00") >= cut);
-  const sleepLines = last14(data.sleep).map(s => `${s.date}: ${s.duration}h (${s.quality})`).join("\n") || "No data";
-  const dietLines = last14(data.diet).map(d => `${d.date} ${d.meal}: ${d.food} — ${d.calories}kcal P:${d.protein}g`).join("\n") || "No data";
-  const exLines = last14(data.exercise).map(e => `${e.date}: ${e.label}\n${(e.text||"").slice(0,200)}`).join("\n\n") || "No data";
-  const spLines = last14(data.sports).map(s => `${s.date}: ${s.sport} ${s.duration}min ${s.intensity}`).join("\n") || "No data";
+  const brain = buildBrain(data, goals);
+  const system = `You are an elite personal trainer and sports nutritionist. Analyze the user's real fitness data and give specific, actionable advice for ${goals.goal}.
 
-  const system = `You are an elite personal trainer and sports nutritionist. Analyze real fitness data and give specific, actionable advice for ${goals.goal}. Return ONLY JSON:
-{"overallScore":<1-10>,"summary":"<2-3 sentences>","sections":[{"category":"Sleep & Recovery","score":<1-10>,"status":"good|warning|critical","insight":"<specific>","tips":["<tip>","<tip>","<tip>"]},{"category":"Nutrition","score":<1-10>,"status":"good|warning|critical","insight":"<specific>","tips":["<tip>","<tip>","<tip>"]},{"category":"Training","score":<1-10>,"status":"good|warning|critical","insight":"<specific>","tips":["<tip>","<tip>","<tip>"]},{"category":"Calorie Balance","score":<1-10>,"status":"good|warning|critical","insight":"<specific>","tips":["<tip>","<tip>","<tip>"]}],"priorityAction":"<one impactful thing>"}`;
+The data block includes pre-computed KEY SIGNALS — make sure your analysis reflects them. Connect across categories: nutrition affects training, sleep affects recovery, etc.
 
-  const raw = await callClaude({ system, maxTokens: 2000, userText: `Goal: ${goals.goal}\nCalorie target: ${goals.calories}kcal\nMacros: P${goals.protein}g C${goals.carbs}g F${goals.fat}g\n\nSLEEP:\n${sleepLines}\n\nDIET:\n${dietLines}\n\nEXERCISE:\n${exLines}\n\nSPORTS:\n${spLines}` });
+Return ONLY JSON:
+{"overallScore":<1-10>,"summary":"<2-3 sentences referencing specific numbers>","sections":[{"category":"Sleep & Recovery","score":<1-10>,"status":"good|warning|critical","insight":"<specific with their numbers>","tips":["<tip>","<tip>","<tip>"]},{"category":"Nutrition","score":<1-10>,"status":"good|warning|critical","insight":"<specific>","tips":["<tip>","<tip>","<tip>"]},{"category":"Training","score":<1-10>,"status":"good|warning|critical","insight":"<specific>","tips":["<tip>","<tip>","<tip>"]},{"category":"Calorie Balance","score":<1-10>,"status":"good|warning|critical","insight":"<specific>","tips":["<tip>","<tip>","<tip>"]}],"priorityAction":"<the single most impactful thing this week>"}`;
+  const raw = await callClaude({ system, maxTokens: 2200, userText: formatBrainText(brain) });
   return JSON.parse(raw.replace(/```json|```/g, "").trim());
 }
 
@@ -388,7 +587,9 @@ Return ONLY JSON mapping each available day to a short workout label:
 
 // Conversational plan builder — the user describes what they want in plain English,
 // and the AI designs the entire week: which days to train, the split, day-by-day workouts, and why.
-async function buildPlanFromPrompt(prompt, goals, current) {
+async function buildPlanFromPrompt(prompt, goals, current, data) {
+  const brain = data ? buildBrain(data, goals) : null;
+  const brainText = brain ? `\n\nUser's current state (factor this in — e.g. if undereating, recommend lower volume; if just finishing a hard block, schedule a deload week):\n${formatBrainText(brain)}` : "";
   const sys = `You are an expert strength & conditioning coach. The user will describe in their own words how they want their training week to look. Design a complete, sensible weekly plan for them.
 
 Their stated fitness goal: ${goals.goal}.
@@ -398,6 +599,7 @@ Rules:
 - Honor explicit constraints (number of days, specific days, sports, muscle priorities, time limits, injuries).
 - Pick the most appropriate split for what they describe (Push/Pull/Legs, Upper/Lower, Full Body, Bro Split, Arnold, or a Custom arrangement).
 - Optimize recovery: avoid hammering the same muscles on consecutive days; place rest days sensibly; account for any sports they mention as extra fatigue.
+- Factor in their actual recent data (nutrition, sleep, training load) when shaping volume and rest day placement.
 - Use the 7 day keys exactly: Mon, Tue, Wed, Thu, Fri, Sat, Sun.
 - For rest days, omit them from "assignments" (only include training days).
 - Keep workout labels short (e.g. "Push", "Upper A", "Legs + Core", "Chest & Back").
@@ -407,9 +609,9 @@ Return ONLY valid JSON, no markdown:
   "split": "<chosen split name>",
   "trainingDays": ["Mon","Wed",...],
   "assignments": {"Mon":"Push","Wed":"Pull",...},
-  "summary": "<2-3 sentences explaining the plan and why it fits what they asked>",
+  "summary": "<2-3 sentences explaining the plan, why it fits what they asked, AND any consideration of their current data>",
   "tips": ["<short actionable tip>","<tip>"]
-}`;
+}${brainText}`;
   const raw = await callClaude({
     model: currentModelId(),
     system: sys,
@@ -421,44 +623,50 @@ Return ONLY valid JSON, no markdown:
 
 // Looks at recent training + sleep to recommend whether to train, go light, or rest/deload today.
 async function recommendRest(data, goals) {
-  const last10 = arr => arr.filter(i => i.date >= daysAgo(9));
-  const workouts = [...last10(data.exercise).map(e => ({ date: e.date, type: "lift", label: e.label, vol: (e._parsed || parseWorkout(e.text)).totalVolume })),
-                    ...last10(data.sports).map(s => ({ date: s.date, type: "sport", label: `${s.sport} ${s.intensity}` }))]
-                    .sort((a, b) => a.date < b.date ? 1 : -1);
-  const sleep = last10(data.sleep).map(s => `${s.date}: ${s.duration}h (${s.quality})`).join(", ") || "none logged";
-  const trainingLines = workouts.map(w => `${w.date}: ${w.label}${w.vol ? ` (${w.vol}kg vol)` : ""}`).join("\n") || "none logged";
-  const last7days = Array.from({ length: 7 }, (_, i) => daysAgo(i));
-  const trainedDays = new Set(workouts.map(w => w.date));
-  const consecutiveTrained = (() => { let c = 0; for (const d of last7days) { if (trainedDays.has(d)) c++; else break; } return c; })();
+  const brain = buildBrain(data, goals);
+  const sys = `You are a recovery-focused strength coach. Based on EVERYTHING in the data block (training load, sleep, NUTRITION, plan for today, sleep debt, consecutive training days), decide if TODAY should be: "train" (go as planned), "light" (active recovery / reduce volume), or "rest" (full rest or deload). Goal: ${goals.goal}.
 
-  const sys = `You are a recovery-focused strength coach. Based on the user's recent training load and sleep, decide if TODAY should be: "train" (go as planned), "light" (active recovery / reduce volume), or "rest" (full rest or deload). Goal: ${goals.goal}.
-Return ONLY JSON: {"recommendation":"train|light|rest","reason":"<2-3 sentences referencing their actual recent data>","tip":"<one concrete suggestion>"}`;
-  const raw = await callClaude({ system: sys, maxTokens: 600, userText: `Today is ${new Date().toLocaleDateString("en-US", { weekday: "long" })}.\nConsecutive days trained (ending today): ${consecutiveTrained}\n\nRecent training:\n${trainingLines}\n\nRecent sleep:\n${sleep}` });
+Consider:
+- If their plan says it's a rest day, default toward rest unless their data shows they should still train.
+- Under-eating + heavy recent training → lean toward light/rest.
+- Sleep debt + consecutive training days → lean toward rest.
+- Well-fed + slept well + on a training day per plan → train.
+- Reference the user's ACTUAL numbers from the data block.
+
+Return ONLY JSON: {"recommendation":"train|light|rest","reason":"<2-3 sentences referencing their actual recent data including nutrition and plan>","tip":"<one concrete suggestion specific to their situation>"}`;
+  const raw = await callClaude({
+    system: sys,
+    maxTokens: 700,
+    userText: `${formatBrainText(brain)}\n\nWhat should I do today?`,
+  });
   return JSON.parse(raw.replace(/```json|```/g, "").trim());
 }
 
 // Analyzes a physique photo and recommends specific actions toward the user's goal.
-async function analyzePhysique(imageBase64, imageMediaType, goals, recentContext) {
+async function analyzePhysique(imageBase64, imageMediaType, goals, brain = null) {
+  const brainText = brain ? formatBrainText(brain) : "";
   const sys = `You are an experienced physique coach (think competitive bodybuilding meets pragmatic personal training). The user has shared a photo of themselves and wants honest, useful feedback toward their goal: ${goals.goal}.
 
-Be respectful but honest. Avoid generic flattery. Give them specific observations and ACTIONABLE next steps. Focus on what they can change.
+You ALSO have their actual training and nutrition data. Use it. If they've been undereating for weeks, mention how that affects what you see. If their recent training volume is low, factor that in. If they've been hitting protein consistently, acknowledge it. Don't give generic advice when their numbers tell part of the story.
 
-If you can't clearly see the body or the photo isn't appropriate for physique analysis, say so politely and ask for a better photo (e.g. relaxed front-facing in good light, fitted clothing or shirtless if comfortable).
+Be respectful but honest. Avoid generic flattery. Give them specific observations and ACTIONABLE next steps tied to their actual training and nutrition trends.
+
+If you can't clearly see the body or the photo isn't appropriate for physique analysis, say so politely and ask for a better photo (relaxed front-facing in good light, fitted clothing or shirtless if comfortable).
 
 Reply with ONLY this JSON, no markdown fence:
 {
   "observations": ["<short specific visual observation>", "<observation>", "<observation>"],
   "strengths": ["<what's already developed/looking good>", "<...>"],
   "focusAreas": ["<specific muscle group or aspect to prioritize>", "<...>"],
-  "nutritionAdvice": "<2-3 sentences with concrete diet direction for their goal>",
-  "trainingAdvice": "<2-3 sentences with concrete training priorities>",
+  "nutritionAdvice": "<2-3 sentences with CONCRETE diet direction, referencing their actual numbers if relevant>",
+  "trainingAdvice": "<2-3 sentences with CONCRETE training priorities, referencing their actual current week/volume if relevant>",
   "summary": "<1 sentence honest overall take + an encouraging closer>"
-}`;
+}${brainText ? `\n\nUser's current state:\n${brainText}` : ""}`;
   const raw = await callClaude({
     model: currentModelId(),
-    maxTokens: 1500,
+    maxTokens: 1600,
     system: sys,
-    userText: `My goal is ${goals.goal}. ${recentContext ? `Recent context: ${recentContext}.` : ""} Give me your honest physique analysis and specific advice.`,
+    userText: `My goal is ${goals.goal}. Give me your honest physique analysis grounded in my actual training and nutrition data.`,
     imageBase64, imageMediaType,
   });
   return extractJSON(raw);
@@ -907,7 +1115,7 @@ function LogTab({ data, goals, addEntry, deleteEntry, initialSub, onSaveGoals })
       </div>
 
       {sub === "plan" && <PlanTab data={data} goals={goals} onSaveGoals={onSaveGoals} />}
-      {sub === "diet" && <DietForm onAdd={addEntry("diet")} recent={data.diet} goals={goals} todayDiet={data.diet.filter(d => d.date === getTodayStr())} />}
+      {sub === "diet" && <DietForm onAdd={addEntry("diet")} recent={data.diet} goals={goals} data={data} todayDiet={data.diet.filter(d => d.date === getTodayStr())} />}
       {sub === "sleep" && <SleepForm onAdd={addEntry("sleep")} recent={data.sleep} />}
       {sub === "exercise" && <ExerciseForm onAdd={addEntry("exercise")} recent={data.exercise} />}
       {sub === "sports" && <SportsForm onAdd={addEntry("sports")} recent={data.sports} />}
@@ -941,7 +1149,7 @@ function PlanTab({ data, goals, onSaveGoals }) {
     if (!prompt.trim() || building) return;
     setBuilding(true); setBuildErr(""); setBuildResult(null);
     try {
-      const r = await buildPlanFromPrompt(prompt, goals, { split, trainingDays });
+      const r = await buildPlanFromPrompt(prompt, goals, { split, trainingDays }, data);
       if (!r || !r.trainingDays?.length) throw new Error();
       setBuildResult(r);
     } catch { setBuildErr("Couldn't build that plan. Try rephrasing what you want."); }
@@ -1125,7 +1333,7 @@ function SleepForm({ onAdd, recent }) {
 }
 
 // ─── DIET FORM ──
-function DietForm({ onAdd, recent, goals, todayDiet = [] }) {
+function DietForm({ onAdd, recent, goals, data, todayDiet = [] }) {
   const [date, setDate] = useState(getTodayStr());
   const [time, setTime] = useState(() => {
     const d = new Date();
@@ -1163,7 +1371,8 @@ function DietForm({ onAdd, recent, goals, todayDiet = [] }) {
         b64 = resized.base64;
         mt = resized.mediaType;
       }
-      const r = await analyzeFoodAI(mode === "text" ? text : "", b64, mt, useWeb);
+      const brain = data && goals ? buildBrain(data, goals) : null;
+      const r = await analyzeFoodAI(mode === "text" ? text : "", b64, mt, useWeb, brain);
       if (r && typeof r.calories === "number") setResult(r);
       else setError(mode === "image" ? "Couldn't read that photo well. Try a clearer shot, or describe the meal in words." : "Couldn't analyze that. Try being more specific (portion size, cooking method).");
     } catch (e) { setError("Network issue. Try again."); }
@@ -1888,17 +2097,7 @@ function CoachTab({ data, goals }) {
   const hasData = data.sleep.length || data.diet.length || data.exercise.length || data.sports.length;
 
   function ctx() {
-    const cut = new Date(); cut.setDate(cut.getDate() - 14);
-    const l14 = arr => arr.filter(i => new Date(i.date + "T00:00:00") >= cut);
-    const today = getTodayStr();
-    const todayWater = data.water.filter(w => w.date === today).reduce((a, w) => a + w.ml, 0);
-    return `Goal: ${goals.goal} | Cal: ${goals.calories} | P${goals.protein} C${goals.carbs} F${goals.fat} | Water target: ${goals.waterGoalMl}ml
-Sleep (14d): ${l14(data.sleep).map(s => `${s.date}:${s.duration}h(${s.quality})`).join(", ") || "none"}
-Diet (14d): ${l14(data.diet).map(d => `${d.date} ${d.meal}: ${d.food} ${d.calories}kcal P${d.protein}g`).join(" | ") || "none"}
-Workouts (14d): ${l14(data.exercise).map(e => `${e.date}: ${e.label}`).join(", ") || "none"}
-Sports (14d): ${l14(data.sports).map(s => `${s.date}: ${s.sport} ${s.duration}min ${s.intensity}`).join(", ") || "none"}
-Today water: ${todayWater}/${goals.waterGoalMl}ml
-Today supplements: ${data.supplements.filter(s => s.date === today).map(s => s.name).join(", ") || "none"}`;
+    return formatBrainText(buildBrain(data, goals));
   }
 
   async function compactIfNeeded(msgs) {
@@ -1944,7 +2143,17 @@ Today supplements: ${data.supplements.filter(s => s.date === today).map(s => s.n
       }
       const reply = await callClaude({
         model: currentModelId(),
-        system: `You are an elite personal trainer and sports nutritionist. The user shares their real fitness tracking data with you AND you have access to your full conversation history (including a summary of older chats). They may send photos — of meals, their physique, gym equipment, supplement labels, workout screens — analyze them helpfully. You CAN search the web, but only do so when you genuinely need a current or specific fact you're unsure about (exact branded nutrition, a specific product, recent research). For general training/nutrition advice, answer directly without searching. Reference past discussions naturally. Give direct, specific advice with their actual numbers. Use markdown: **bold** for key points, bullet lists for steps. Keep it tight — 2-4 short paragraphs. Their goal: ${goals.goal}.`,
+        system: `You are an elite personal trainer and sports nutritionist. The user shares their real fitness tracking data with you in a structured "current data" block, AND you have access to your full conversation history (including a summary of older chats).
+
+CRITICAL: The data block contains pre-computed signals — "KEY SIGNALS" section lists the most important patterns we've already detected. Lead with those when relevant. Also actively connect ACROSS categories: nutrition affects training, sleep affects recovery, today's plan affects what to eat, recent PRs affect deload timing. Don't treat sleep / diet / training as separate topics — they aren't.
+
+When the user asks anything, scan today's progress and the 7-day signals first. Reference SPECIFIC numbers from the data ("you've got 800 cal and 60g protein left today", "you've trained 5 days in a row", "your sleep debt is 4h"). Never give generic advice when their numbers tell a story.
+
+They may send photos — of meals, their physique, gym equipment, supplement labels, workout screens — analyze them helpfully and tie back to their current numbers when relevant.
+
+You CAN search the web, but only when you genuinely need a current or specific fact (exact branded nutrition, a specific product, recent research). For general training/nutrition advice, answer directly.
+
+Use markdown: **bold** for key points, bullet lists for steps. Keep it tight — 2-4 short paragraphs. Their goal: ${goals.goal}.`,
         maxTokens: 1000,
         conversationMessages: apiMsgs,
         tools: WEB_SEARCH_TOOL
@@ -1981,11 +2190,8 @@ Today supplements: ${data.supplements.filter(s => s.date === today).map(s => s.n
     setPhysLoading(true); setPhysErr(""); setPhysResult(null);
     try {
       const resized = await fileToResizedBase64(physFile, 1280, 0.85);
-      // Build short recent context for the model
-      const cut = new Date(); cut.setDate(cut.getDate() - 14);
-      const last14 = arr => arr.filter(i => new Date(i.date + "T00:00:00") >= cut);
-      const ctx = `${last14(data.exercise).length} workouts and ${last14(data.sports).length} sport sessions in the last 14 days; current calorie target ${goals.calories}kcal, protein ${goals.protein}g.`;
-      const r = await analyzePhysique(resized.base64, resized.mediaType, goals, ctx);
+      const brain = buildBrain(data, goals);
+      const r = await analyzePhysique(resized.base64, resized.mediaType, goals, brain);
       if (r) setPhysResult(r); else setPhysErr("Couldn't analyze that photo. Try a clearer one in better light.");
     } catch { setPhysErr("Couldn't analyze that photo. Try again."); }
     setPhysLoading(false);
