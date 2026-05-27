@@ -111,10 +111,18 @@ async function cloudPushNow(userId) {
   } catch (e) {}
 }
 
-const getTodayStr = () => new Date().toISOString().split("T")[0];
+// Format a Date as YYYY-MM-DD using the user's LOCAL timezone (not UTC).
+// `toISOString()` returns UTC, which is off-by-one for any user not in UTC.
+const localDateStr = d => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+const getTodayStr = () => localDateStr(new Date());
 const formatDate = ds => new Date(ds + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 const formatShortDate = ds => new Date(ds + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" });
-const daysAgo = n => { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().split("T")[0]; };
+const daysAgo = n => { const d = new Date(); d.setDate(d.getDate() - n); return localDateStr(d); };
 
 // ─── HAPTICS ──────────────────────────────────────────────────────────────────
 // Subtle vibration on supported mobile devices. No-op on desktop/unsupported.
@@ -447,12 +455,12 @@ function buildBrain(data, goals) {
   let consecutiveTrained = 0;
   {
     let cur = new Date(); if (!trainingDates.has(getTodayStr())) cur.setDate(cur.getDate() - 1);
-    for (;;) { const ds = cur.toISOString().split("T")[0]; if (trainingDates.has(ds)) { consecutiveTrained++; cur.setDate(cur.getDate() - 1); } else break; }
+    for (;;) { const ds = localDateStr(cur); if (trainingDates.has(ds)) { consecutiveTrained++; cur.setDate(cur.getDate() - 1); } else break; }
   }
   const daysSinceLastRest = (() => {
     let c = 0; const cur = new Date();
     for (let i = 0; i < 14; i++) {
-      const ds = cur.toISOString().split("T")[0];
+      const ds = localDateStr(cur);
       if (trainingDates.has(ds)) c++; else return c;
       cur.setDate(cur.getDate() - 1);
     }
@@ -472,7 +480,7 @@ function buildBrain(data, goals) {
   let streak = 0;
   {
     let cur = new Date(); if (!dayHas[getTodayStr()]) cur.setDate(cur.getDate() - 1);
-    for (;;) { const ds = cur.toISOString().split("T")[0]; if (dayHas[ds]) { streak++; cur.setDate(cur.getDate() - 1); } else break; }
+    for (;;) { const ds = localDateStr(cur); if (dayHas[ds]) { streak++; cur.setDate(cur.getDate() - 1); } else break; }
   }
 
   // ── CROSS-CATEGORY PATTERNS
@@ -571,8 +579,10 @@ function formatBrainText(brain) {
   const lines = [];
 
   // ─── RIGHT NOW ────────────────────────────────────────────────────────────
-  lines.push(`== RIGHT NOW ==`);
-  lines.push(`Date: ${n.date} (${n.dayName}${n.isWeekend ? ", weekend" : ""}) | Time: ${n.time} (${n.timeOfDay})`);
+  // The model is trained to hedge about real-time access by default. Tell it
+  // explicitly that this block is authoritative.
+  lines.push(`== RIGHT NOW (current real-time clock from user's device — this is authoritative; never claim you don't know what time/day it is) ==`);
+  lines.push(`Date: ${n.date} (${n.dayName}${n.isWeekend ? ", weekend" : ""}) | Time: ${n.time} (${n.timeOfDay}) | Local ISO: ${n.iso}`);
   lines.push(`Goal: ${brain.goal}`);
   lines.push(`Targets — ${brain.targets.calories}kcal | P${brain.targets.protein}g C${brain.targets.carbs}g F${brain.targets.fat}g | water ${brain.targets.waterMl}ml`);
   if (brain.plan) {
@@ -581,15 +591,16 @@ function formatBrainText(brain) {
 
   // ─── TODAY SO FAR ─────────────────────────────────────────────────────────
   lines.push("");
-  lines.push("== TODAY SO FAR ==");
-  lines.push(`Nutrition: ${tp.cal}/${brain.targets.calories} kcal (${tp.calRemaining >= 0 ? tp.calRemaining + " remaining" : Math.abs(tp.calRemaining) + " OVER"}) | P ${tp.protein}/${brain.targets.protein}g (${tp.pRemaining > 0 ? tp.pRemaining + "g to go" : "hit"}) | C ${tp.carbs}g | F ${tp.fat}g`);
-  lines.push(`Water: ${tp.waterMl}/${brain.targets.waterMl}ml (${tp.waterRemainingMl > 0 ? tp.waterRemainingMl + "ml to go" : "hit"})`);
+  lines.push(`== TODAY SO FAR (${n.date} only — counts ONLY events dated ${n.date}, never yesterday) ==`);
+  lines.push(`Nutrition consumed today: ${tp.cal}/${brain.targets.calories} kcal (${tp.calRemaining >= 0 ? tp.calRemaining + " remaining today" : Math.abs(tp.calRemaining) + " OVER today's target"}) | P ${tp.protein}/${brain.targets.protein}g (${tp.pRemaining > 0 ? tp.pRemaining + "g to go" : "hit"}) | C ${tp.carbs}g | F ${tp.fat}g`);
+  lines.push(`Water today: ${tp.waterMl}/${brain.targets.waterMl}ml (${tp.waterRemainingMl > 0 ? tp.waterRemainingMl + "ml to go" : "hit"})`);
   if (tp.supplements.length) lines.push(`Supplements today: ${tp.supplements.join(", ")}`);
   if (tp.sleep) lines.push(`Slept last night: ${tp.sleep.duration}h (${tp.sleep.quality})${tp.sleep.bedtime ? `, ${tp.sleep.bedtime}→${tp.sleep.wakeTime}` : ""}`);
-  else if (tp.yesterdaySleep) lines.push(`Last sleep on record: ${tp.yesterdaySleep.duration}h (${tp.yesterdaySleep.quality})`);
+  else if (tp.yesterdaySleep) lines.push(`Most recent sleep log: ${tp.yesterdaySleep.duration}h (${tp.yesterdaySleep.quality}) — note: nothing logged for last night yet`);
   if (tp.workoutLogged) lines.push(`✓ Workout logged today`);
   if (tp.sportLogged) lines.push(`✓ Sport logged today`);
-  if (tp.lastMealTime) lines.push(`Last meal: ${tp.lastMealTime}${tp.hoursSinceLastMeal != null ? ` (${tp.hoursSinceLastMeal}h ago)` : ""}`);
+  if (tp.lastMealTime) lines.push(`Last meal today: ${tp.lastMealTime}${tp.hoursSinceLastMeal != null ? ` (${tp.hoursSinceLastMeal}h ago)` : ""}`);
+  else lines.push(`No meals logged for today yet.`);
 
   // ─── KEY SIGNALS ─────────────────────────────────────────────────────────
   if (brain.insights.length) {
@@ -1138,7 +1149,7 @@ function HomeTab({ data, goals, onAddWater, onNav }) {
     // allow streak to count from today or yesterday (grace if today not logged yet)
     if (!dayHas[getTodayStr()]) cursor.setDate(cursor.getDate() - 1);
     for (;;) {
-      const ds = cursor.toISOString().split("T")[0];
+      const ds = localDateStr(cursor);
       if (dayHas[ds]) { count++; cursor.setDate(cursor.getDate() - 1); }
       else break;
     }
@@ -1964,7 +1975,7 @@ function ConsistencyHeatmap({ data }) {
     for (let r = 0; r < 7; r++) {
       const d = new Date(start);
       d.setDate(start.getDate() + w * 7 + r);
-      const ds = d.toISOString().split("T")[0];
+      const ds = localDateStr(d);
       const c = counts[ds] || 0;
       const future = d > today;
       if (c > 0) loggedDays++;
@@ -2324,9 +2335,11 @@ function CoachTab({ data, goals }) {
         model: currentModelId(),
         system: `You are an elite personal trainer and sports nutritionist. The user shares their real fitness tracking data with you in a structured "current data" block, AND you have access to your full conversation history (including a summary of older chats).
 
-CRITICAL: The data block contains pre-computed signals — "KEY SIGNALS" section lists the most important patterns we've already detected. Lead with those when relevant. Also actively connect ACROSS categories: nutrition affects training, sleep affects recovery, today's plan affects what to eat, recent PRs affect deload timing. Don't treat sleep / diet / training as separate topics — they aren't.
+REAL-TIME ACCESS: The "RIGHT NOW" section at the top of the data block contains the ACTUAL current date, day of the week, and time of day on the user's device. This is real and authoritative — never claim you don't know what time/day it is, never hedge with "as of my last update." If asked "what time is it" or "what day is it," answer directly from the RIGHT NOW block. Factor the current time into advice (e.g. at 9pm don't suggest a heavy meal; at 6am suggest morning routine).
 
-When the user asks anything, scan today's progress and the 7-day signals first. Reference SPECIFIC numbers from the data ("you've got 800 cal and 60g protein left today", "you've trained 5 days in a row", "your sleep debt is 4h"). Never give generic advice when their numbers tell a story.
+CRITICAL: The data block also contains pre-computed signals — "KEY SIGNALS" lists the most important patterns we've already detected. Lead with those when relevant. Actively connect ACROSS categories: nutrition affects training, sleep affects recovery, today's plan affects what to eat, recent PRs affect deload timing. Don't treat sleep / diet / training as separate topics — they aren't.
+
+When the user asks anything, scan today's progress, the time-of-day, and the 7-day signals first. Reference SPECIFIC numbers ("you've got 800 cal and 60g protein left today", "trained 5 days in a row", "sleep debt 4h"). Never give generic advice when their numbers tell a story.
 
 They may send photos — of meals, their physique, gym equipment, supplement labels, workout screens — analyze them helpfully and tie back to their current numbers when relevant.
 
