@@ -10,6 +10,7 @@ const defaultProfile = {
   sex: "", age: "", heightCm: "", weightKg: "",
   // Background
   trainingExp: "", // beginner | intermediate | advanced
+  liftingBackground: "", // free text — historical PRs, years lifting, lifetime context (not strategy)
   // Constraints
   injuries: "", // free text
   allergies: "", // free text
@@ -652,11 +653,12 @@ function formatBrainText(brain) {
   if (p.heightCm) profileBits.push(`${p.heightCm}cm`);
   if (p.weightKg) profileBits.push(`${p.weightKg}kg`);
   if (p.trainingExp) profileBits.push(`${p.trainingExp} lifter`);
-  const hasProfile = profileBits.length || p.injuries || p.allergies || p.equipment || p.preferences || p.lifeContext;
+  const hasProfile = profileBits.length || p.injuries || p.allergies || p.equipment || p.preferences || p.lifeContext || p.liftingBackground;
   if (hasProfile) {
     lines.push("");
     lines.push("== ABOUT THE USER ==");
     if (profileBits.length) lines.push(`Body: ${profileBits.join(", ")}`);
+    if (p.liftingBackground) lines.push(`Lifting background (historical, not current strategy):\n${p.liftingBackground}`);
     if (p.injuries) lines.push(`Injuries / limitations: ${p.injuries}  ← respect these. Avoid suggesting movements that conflict.`);
     if (p.allergies) lines.push(`Food allergies / restrictions: ${p.allergies}  ← never recommend foods on this list.`);
     if (p.equipment) lines.push(`Equipment access: ${p.equipment}`);
@@ -2839,6 +2841,10 @@ function ProfileSettings({ goals, onSave }) {
           </select>
         </label>
       </div>
+      <label>Lifting background <span className="muted small" style={{ fontWeight: 400 }}>(historical PRs, years training, lifetime context — not your current strategy)</span>
+        <textarea value={p.liftingBackground} onChange={e => set("liftingBackground", e.target.value)} rows={5}
+          placeholder={"e.g. 4 years lifting, big-3 PRs: Bench 100kg, Squat 130kg, Deadlift 135kg. Strong on lower body. OHP deprioritized due to shoulder."} />
+      </label>
       <label>Equipment access
         <select value={p.equipment} onChange={e => set("equipment", e.target.value)}>
           <option value="">—</option>
