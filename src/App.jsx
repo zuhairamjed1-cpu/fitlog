@@ -156,6 +156,53 @@ function haptic(pattern = 12) {
   try { if (navigator.vibrate) navigator.vibrate(pattern); } catch {}
 }
 
+// ─── SOUND ────────────────────────────────────────────────────────────────────
+// Synthesized via Web Audio API — no audio files, tiny, works offline.
+// Respects a user preference stored in localStorage (default ON).
+let _soundOn = (() => { try { return localStorage.getItem(STORAGE_KEY + "_sound") !== "off"; } catch { return true; } })();
+function setSoundPref(on) { _soundOn = on; try { localStorage.setItem(STORAGE_KEY + "_sound", on ? "on" : "off"); } catch {} }
+function soundEnabled() { return _soundOn; }
+
+let _audioCtx = null;
+function audioCtx() {
+  try {
+    if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (_audioCtx.state === "suspended") _audioCtx.resume();
+    return _audioCtx;
+  } catch { return null; }
+}
+
+// Play a single tone. freq in Hz, dur in seconds, type of wave, gain 0-1, startOffset for sequencing.
+function tone(freq, dur, { type = "sine", gain = 0.18, when = 0, glideTo = null } = {}) {
+  const ctx = audioCtx();
+  if (!ctx) return;
+  const t0 = ctx.currentTime + when;
+  const osc = ctx.createOscillator();
+  const g = ctx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, t0);
+  if (glideTo) osc.frequency.exponentialRampToValueAtTime(glideTo, t0 + dur);
+  // Quick attack, smooth exponential release — avoids clicks
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(gain, t0 + 0.008);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  osc.connect(g); g.connect(ctx.destination);
+  osc.start(t0);
+  osc.stop(t0 + dur + 0.02);
+}
+
+// Named sound effects. Each is a no-op when sound is disabled.
+const SFX = {
+  log()    { if (!soundEnabled()) return; tone(660, 0.12, { type: "triangle", gain: 0.16 }); tone(880, 0.14, { type: "triangle", gain: 0.14, when: 0.06 }); },
+  water()  { if (!soundEnabled()) return; tone(440, 0.10, { type: "sine", gain: 0.18, glideTo: 880 }); },
+  tap()    { if (!soundEnabled()) return; tone(520, 0.05, { type: "square", gain: 0.06 }); },
+  pr()     { if (!soundEnabled()) return; [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.18, { type: "triangle", gain: 0.18, when: i * 0.10 })); },
+  success(){ if (!soundEnabled()) return; tone(587, 0.12, { type: "triangle", gain: 0.16 }); tone(880, 0.18, { type: "triangle", gain: 0.16, when: 0.10 }); },
+  error()  { if (!soundEnabled()) return; tone(220, 0.18, { type: "sine", gain: 0.16, glideTo: 160 }); },
+  start()  { if (!soundEnabled()) return; tone(440, 0.10, { type: "triangle", gain: 0.12, glideTo: 660 }); },
+};
+
+
 // ─── WORKOUT PARSING (Strong app format) ──────────────────────────────────────
 // Parses pasted Strong-style text into structured exercises + sets.
 // Handles formats like:
@@ -845,6 +892,44 @@ async function estimateSportsCalories(sport, duration, intensity, weight) {
 }
 
 // useWeb = true only when the user opts in (branded/restaurant foods). Keeps cost low by default.
+// ─── BARCODE LOOKUP (Open Food Facts) ────────────────────────────────────────
+// Free, no API key. Returns normalized nutrition or null if not found.
+async function lookupBarcode(code) {
+  try {
+    const url = `https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(code)}.json?fields=product_name,brands,nutriments,serving_size,quantity`;
+    const resp = await fetch(url, { headers: { "User-Agent": "FitLog/1.0 (personal fitness tracker)" } });
+    const data = await resp.json();
+    if (data.status !== 1 || !data.product) return null;
+    const p = data.product;
+    const n = p.nutriments || {};
+    const name = [p.brands, p.product_name].filter(Boolean).join(" ").trim() || p.product_name || "Unknown product";
+    // Per-100g values (most reliable, always present if any nutrition data exists)
+    const per100 = {
+      cal: Math.round(n["energy-kcal_100g"] ?? (n["energy_100g"] ? n["energy_100g"] / 4.184 : 0)),
+      protein: Math.round((n["proteins_100g"] ?? 0)),
+      carbs: Math.round((n["carbohydrates_100g"] ?? 0)),
+      fat: Math.round((n["fat_100g"] ?? 0)),
+    };
+    // Per-serving if available
+    const hasServing = n["energy-kcal_serving"] != null || n["proteins_serving"] != null;
+    const perServing = hasServing ? {
+      cal: Math.round(n["energy-kcal_serving"] ?? (n["energy_serving"] ? n["energy_serving"] / 4.184 : 0)),
+      protein: Math.round((n["proteins_serving"] ?? 0)),
+      carbs: Math.round((n["carbohydrates_serving"] ?? 0)),
+      fat: Math.round((n["fat_serving"] ?? 0)),
+    } : null;
+    if (!per100.cal && !perServing?.cal) return null; // no usable nutrition data
+    return { name, per100, perServing, servingSize: p.serving_size || null, quantity: p.quantity || null, code };
+  } catch {
+    return null;
+  }
+}
+
+// Is live barcode scanning supported on this device? (Chrome/Android yes, iOS Safari no)
+function barcodeScanSupported() {
+  return typeof window !== "undefined" && "BarcodeDetector" in window;
+}
+
 async function analyzeFoodAI(description, imageBase64, imageMediaType, useWeb = false, brain = null) {
   const isImage = !!imageBase64;
   const brainText = brain ? formatBrainText(brain) : "";
@@ -1213,7 +1298,7 @@ function Empty({ icon = "✦", title, hint, action }) {
 
 // ─── TOAST (global, no context needed) ────────────────────────────────────────
 let _toastFn = null;
-function toast(msg) { haptic(12); if (_toastFn) _toastFn(msg); }
+function toast(msg, opts = {}) { haptic(12); if (!opts.silent) SFX.log(); if (_toastFn) _toastFn(msg); }
 
 function ToastHost() {
   const [items, setItems] = useState([]);
@@ -1309,7 +1394,8 @@ function HomeTab({ data, goals, onAddWater, onNav }) {
 
   function addWater() {
     onAddWater({ id: Date.now(), date: today, ml: 250, ts: Date.now() });
-    toast("💧 +250ml water logged");
+    SFX.water();
+    toast("💧 +250ml water logged", { silent: true });
   }
 
   return (
@@ -1664,6 +1750,111 @@ function SleepForm({ onAdd, recent }) {
   );
 }
 
+// ─── BARCODE SCANNER ──
+function BarcodeScanner({ onResult, onClose }) {
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const rafRef = useRef(null);
+  const [status, setStatus] = useState("starting"); // starting | scanning | error | unsupported
+  const [manual, setManual] = useState("");
+  const supported = barcodeScanSupported();
+
+  useEffect(() => {
+    if (!supported) { setStatus("unsupported"); return; }
+    let detector;
+    let cancelled = false;
+    (async () => {
+      try {
+        detector = new window.BarcodeDetector({ formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128"] });
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+        if (cancelled) { stream.getTracks().forEach(t => t.stop()); return; }
+        streamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play();
+        }
+        setStatus("scanning");
+        const scan = async () => {
+          if (cancelled || !videoRef.current) return;
+          try {
+            const codes = await detector.detect(videoRef.current);
+            if (codes.length > 0) {
+              const code = codes[0].rawValue;
+              haptic([12, 30, 12]); SFX.success();
+              cleanup();
+              onResult(code);
+              return;
+            }
+          } catch {}
+          rafRef.current = requestAnimationFrame(scan);
+        };
+        rafRef.current = requestAnimationFrame(scan);
+      } catch (e) {
+        setStatus("error");
+      }
+    })();
+    function cleanup() {
+      cancelled = true;
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+    }
+    return cleanup;
+    // eslint-disable-next-line
+  }, []);
+
+  function submitManual() {
+    const code = manual.trim();
+    if (code) onResult(code);
+  }
+
+  return (
+    <div className="scan-overlay" onClick={onClose}>
+      <div className="scan-modal" onClick={e => e.stopPropagation()}>
+        <div className="scan-head">
+          <span>Scan barcode</span>
+          <button className="scan-x" onClick={onClose}>×</button>
+        </div>
+
+        {(status === "starting" || status === "scanning") && supported && (
+          <div className="scan-view">
+            <video ref={videoRef} className="scan-video" playsInline muted />
+            <div className="scan-frame"><div className="scan-line" /></div>
+            <p className="scan-hint">{status === "starting" ? "Starting camera…" : "Point at the barcode"}</p>
+          </div>
+        )}
+
+        {status === "error" && (
+          <div className="scan-fallback">
+            <p className="scan-err">Couldn't access the camera. Check permissions, or type the barcode number below.</p>
+          </div>
+        )}
+
+        {status === "unsupported" && (
+          <div className="scan-fallback">
+            <p className="muted small" style={{ lineHeight: 1.5, marginBottom: 12 }}>
+              Live scanning isn't supported on this browser (common on iPhone). Type the barcode number printed under the bars instead:
+            </p>
+          </div>
+        )}
+
+        {(status === "unsupported" || status === "error") && (
+          <div className="scan-manual">
+            <input
+              type="number"
+              inputMode="numeric"
+              value={manual}
+              onChange={e => setManual(e.target.value)}
+              placeholder="e.g. 5449000000996"
+              onKeyDown={e => { if (e.key === "Enter") submitManual(); }}
+            />
+            <button className="btn" onClick={submitManual} disabled={!manual.trim()}>Look up</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── DIET FORM ──
 function DietForm({ onAdd, recent, goals, data, todayDiet = [] }) {
   const [date, setDate] = useState(getTodayStr());
@@ -1683,12 +1874,57 @@ function DietForm({ onAdd, recent, goals, data, todayDiet = [] }) {
   const fileRef = useRef();
   const cameraRef = useRef();
 
+  // Barcode
+  const [scanning, setScanning] = useState(false);
+  const [bcLoading, setBcLoading] = useState(false);
+  const [bcProduct, setBcProduct] = useState(null); // normalized OFF result
+  const [grams, setGrams] = useState(100); // for per-100g scaling
+  const [useServing, setUseServing] = useState(false);
+
   function handleFile(f) {
     if (!f) return;
     setFile(f); setResult(null); setError("");
     const r = new FileReader();
     r.onload = ev => setPreview(ev.target.result);
     r.readAsDataURL(f);
+  }
+
+  async function onBarcode(code) {
+    setScanning(false);
+    setBcLoading(true); setError(""); setBcProduct(null); setResult(null);
+    try {
+      const prod = await lookupBarcode(code);
+      if (!prod) { setError(`No product found for barcode ${code}. Try the photo or describe it instead.`); }
+      else {
+        setBcProduct(prod);
+        setUseServing(!!prod.perServing);
+        setGrams(100);
+      }
+    } catch { setError("Lookup failed. Check your connection and try again."); }
+    setBcLoading(false);
+  }
+
+  // Compute scaled macros from the barcode product
+  function bcMacros() {
+    if (!bcProduct) return null;
+    if (useServing && bcProduct.perServing) return bcProduct.perServing;
+    const f = grams / 100;
+    return {
+      cal: Math.round(bcProduct.per100.cal * f),
+      protein: Math.round(bcProduct.per100.protein * f),
+      carbs: Math.round(bcProduct.per100.carbs * f),
+      fat: Math.round(bcProduct.per100.fat * f),
+    };
+  }
+
+  function saveBarcode() {
+    const m = bcMacros();
+    if (!m || !bcProduct) return;
+    const ts = (() => { try { return new Date(`${date}T${time}:00`).getTime(); } catch { return Date.now(); } })();
+    const portionNote = useServing && bcProduct.perServing ? `1 serving${bcProduct.servingSize ? ` (${bcProduct.servingSize})` : ""}` : `${grams}g`;
+    onAdd({ date, time, ts, meal, food: bcProduct.name, calories: m.cal, protein: m.protein, carbs: m.carbs, fat: m.fat, notes: `Barcode ${bcProduct.code} · ${portionNote}`, id: Date.now() });
+    toast("◉ " + bcProduct.name.slice(0, 24) + " added");
+    setBcProduct(null); setError("");
   }
 
   async function analyze() {
@@ -1761,10 +1997,64 @@ function DietForm({ onAdd, recent, goals, data, todayDiet = [] }) {
         <label>Meal<select value={meal} onChange={e => setMeal(e.target.value)}>{mealTypes.map(m => <option key={m}>{m}</option>)}</select></label>
       </div>
 
-      <div className="seg">
-        <button className={`seg-btn ${mode === "text" ? "active" : ""}`} onClick={() => { setMode("text"); setResult(null); setError(""); }}>✎ Describe</button>
-        <button className={`seg-btn ${mode === "image" ? "active" : ""}`} onClick={() => { setMode("image"); setResult(null); setError(""); }}>⊞ Photo</button>
+      <div className="seg seg-three">
+        <button className={`seg-btn ${mode === "text" ? "active" : ""}`} onClick={() => { setMode("text"); setResult(null); setError(""); setBcProduct(null); }}>✎ Describe</button>
+        <button className={`seg-btn ${mode === "image" ? "active" : ""}`} onClick={() => { setMode("image"); setResult(null); setError(""); setBcProduct(null); }}>⊞ Photo</button>
+        <button className={`seg-btn ${mode === "barcode" ? "active" : ""}`} onClick={() => { setMode("barcode"); setResult(null); setError(""); }}>▒ Barcode</button>
       </div>
+
+      {mode === "barcode" && !bcProduct && (
+        <div className="bc-start">
+          {bcLoading ? (
+            <div className="loading-row"><span className="spinner" />Looking up product…</div>
+          ) : (
+            <>
+              <button className="btn full" onClick={() => { setError(""); setScanning(true); }}>▒ Scan barcode</button>
+              <p className="muted small" style={{ marginTop: 10, lineHeight: 1.5, textAlign: "center" }}>
+                Point your camera at a packaged food's barcode for exact nutrition. {barcodeScanSupported() ? "" : "(On iPhone you'll type the number — live scan isn't supported in Safari.)"}
+              </p>
+            </>
+          )}
+        </div>
+      )}
+
+      {mode === "barcode" && bcProduct && (
+        <div className="ai-card">
+          <div className="ai-card-label">From barcode <span className="conf-badge conf-high">database</span></div>
+          <div className="ai-card-name">{bcProduct.name}</div>
+
+          <div className="bc-portion">
+            {bcProduct.perServing && (
+              <div className="seg" style={{ marginBottom: 10 }}>
+                <button className={`seg-btn ${useServing ? "active" : ""}`} onClick={() => setUseServing(true)}>Per serving{bcProduct.servingSize ? ` (${bcProduct.servingSize})` : ""}</button>
+                <button className={`seg-btn ${!useServing ? "active" : ""}`} onClick={() => setUseServing(false)}>By weight</button>
+              </div>
+            )}
+            {!useServing && (
+              <label>Amount (g)
+                <input type="number" value={grams} onChange={e => setGrams(Math.max(0, +e.target.value || 0))} />
+              </label>
+            )}
+          </div>
+
+          {(() => { const m = bcMacros(); return m ? (
+            <div className="result-with-donut">
+              <MacroDonut protein={m.protein} carbs={m.carbs} fat={m.fat} />
+              <div className="macros macros-compact">
+                <div className="macro"><span className="macro-v">{m.cal}</span><span className="macro-l">kcal</span></div>
+                <div className="macro"><span className="macro-v" style={{ color: "#b4a8e8" }}>{m.protein}g</span><span className="macro-l">protein</span></div>
+                <div className="macro"><span className="macro-v" style={{ color: "#f9c97e" }}>{m.carbs}g</span><span className="macro-l">carbs</span></div>
+                <div className="macro"><span className="macro-v" style={{ color: "#f47e6e" }}>{m.fat}g</span><span className="macro-l">fat</span></div>
+              </div>
+            </div>
+          ) : null; })()}
+
+          <div className="row">
+            <button className="btn flex" onClick={saveBarcode}>+ Add to log</button>
+            <button className="btn-ghost" onClick={() => { setBcProduct(null); setError(""); }}>Scan another</button>
+          </div>
+        </div>
+      )}
 
       {mode === "text" && !result && (
         <label>What did you eat?<textarea value={text} onChange={e => setText(e.target.value)} placeholder='"2 eggs, toast, glass of OJ"' rows={3} /></label>
@@ -1794,7 +2084,7 @@ function DietForm({ onAdd, recent, goals, data, todayDiet = [] }) {
         </>
       )}
 
-      {!result && (
+      {!result && mode !== "barcode" && (
         <>
           <label className="web-toggle">
             <input type="checkbox" checked={useWeb} onChange={e => setUseWeb(e.target.checked)} />
@@ -1808,6 +2098,8 @@ function DietForm({ onAdd, recent, goals, data, todayDiet = [] }) {
           </button>
         </>
       )}
+
+      {scanning && <BarcodeScanner onResult={onBarcode} onClose={() => setScanning(false)} />}
 
       {error && <div className="err">{error}</div>}
 
@@ -1859,7 +2151,8 @@ function ExerciseForm({ onAdd, recent }) {
     onAdd({ id: Date.now(), date, time, label: label.trim() || "Workout", text: text.trim(), _parsed: p, prs });
     if (prs.length) {
       haptic([18, 40, 18]);
-      toast(`🏆 New PR: ${prs[0].name} ${prs[0].weight}${prs[0].unit} × ${prs[0].reps}`);
+      SFX.pr();
+      toast(`🏆 New PR: ${prs[0].name} ${prs[0].weight}${prs[0].unit} × ${prs[0].reps}`, { silent: true });
     } else {
       toast("◆ Workout saved");
     }
@@ -2508,8 +2801,10 @@ FORMAT: Markdown — **bold** for key points, bullet lists for steps. Keep it ti
         tools: WEB_SEARCH_TOOL
       });
       setMessages(m => [...m, { role: "assistant", text: reply || "Sorry, try again.", ts: Date.now() }]);
+      SFX.success();
     } catch {
       setMessages(m => [...m, { role: "assistant", text: "Something went wrong. Try again.", ts: Date.now() }]);
+      SFX.error();
     }
     setLoading(false);
   }
@@ -2765,7 +3060,7 @@ function SettingsTab({ data, goals, onSaveGoals, onClearAll, onImport, session, 
         <button className={`subtab ${section === "export" ? "active" : ""}`} onClick={() => setSection("export")}>⬇ Export</button>
         <button className={`subtab ${section === "data" ? "active" : ""}`} onClick={() => setSection("data")}>⌗ Data</button>
       </div>
-      {section === "goals" && <><GoalsSettings goals={goals} onSave={onSaveGoals} /><ProfileSettings goals={goals} onSave={onSaveGoals} /><StrategySettings goals={goals} onSave={onSaveGoals} /><AIModelSettings /></>}
+      {section === "goals" && <><GoalsSettings goals={goals} onSave={onSaveGoals} /><ProfileSettings goals={goals} onSave={onSaveGoals} /><StrategySettings goals={goals} onSave={onSaveGoals} /><AIModelSettings /><SoundSettings /></>}
       {section === "export" && <ExportSettings data={data} goals={goals} />}
       {section === "data" && <DataSettings data={data} onClearAll={onClearAll} onImport={onImport} />}
 
@@ -2803,6 +3098,38 @@ function AIModelSettings() {
       <p className="muted small" style={{ marginTop: 10, lineHeight: 1.5 }}>
         Haiku is plenty for daily logging. Switch to Sonnet for tricky meals or deeper coaching when accuracy matters most.
       </p>
+    </Card>
+  );
+}
+
+function SoundSettings() {
+  const [on, setOn] = useState(soundEnabled());
+  function toggle() {
+    const next = !on;
+    setOn(next);
+    setSoundPref(next);
+    if (next) { SFX.success(); } // play a sample when turning on
+    haptic(12);
+  }
+  return (
+    <Card title="Sound effects" sub="Audio feedback when you log, hit a PR, and more">
+      <div className="sound-row">
+        <div className="sound-info">
+          <span className="sound-state">{on ? "🔊 On" : "🔇 Off"}</span>
+          <span className="muted small">Synthesized in-app · works offline</span>
+        </div>
+        <button className={`toggle-switch ${on ? "on" : ""}`} onClick={toggle} role="switch" aria-checked={on}>
+          <span className="toggle-knob" />
+        </button>
+      </div>
+      {on && (
+        <div className="sound-samples">
+          <button className="sample-btn" onClick={() => SFX.log()}>Log</button>
+          <button className="sample-btn" onClick={() => SFX.water()}>Water</button>
+          <button className="sample-btn" onClick={() => SFX.pr()}>PR 🏆</button>
+          <button className="sample-btn" onClick={() => SFX.success()}>Done</button>
+        </div>
+      )}
     </Card>
   );
 }
@@ -3230,6 +3557,7 @@ function Onboarding({ onDone }) {
 
   function finish() {
     haptic([12, 30, 12]);
+    SFX.success();
     onDone({ goal, calories, ...macros, plan: { split, trainingDays, assignments: {}, notes: "" } });
   }
 
@@ -3370,7 +3698,7 @@ function AppShell({ session, syncing }) {
 
         <nav className="tabbar">
           {TABS.map(tab => (
-            <button key={tab} className={`tabbtn ${activeTab === tab ? "active" : ""}`} onClick={() => { setActiveTab(tab); if (tab !== "Log") setLogSub(null); window.scrollTo({ top: 0, behavior: "smooth" }); }}>
+            <button key={tab} className={`tabbtn ${activeTab === tab ? "active" : ""}`} onClick={() => { SFX.tap(); setActiveTab(tab); if (tab !== "Log") setLogSub(null); window.scrollTo({ top: 0, behavior: "smooth" }); }}>
               <TabIcon name={tab} active={activeTab === tab} />
               <span className="tabbtn-label">{tab}</span>
             </button>
@@ -4129,4 +4457,37 @@ input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
 .phys-list li { position: relative; padding-left: 14px; margin: 5px 0; font-size: .86rem; line-height: 1.55; color: var(--text); }
 .phys-list li::before { content: "→"; position: absolute; left: 0; color: var(--accent); font-weight: 700; }
 .phys-p { font-size: .86rem; line-height: 1.55; color: var(--text); }
+
+/* ─── Sound settings ─── */
+.sound-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.sound-info { display: flex; flex-direction: column; gap: 2px; }
+.sound-state { font-size: .95rem; font-weight: 600; color: var(--text); }
+.toggle-switch { width: 52px; height: 30px; border-radius: 15px; background: var(--surface-2); border: 1px solid var(--border); position: relative; cursor: pointer; flex-shrink: 0; transition: background .2s, border-color .2s; -webkit-tap-highlight-color: transparent; padding: 0; }
+.toggle-switch.on { background: var(--accent-dim); border-color: var(--accent); }
+.toggle-knob { position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: var(--muted); transition: transform .2s var(--spring), background .2s; }
+.toggle-switch.on .toggle-knob { transform: translateX(22px); background: var(--accent); }
+.sound-samples { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.sample-btn { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 8px 14px; color: var(--text-2); font-family: inherit; font-size: .82rem; font-weight: 500; cursor: pointer; transition: transform .12s ease, border-color .15s, color .15s; -webkit-tap-highlight-color: transparent; }
+.sample-btn:hover { color: var(--accent); border-color: rgba(110,231,247,0.3); }
+.sample-btn:active { transform: scale(.93); }
+
+/* ─── Barcode scanner ─── */
+.seg-three .seg-btn { font-size: .82rem; padding: 9px 6px; }
+.bc-start { padding: 8px 0; }
+.scan-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 100; display: flex; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(6px); }
+.scan-modal { background: var(--surface); border: 1px solid var(--border-strong); border-radius: 18px; width: 100%; max-width: 420px; overflow: hidden; animation: riseIn .3s var(--ease-out) both; }
+.scan-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--border); font-weight: 600; }
+.scan-x { background: var(--surface-2); border: none; color: var(--text); width: 30px; height: 30px; border-radius: 50%; font-size: 1.3rem; line-height: 1; cursor: pointer; }
+.scan-view { position: relative; background: #000; aspect-ratio: 4 / 3; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.scan-video { width: 100%; height: 100%; object-fit: cover; }
+.scan-frame { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 72%; height: 42%; border: 2px solid var(--accent); border-radius: 12px; box-shadow: 0 0 0 9999px rgba(0,0,0,0.35); overflow: hidden; }
+.scan-line { position: absolute; left: 0; right: 0; height: 2px; background: var(--accent); box-shadow: 0 0 8px var(--accent); animation: scanline 2s ease-in-out infinite; }
+@keyframes scanline { 0%, 100% { top: 8%; } 50% { top: 92%; } }
+.scan-hint { position: absolute; bottom: 12px; left: 0; right: 0; text-align: center; color: #fff; font-size: .82rem; text-shadow: 0 1px 3px rgba(0,0,0,0.8); }
+.scan-fallback { padding: 18px 16px 4px; }
+.scan-err { color: var(--bad); font-size: .85rem; line-height: 1.5; margin-bottom: 12px; }
+.scan-manual { display: flex; gap: 8px; padding: 0 16px 18px; }
+.scan-manual input { flex: 1; }
+.bc-portion { margin-bottom: 12px; }
+@media (prefers-reduced-motion: reduce) { .scan-line { animation: none; top: 50%; } }
 `;
