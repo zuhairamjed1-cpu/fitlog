@@ -686,6 +686,103 @@ function avgTimeMins(times, wrapPM = false) {
   return Math.round(mins.reduce((a, b) => a + b, 0) / mins.length);
 }
 
+// ─── RECOVERY ENGINE ──────────────────────────────────────────────────────────
+// Instant, rule-based "should I train today?" read from real data. Mirrors the
+// nicotine-timing pattern: counts recovery signals, rolls into a verdict, lists reasons.
+// Verdict: "go" (train as planned) | "caution" (train lighter / listen to your body) | "rest".
+function computeRecovery(data, goals) {
+  const today = getTodayStr();
+  const reasons = [];   // { text, dir: "neg" | "pos" } — neg pushes toward rest
+  const unknown = [];
+  let negScore = 0;     // weighted points pushing toward rest
+
+  const add = (text, dir, weight = 1) => { reasons.push({ text, dir }); if (dir === "neg") negScore += weight; };
+
+  // What does the plan say for today?
+  const todayName = WEEKDAYS[(new Date(today + "T00:00:00").getDay() + 6) % 7];
+  const plannedToday = goals.plan?.trainingDays?.includes(todayName);
+  const todayLabel = goals.plan?.assignments?.[todayName] || (plannedToday ? "training" : "rest");
+
+  // ── Last night's sleep ──
+  const sortedSleep = (data.sleep || []).filter(s => s.date && s.duration != null).sort((a, b) => b.date.localeCompare(a.date));
+  const lastSleep = sortedSleep[0];
+  const lastNightDate = (data.sleep || []).some(s => s.date === today) ? today : daysAgo(1);
+  if (!lastSleep || Math.round((new Date(lastNightDate + "T00:00:00") - new Date(lastSleep.date + "T00:00:00")) / 86400000) >= 1) {
+    unknown.push("last night's sleep");
+  } else {
+    const poor = lastSleep.quality === "Poor" || lastSleep.quality === "Fair";
+    if (lastSleep.duration < 5.5) add(`Only ${lastSleep.duration}h sleep last night — recovery is significantly down`, "neg", 2);
+    else if (lastSleep.duration < 7 || poor) add(`Slept ${lastSleep.duration}h${poor ? ` (${lastSleep.quality.toLowerCase()})` : ""} last night — a bit under-recovered`, "neg", 1);
+    else add(`Slept ${lastSleep.duration}h (${(lastSleep.quality || "ok").toLowerCase()}) last night — well rested`, "pos");
+  }
+
+  // ── 7-day sleep debt ──
+  const last7Sleep = (data.sleep || []).filter(s => s.date >= daysAgo(6));
+  if (last7Sleep.length >= 3) {
+    const debt = last7Sleep.reduce((d, s) => d + (8 - s.duration), 0);
+    if (debt > 8) add(`Sleep debt is high (~${debt.toFixed(0)}h short this week)`, "neg", 2);
+    else if (debt > 4) add(`Some sleep debt building this week (~${debt.toFixed(0)}h)`, "neg", 1);
+  }
+
+  // ── Consecutive training days / days since rest ──
+  const trainDates = new Set([...(data.exercise || []).map(e => e.date), ...(data.sports || []).map(s => s.date)]);
+  let consec = 0;
+  { let cur = new Date(); if (!trainDates.has(getTodayStr())) cur.setDate(cur.getDate() - 1);
+    for (;;) { const ds = localDateStr(cur); if (trainDates.has(ds)) { consec++; cur.setDate(cur.getDate() - 1); } else break; } }
+  if (consec >= 5) add(`Trained ${consec} days straight with no rest — strong deload signal`, "neg", 2);
+  else if (consec >= 3) add(`${consec} training days in a row — fatigue accumulating`, "neg", 1);
+  else if (consec === 0 && trainDates.size > 0) add(`Rested recently — you're fresh`, "pos");
+
+  // ── Recent RPE trend (from parsed Strong data) ──
+  const last5Lifts = (data.exercise || []).filter(e => e.date >= daysAgo(6))
+    .map(e => (e._parsed || parseWorkout(e.text || "")).avgRPE).filter(v => v != null);
+  if (last5Lifts.length >= 2) {
+    const avgRPE = last5Lifts.reduce((a, b) => a + b, 0) / last5Lifts.length;
+    if (avgRPE >= 8.5) add(`Recent sessions have felt very hard (avg RPE ${avgRPE.toFixed(1)})`, "neg", 1);
+    else if (avgRPE <= 6.5) add(`Recent sessions felt manageable (avg RPE ${avgRPE.toFixed(1)})`, "pos");
+  }
+
+  // ── Under-fuelling over the last few days ──
+  const calByDay = {};
+  (data.diet || []).filter(d => d.date >= daysAgo(2)).forEach(d => { calByDay[d.date] = (calByDay[d.date] || 0) + (d.calories || 0); });
+  const calDays = Object.values(calByDay);
+  if (calDays.length >= 2 && goals.calories) {
+    const avg = calDays.reduce((a, b) => a + b, 0) / calDays.length;
+    if (avg < goals.calories * 0.7) add(`Under-eating recently (~${Math.round(avg)} vs ${goals.calories} target) — under-fuelled recovery`, "neg", 1);
+  }
+
+  // ── Journal sentiment (light touch — only explicit fatigue words) ──
+  const recentJournal = (data.journal || []).filter(e => e.date >= daysAgo(2));
+  const fatigueWords = /\b(exhausted|drained|run down|rundown|burnt out|burned out|wrecked|sore|aching|tired|sick|ill|stressed|no energy|knackered)\b/i;
+  const flagged = recentJournal.find(e => fatigueWords.test(e.text));
+  if (flagged) add(`Your recent journal notes mention feeling run down`, "neg", 1);
+
+  // ── Nicotine load (only if notably high) ──
+  if ((data.nicotine || []).length) {
+    const ns = computeNicotineStats(data);
+    if (ns.avg7 > 0 && ns.today.count >= 5) add(`High nicotine intake today may blunt recovery`, "neg", 0.5);
+  }
+
+  // ── ROLL INTO VERDICT ──
+  // Heavy single signals (sleep<5.5h, 5+ consec days) already weighted 2.
+  let verdict;
+  if (negScore >= 4) verdict = "rest";
+  else if (negScore >= 2) verdict = "caution";
+  else verdict = "go";
+
+  // If sleep is unknown, don't confidently say "go" — soften to caution and flag.
+  let lowData = false;
+  if (verdict === "go" && unknown.includes("last night's sleep")) { verdict = "caution"; lowData = true; }
+
+  // Reconcile with the plan: note when the verdict and the plan disagree.
+  let reconcile = null;
+  if (verdict === "rest" && plannedToday) reconcile = `Your plan has ${todayLabel} today, but your recovery says rest. Consider swapping today with an upcoming rest day.`;
+  else if (verdict === "go" && !plannedToday) reconcile = `You're recovered, but today is a scheduled rest day. Extra rest never hurts — or move a session here if you're keen.`;
+  else if (verdict === "caution" && plannedToday) reconcile = `Plan says ${todayLabel}. You can train, but keep intensity in check and cut volume if it feels rough.`;
+
+  return { verdict, reasons, unknown, lowData, plannedToday, todayLabel, reconcile, negScore };
+}
+
 
 
 
@@ -1404,20 +1501,43 @@ Return ONLY JSON mapping each available day to a short workout label:
 // and the AI designs the entire week: which days to train, the split, day-by-day workouts, and why.
 async function buildPlanFromPrompt(prompt, goals, current, data) {
   const brain = data ? buildBrain(data, goals) : null;
-  const brainText = brain ? `\n\nUser's current state (factor this in — e.g. if undereating, recommend lower volume; if just finishing a hard block, schedule a deload week):\n${formatBrainText(brain)}` : "";
-  const sys = `You are this user's coach. They've described how they want their training week — design it for them.
+  const brainText = brain ? `\n\n=== USER'S CURRENT STATE (factor in: recovery, experience, injuries, strategy) ===\n${formatBrainText(brain)}` : "";
+
+  // Auto-detect sports the user actually logs, and which weekday they fall on.
+  let sportsPattern = "";
+  if (data?.sports?.length) {
+    const byDay = {};
+    data.sports.filter(s => s.date >= daysAgo(60)).forEach(s => {
+      const wd = WEEKDAYS[(new Date(s.date + "T00:00:00").getDay() + 6) % 7];
+      byDay[wd] = byDay[wd] || {};
+      byDay[wd][s.sport] = (byDay[wd][s.sport] || 0) + 1;
+    });
+    const patterns = [];
+    Object.entries(byDay).forEach(([wd, sports]) => {
+      Object.entries(sports).forEach(([sport, n]) => { if (n >= 2) patterns.push(`${sport} on ${wd} (logged ${n}× recently)`); });
+    });
+    if (patterns.length) sportsPattern = `\n\n=== SPORTS THE USER REGULARLY PLAYS (auto-detected from their logs — protect related muscles around these days; e.g. don't put heavy legs the day before/after football) ===\n${patterns.join("\n")}`;
+  }
+
+  const sys = `You are this user's elite strength coach. They've described, in their own words, how they want their training week. Turn that into a concrete weekly split.
 
 Their stated fitness goal: ${goals.goal}.
-${current?.trainingDays?.length ? `Their current plan (they may want to keep or change it): split="${current.split}", training days=${current.trainingDays.join(", ")}.` : ""}
+${current?.trainingDays?.length ? `Their current plan: split="${current.split}", training days=${current.trainingDays.join(", ")}. They may want to keep or change it.` : ""}
 
-Rules:
-- Honor explicit constraints (number of days, specific days, sports, muscle priorities, time limits, injuries from the ABOUT THE USER section if provided).
-- Pick the most appropriate split (Push/Pull/Legs, Upper/Lower, Full Body, Bro Split, Arnold, or Custom).
-- Optimize recovery: don't hammer the same muscles consecutive days, space heavy lifts sensibly, account for any sports as extra fatigue.
-- Factor in their CURRENT STRATEGY and recent data — if undereating, recommend lower volume; if week 5 of 6 in a strength block, schedule a deload.
-- Use the 7 day keys exactly: Mon, Tue, Wed, Thu, Fri, Sat, Sun.
-- For rest days, omit them from "assignments" (only include training days).
-- Keep workout labels short (e.g. "Push", "Upper A", "Legs + Core", "Chest & Back").
+=== HARD RULES (follow exactly) ===
+1. PARSE MESSY INPUT CHARITABLY. The user may have typos, slang, shorthand, no punctuation ("futbol", "trian", "shldrs", "chest n arms"). Always interpret their intent — NEVER return a generic template that ignores what they said, and never reply that you didn't understand. Extract: how many days, which specific days (if named), muscle/movement priorities, sports, time limits, injuries.
+2. HONOR THE LITERAL REQUEST. If they said a number of days, a specific day, or a focus — that is non-negotiable unless it's clearly unsafe.
+3. SUGGEST BETTER, BUT THEY OVERRULE. If their request is suboptimal (e.g. legs the day before their football, or 6 hard days while showing sleep debt), build the SAFER version as your primary plan AND set "alternativeNote" explaining what you changed and why. But if their request is explicit and they'd clearly insist, still respect it — put your concern in "alternativeNote", don't silently override a clear instruction.
+4. YOU PICK THE NUMBER OF TRAINING DAYS when the user doesn't specify — based on their goal, experience level, and current recovery (don't prescribe 6 days to someone with sleep debt or a beginner).
+5. PROPOSE rest-day placement, but the user makes the final call — so place rest days sensibly and explain the placement; they'll adjust if they want.
+6. PROTECT SPORTS: auto-detected sports (below) are real recurring commitments. Keep heavy related muscles away from the day before AND after (football/soccer/running → no heavy legs adjacent).
+7. NO ORPHAN MUSCLES: every major muscle group gets trained across the week unless the user explicitly wants a focus/specialization.
+8. SENSIBLE SPACING: never the same muscle hard on consecutive days; place rest where fatigue is highest.
+9. RESPECT injuries/equipment/life-context from ABOUT THE USER. Honor CURRENT STRATEGY (e.g. deload if late in a block).
+10. EXPLAIN EVERY TRAINING DAY with a one-line "why" in dayReasons.
+
+Use the 7 day keys EXACTLY: Mon, Tue, Wed, Thu, Fri, Sat, Sun.
+Omit rest days from "assignments" (only include training days). Keep labels short ("Push", "Upper A", "Legs + Core").
 
 ${COACH_PRINCIPLES}
 
@@ -1426,14 +1546,17 @@ Return ONLY valid JSON, no markdown:
   "split": "<chosen split name>",
   "trainingDays": ["Mon","Wed",...],
   "assignments": {"Mon":"Push","Wed":"Pull",...},
-  "summary": "<2-3 sentences explaining the plan and why it fits>",
+  "dayReasons": {"Mon":"<one-line why this day is what it is>","Wed":"...","Tue":"Rest — <why>",...},
+  "summary": "<2-3 sentences explaining the plan and why it fits THEIR words + data>",
+  "alternativeNote": "<if you adjusted or have a concern about their request, explain here — else empty string>",
   "tips": ["<concrete actionable tip>","<tip>"]
-}${brainText}`;
+}${sportsPattern}${brainText}`;
+
   const raw = await callClaude({
     model: currentModelId(),
     system: sys,
-    maxTokens: 1200,
-    userText: `Here's what I want for my training week:\n\n"${prompt}"\n\nDesign my week.`,
+    maxTokens: 1500,
+    userText: `Here's what I want for my training week, in my own words:\n\n"${prompt}"\n\nParse it carefully (typos and all) and design my week.`,
   });
   return JSON.parse(raw.replace(/```json|```/g, "").trim());
 }
@@ -1970,17 +2093,20 @@ function PlanTab({ data, goals, onSaveGoals }) {
   const [split, setSplit] = useState(plan.split);
   const [trainingDays, setTrainingDays] = useState(plan.trainingDays);
   const [assignments, setAssignments] = useState(plan.assignments || {});
+  const [dayReasons, setDayReasons] = useState(plan.dayReasons || {});
 
-  // Conversational AI plan builder
+  // AI plan builder
   const [prompt, setPrompt] = useState("");
   const [building, setBuilding] = useState(false);
   const [buildResult, setBuildResult] = useState(null);
   const [buildErr, setBuildErr] = useState("");
   const [editing, setEditing] = useState(false);
+  const [openDay, setOpenDay] = useState(null); // which day's "why" is expanded
 
-  // Rest-day recommendation
-  const [rec, setRec] = useState(null);
-  const [recLoading, setRecLoading] = useState(false);
+  // Recovery card — instant rule-based + optional AI elaboration
+  const recovery = useMemo(() => computeRecovery(data, goals), [data, goals]);
+  const [aiTake, setAiTake] = useState(null);
+  const [aiLoading, setAiLoading] = useState(false);
 
   const todayName = WEEKDAYS[(new Date().getDay() + 6) % 7];
   const hasPlan = trainingDays.length > 0 && Object.keys(assignments).length > 0;
@@ -2001,10 +2127,10 @@ function PlanTab({ data, goals, onSaveGoals }) {
     setSplit(buildResult.split || split);
     setTrainingDays(buildResult.trainingDays);
     setAssignments(buildResult.assignments || {});
-    onSaveGoals({ ...goals, plan: { split: buildResult.split || split, trainingDays: buildResult.trainingDays, assignments: buildResult.assignments || {}, notes: "" } });
+    setDayReasons(buildResult.dayReasons || {});
+    onSaveGoals({ ...goals, plan: { split: buildResult.split || split, trainingDays: buildResult.trainingDays, assignments: buildResult.assignments || {}, dayReasons: buildResult.dayReasons || {}, notes: "" } });
     setBuildResult(null); setPrompt("");
-    toast("\u2713 Plan saved");
-    haptic([12, 30, 12]);
+    toast("✓ Plan saved"); haptic([12, 30, 12]);
   }
 
   function editDay(day, value) {
@@ -2024,61 +2150,94 @@ function PlanTab({ data, goals, onSaveGoals }) {
   }
 
   function saveEdits() {
-    onSaveGoals({ ...goals, plan: { split, trainingDays, assignments, notes: "" } });
+    onSaveGoals({ ...goals, plan: { split, trainingDays, assignments, dayReasons, notes: "" } });
     setEditing(false);
-    toast("\u2713 Plan saved");
+    toast("✓ Plan saved");
   }
 
-  async function getRec() {
-    setRecLoading(true);
-    try { setRec(await recommendRest(data, goals)); }
-    catch { toast("Couldn't get recommendation"); }
-    setRecLoading(false);
+  async function askCoachElaborate() {
+    setAiLoading(true);
+    try { setAiTake(await recommendRest(data, goals)); }
+    catch { toast("Couldn't reach the coach"); }
+    setAiLoading(false);
   }
 
-  const recColor = { train: "var(--good)", light: "var(--warn)", rest: "var(--bad)" };
-  const recLabel = { train: "Train today", light: "Go light today", rest: "Rest / deload today" };
+  const verdictMeta = {
+    go:      { label: "Good to train", cls: "go",      dot: "var(--good)" },
+    caution: { label: "Train with caution", cls: "caution", dot: "#f9c97e" },
+    rest:    { label: "Rest today", cls: "rest",    dot: "var(--bad)" },
+  };
+  const vm = verdictMeta[recovery.verdict];
+
+  // Recovery-aware flag for the week view (consecutive-day warning)
+  const consecWarning = recovery.reasons.find(r => /days straight|in a row/i.test(r.text));
 
   return (
     <div className="stack">
-      {/* TODAY'S CALL */}
-      <Card title="Today's call" sub="AI checks your recent load & sleep">
-        {!rec && !recLoading && (
-          <button className="btn-ghost full" onClick={getRec}>\u2726 Should I train today?</button>
-        )}
-        {recLoading && <div className="loading-row"><span className="spinner" />Checking your recovery\u2026</div>}
-        {rec && !recLoading && (
-          <div className="rec-result">
-            <div className="rec-badge" style={{ background: `${recColor[rec.recommendation]}22`, color: recColor[rec.recommendation], borderColor: `${recColor[rec.recommendation]}55` }}>
-              {recLabel[rec.recommendation] || "Train today"}
+      {/* ── CARD 1: RECOVERY READOUT ── */}
+      <Card title="Should I train today?" sub="Reads your sleep, load, fuelling & more — instantly">
+        <div className={`rec-band rec-band-${vm.cls}`}>
+          <span className="rec-band-dot" style={{ background: vm.dot }} />
+          <div className="rec-band-body">
+            <div className="rec-band-label">{vm.label}</div>
+            <div className="rec-band-ctx">{recovery.plannedToday ? `Plan: ${recovery.todayLabel}` : "Plan: rest day"} · {todayName}</div>
+          </div>
+        </div>
+
+        {recovery.reconcile && <p className="rec-reconcile">{recovery.reconcile}</p>}
+
+        <div className="rec-reasons">
+          {recovery.reasons.length === 0 && recovery.unknown.length === 0 && (
+            <p className="muted small">Log some sleep and training and this will read your recovery automatically.</p>
+          )}
+          {recovery.reasons.map((r, i) => (
+            <div key={i} className={`rec-reason-row ${r.dir}`}>
+              <span className="rec-reason-mark">{r.dir === "neg" ? "▲" : "•"}</span>
+              <span>{r.text}</span>
             </div>
-            <p className="rec-reason">{rec.reason}</p>
-            {rec.tip && <p className="rec-tip">\ud83d\udca1 {rec.tip}</p>}
-            <button className="link-btn" onClick={getRec}>Refresh</button>
+          ))}
+          {recovery.unknown.length > 0 && (
+            <p className="muted small" style={{ marginTop: 8 }}>
+              Not logged, so left out: {recovery.unknown.join(", ")}.{recovery.lowData ? " (Verdict softened to caution without it.)" : ""}
+            </p>
+          )}
+        </div>
+
+        {!aiTake && (
+          <button className="btn-ghost full" style={{ marginTop: 12 }} onClick={askCoachElaborate} disabled={aiLoading}>
+            {aiLoading ? <><span className="spinner" />Asking your coach…</> : "✦ Ask coach to elaborate"}
+          </button>
+        )}
+        {aiTake && (
+          <div className="rec-ai">
+            <div className="rec-ai-h">✦ Coach's take</div>
+            <p className="rec-ai-reason">{aiTake.reason}</p>
+            {aiTake.tip && <p className="rec-ai-tip">→ {aiTake.tip}</p>}
+            <button className="link-btn" onClick={() => setAiTake(null)}>Hide</button>
           </div>
         )}
       </Card>
 
-      {/* AI PLAN BUILDER */}
-      <Card title="\u2726 Build my week" sub="Tell the AI what you want \u2014 it designs your whole week">
+      {/* ── CARD 2: AI PLAN BUILDER ── */}
+      <Card title="✦ Build my week" sub="Tell the AI what you want — typos and all — it designs your week">
         <textarea
           value={prompt}
           onChange={e => setPrompt(e.target.value)}
           rows={3}
-          placeholder={'e.g. "I can train 4 days a week, focus on chest and arms, and I play football on Sundays so keep legs away from then"'}
+          placeholder={'e.g. "i can trian 4 days, chest n arms focus, play futbol sundays so keep legs away from then"'}
         />
         <div className="prompt-chips">
           {[
             "5 days, push/pull/legs, weekends off",
             "4 days, focus on arms & shoulders",
             "3 full-body days, max recovery",
-            "Plan around football Sat & Sun",
+            "let the AI decide what's best for me",
           ].map((p, i) => (
             <button key={i} className="prompt-chip" onClick={() => setPrompt(p)}>{p}</button>
           ))}
         </div>
         <button className="btn full" style={{ marginTop: 10 }} onClick={buildPlan} disabled={building || !prompt.trim()}>
-          {building ? <><span className="spinner" />Designing your week\u2026</> : (hasPlan ? "\u2726 Rebuild my week" : "\u2726 Design my week")}
+          {building ? <><span className="spinner" />Designing your week…</> : (hasPlan ? "✦ Rebuild my week" : "✦ Design my week")}
         </button>
         {buildErr && <div className="err">{buildErr}</div>}
 
@@ -2089,46 +2248,63 @@ function PlanTab({ data, goals, onSaveGoals }) {
               {WEEKDAYS.map(d => {
                 const w = buildResult.assignments?.[d];
                 const training = buildResult.trainingDays.includes(d);
+                const why = buildResult.dayReasons?.[d];
                 return (
-                  <div key={d} className={`build-day ${training ? "on" : ""} ${d === todayName ? "today" : ""}`}>
+                  <div key={d}
+                    className={`build-day ${training ? "on" : ""} ${d === todayName ? "today" : ""} ${why ? "has-why" : ""}`}
+                    onClick={() => why && setOpenDay(openDay === "b" + d ? null : "b" + d)}>
                     <span className="build-day-name">{d}</span>
                     <span className="build-day-w">{training ? (w || "Train") : "Rest"}</span>
+                    {why && <span className="build-day-why-chev">{openDay === "b" + d ? "▲" : "ⓘ"}</span>}
+                    {openDay === "b" + d && why && <div className="build-day-why">{why}</div>}
                   </div>
                 );
               })}
             </div>
+            {buildResult.alternativeNote && (
+              <div className="build-alt"><strong>Coach's note:</strong> {buildResult.alternativeNote}</div>
+            )}
             {buildResult.summary && <p className="build-summary">{buildResult.summary}</p>}
             {buildResult.tips?.length > 0 && (
               <ul className="build-tips">{buildResult.tips.map((t, i) => <li key={i}>{t}</li>)}</ul>
             )}
+            <p className="muted small" style={{ marginTop: 8 }}>Tap any day to see why it's set that way. You can fine-tune rest days after applying.</p>
             <div className="row" style={{ marginTop: 12 }}>
-              <button className="btn flex" onClick={applyBuiltPlan}>\u2713 Use this plan</button>
+              <button className="btn flex" onClick={applyBuiltPlan}>✓ Use this plan</button>
               <button className="btn-ghost" onClick={() => setBuildResult(null)}>Discard</button>
             </div>
           </div>
         )}
       </Card>
 
-      {/* CURRENT WEEK */}
+      {/* ── CARD 3: EDITABLE, RECOVERY-AWARE WEEK VIEW ── */}
       {hasPlan && !buildResult && (
         <Card title="Your week" sub={split} action={<button className="link-btn" onClick={() => editing ? saveEdits() : setEditing(true)}>{editing ? "Done" : "Edit"}</button>}>
+          {consecWarning && !editing && (
+            <div className="week-flag">⚠ {consecWarning.text}. Consider making today or tomorrow a rest day.</div>
+          )}
           <div className="build-week">
             {WEEKDAYS.map(d => {
               const training = trainingDays.includes(d);
+              const why = dayReasons[d];
               if (editing) {
                 return (
                   <div key={d} className={`build-day ${d === todayName ? "today" : ""}`}>
                     <span className="build-day-name">{d}</span>
-                    <input className="wo-input" value={assignments[d] || ""} placeholder="Rest \u2014 type to add"
+                    <input className="wo-input" value={assignments[d] || ""} placeholder="Rest — type to add"
                       onChange={e => editDay(d, e.target.value)} />
                   </div>
                 );
               }
               return (
-                <div key={d} className={`build-day ${training ? "on" : ""} ${d === todayName ? "today" : ""}`}>
+                <div key={d}
+                  className={`build-day ${training ? "on" : ""} ${d === todayName ? "today" : ""} ${why ? "has-why" : ""}`}
+                  onClick={() => why && setOpenDay(openDay === d ? null : d)}>
                   <span className="build-day-name">{d}</span>
                   <span className="build-day-w">{training ? (assignments[d] || "Train") : "Rest"}</span>
                   {d === todayName && <span className="wo-today-tag">today</span>}
+                  {why && <span className="build-day-why-chev">{openDay === d ? "▲" : "ⓘ"}</span>}
+                  {openDay === d && why && <div className="build-day-why">{why}</div>}
                 </div>
               );
             })}
@@ -5112,6 +5288,34 @@ input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
 .rec-badge { display: inline-block; padding: 6px 14px; border-radius: 16px; border: 1px solid; font-size: .85rem; font-weight: 600; margin-bottom: 10px; }
 .rec-reason { font-size: .88rem; line-height: 1.55; color: var(--text); margin-bottom: 8px; }
 .rec-tip { font-size: .82rem; color: var(--text-2); line-height: 1.5; background: var(--surface-2); border-radius: 8px; padding: 8px 10px; }
+
+/* Recovery band (rule-based verdict) */
+.rec-band { display: flex; align-items: center; gap: 13px; padding: 15px; border-radius: 14px; border: 1px solid var(--border); background: var(--surface-2); }
+.rec-band-dot { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; }
+.rec-band-label { font-size: 1.05rem; font-weight: 700; color: var(--text); }
+.rec-band-ctx { font-size: .76rem; color: var(--muted); margin-top: 2px; }
+.rec-band-go { border-color: rgba(143,217,137,0.3); background: rgba(143,217,137,0.07); }
+.rec-band-caution { border-color: rgba(249,201,126,0.3); background: rgba(249,201,126,0.07); }
+.rec-band-rest { border-color: rgba(244,126,110,0.35); background: rgba(244,126,110,0.08); }
+.rec-reconcile { font-size: .84rem; line-height: 1.5; color: var(--text-2); background: var(--surface-2); border-radius: 10px; padding: 10px 12px; margin-top: 12px; }
+.rec-reasons { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.rec-reason-row { display: flex; gap: 9px; font-size: .85rem; line-height: 1.45; color: var(--text); }
+.rec-reason-mark { flex-shrink: 0; font-size: .7rem; margin-top: 3px; }
+.rec-reason-row.neg .rec-reason-mark { color: var(--bad); }
+.rec-reason-row.pos .rec-reason-mark { color: var(--good); }
+.rec-reason-row.pos { color: var(--text-2); }
+.rec-ai { margin-top: 14px; padding: 12px 14px; border-radius: 12px; background: var(--accent-dim); border: 1px solid rgba(110,231,247,0.2); animation: fadeIn .25s var(--ease-out); }
+.rec-ai-h { font-size: .76rem; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 6px; }
+.rec-ai-reason { font-size: .87rem; line-height: 1.55; color: var(--text); margin: 0 0 8px; }
+.rec-ai-tip { font-size: .83rem; color: var(--text-2); line-height: 1.5; margin: 0 0 8px; }
+
+/* Build / week-view day "why" + flags */
+.build-day.has-why { cursor: pointer; flex-wrap: wrap; }
+.build-day-why-chev { margin-left: auto; color: var(--muted); font-size: .72rem; }
+.build-day-why { flex-basis: 100%; font-size: .8rem; line-height: 1.5; color: var(--text-2); margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); }
+.build-alt { font-size: .84rem; line-height: 1.55; color: var(--text); background: rgba(249,201,126,0.08); border: 1px solid rgba(249,201,126,0.25); border-radius: 10px; padding: 10px 12px; margin-top: 12px; }
+.build-alt strong { color: #f9c97e; }
+.week-flag { font-size: .83rem; line-height: 1.5; color: #f9c97e; background: rgba(249,201,126,0.08); border: 1px solid rgba(249,201,126,0.22); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; }
 
 /* ─── Achievements ─── */
 .ach-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 8px; }
