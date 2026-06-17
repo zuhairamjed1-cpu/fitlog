@@ -2,9 +2,9 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import { supabase, hasSupabase } from "./supabase";
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
-const TABS = ["Home", "Log", "History", "Coach", "Settings"];
+const TABS = ["Home", "Log", "History", "Coach", "Journal", "Settings"];
 const STORAGE_KEY = "fitlog_v5";
-const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], nicotine: [], nicotinePlans: [] };
+const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], nicotine: [], nicotinePlans: [], journal: [] };
 const defaultProfile = {
   // Body
   sex: "", age: "", heightCm: "", weightKg: "",
@@ -507,22 +507,40 @@ function computeNicotineTiming(data, goals) {
   const today = getTodayStr();
   const minsOf = t => { if (!t) return null; const m = /^(\d{1,2}):(\d{2})/.exec(t); return m ? +m[1] * 60 + +m[2] : null; };
 
+  // ── ACTIVE DAY ──
+  // People don't reset at midnight — they reset when they wake. If it's the small hours
+  // (before ~5am) and there's no sleep logged for the new calendar day yet, the user is
+  // still inside their PREVIOUS waking day. So "today's" workouts/meals should be read from
+  // yesterday's date, and time-since-event must count across midnight (+24h).
+  const preDawn = nowMins < 5 * 60; // before 5:00am
+  const sleptForToday = (data.sleep || []).some(s => s.date === today);
+  const activeDay = (preDawn && !sleptForToday) ? daysAgo(1) : today;
+  const crossedMidnight = activeDay !== today;
+  // When comparing event times on the active (previous) day to "now", add 24h to now.
+  const nowMinsAdj = crossedMidnight ? nowMins + 24 * 60 : nowMins;
+
   const raising = [];   // { text } — factors increasing impact right now
   const easing = [];    // { text } — factors that are currently favorable
   const unknown = [];   // metrics we couldn't read
   let strongOverride = false; // post-workout 0-2h or near-bedtime → never "Lower"
 
   // ── FACTOR 1: Trained in last ~0–3h (lift OR sport) ──
-  const todayWorkouts = [
-    ...(data.exercise || []).filter(e => e.date === today && e.time).map(e => ({ time: e.time, label: e.label || "workout" })),
-    ...(data.sports || []).filter(s => s.date === today && s.time).map(s => ({ time: s.time, label: s.sport || "sport" })),
+  // Read from the ACTIVE day (which may be yesterday's date if pre-dawn).
+  const dayWorkouts = [
+    ...(data.exercise || []).filter(e => e.date === activeDay && e.time).map(e => ({ time: e.time, label: e.label || "workout" })),
+    ...(data.sports || []).filter(s => s.date === activeDay && s.time).map(s => ({ time: s.time, label: s.sport || "sport" })),
   ];
-  if (todayWorkouts.length) {
-    // Most recent session today
+  if (dayWorkouts.length) {
     let mostRecent = null, mostRecentMins = -1;
-    todayWorkouts.forEach(w => { const m = minsOf(w.time); if (m != null && m > mostRecentMins && m <= nowMins) { mostRecentMins = m; mostRecent = w; } });
+    dayWorkouts.forEach(w => {
+      let m = minsOf(w.time);
+      if (m == null) return;
+      // If we're past midnight, the event happened on the previous day → it's at m (no +24);
+      // "now" already had +24 added, so the difference is correct.
+      if (m > mostRecentMins && m <= nowMinsAdj) { mostRecentMins = m; mostRecent = w; }
+    });
     if (mostRecent) {
-      const hrsSince = (nowMins - mostRecentMins) / 60;
+      const hrsSince = (nowMinsAdj - mostRecentMins) / 60;
       if (hrsSince >= 0 && hrsSince <= 2) {
         raising.push({ text: `Trained ${hrsSince < 1 ? "under an hour" : Math.round(hrsSince) + "h"} ago — you're in the post-workout window where blood flow drives recovery and protein synthesis; nicotine's vasoconstriction works directly against that.` });
         strongOverride = true;
@@ -533,53 +551,72 @@ function computeNicotineTiming(data, goals) {
       }
     }
   } else {
-    // Is today a planned training day that just hasn't happened yet, or a rest day?
-    const todayName = WEEKDAYS[(now.getDay() + 6) % 7];
-    const isTrainingDay = goals.plan?.trainingDays?.includes(todayName);
-    if (isTrainingDay) easing.push({ text: `No training logged yet today — not currently in a recovery window.` });
+    const activeName = WEEKDAYS[(new Date(activeDay + "T00:00:00").getDay() + 6) % 7];
+    const isTrainingDay = goals.plan?.trainingDays?.includes(activeName);
+    if (isTrainingDay) easing.push({ text: `No training logged ${crossedMidnight ? "yesterday" : "yet today"} — not currently in a recovery window.` });
     else easing.push({ text: `Rest day — no training stress to recover from right now, so the training-specific cost is lowest.` });
   }
 
-  // ── FACTOR 2: Short / poor sleep last night ──
-  const lastSleep = (data.sleep || []).find(s => s.date === today) || (data.sleep || []).find(s => s.date === daysAgo(1));
-  if (!lastSleep || lastSleep.duration == null) {
+  // ── FACTOR 2: Short / poor sleep ──
+  // Find the MOST RECENT sleep log (not just today/yesterday — don't "forget" older data).
+  const sortedSleep = (data.sleep || []).filter(s => s.date && s.duration != null).sort((a, b) => b.date.localeCompare(a.date));
+  const lastSleep = sortedSleep[0] || null;
+  if (!lastSleep) {
     unknown.push("sleep");
   } else {
+    // Staleness is measured from the most recent night that COULD have a log.
+    // If we've crossed midnight and slept already, last night = today's date; otherwise
+    // last night = yesterday's date. Compare the log's age against that reference.
+    const lastNightDate = sleptForToday ? today : daysAgo(1);
+    const daysOld = Math.round((new Date(lastNightDate + "T00:00:00") - new Date(lastSleep.date + "T00:00:00")) / 86400000);
+    const whenLabel = daysOld <= 0 ? "last night" : daysOld === 1 ? "the night before last" : `${daysOld + 1} nights ago (most recent log)`;
+    const stale = daysOld >= 1; // anything older than the most recent loggable night is stale
     const poorQuality = lastSleep.quality === "Poor" || lastSleep.quality === "Fair";
-    if (lastSleep.duration < 6) {
-      raising.push({ text: `Slept ${lastSleep.duration}h last night — recovery is already compromised before anything else stacks on top.` });
-    } else if (lastSleep.duration < 7 || poorQuality) {
-      raising.push({ text: `Slept ${lastSleep.duration}h${poorQuality ? ` (${lastSleep.quality.toLowerCase()})` : ""} last night — recovery is running below par.` });
+    const dur = lastSleep.duration;
+    const qStr = lastSleep.quality ? ` (${lastSleep.quality.toLowerCase()})` : "";
+    if (stale) {
+      unknown.push(`sleep — not logged for last night (most recent: ${dur}h${qStr}, ${whenLabel})`);
+    } else if (dur < 6) {
+      raising.push({ text: `Slept ${dur}h last night — recovery is already compromised before anything else stacks on top.` });
+    } else if (dur < 7 || poorQuality) {
+      raising.push({ text: `Slept ${dur}h${qStr} last night — recovery is running below par.` });
     } else {
-      easing.push({ text: `Slept ${lastSleep.duration}h (${(lastSleep.quality || "ok").toLowerCase()}) — recovery base is solid today.` });
+      easing.push({ text: `Slept ${dur}h${qStr} last night — recovery base is solid.` });
     }
   }
 
-  // ── FACTOR 3: Under-fuelled vs target today (esp. protein) ──
-  const todayDiet = (data.diet || []).filter(d => d.date === today);
-  if (todayDiet.length === 0 && nowMins < 11 * 60) {
-    // Early in the day, nothing logged yet — not meaningful to call under-fuelled
+  // ── FACTOR 3: Under-fuelled vs target on the ACTIVE day (esp. protein) ──
+  const dayDiet = (data.diet || []).filter(d => d.date === activeDay);
+  // "Hours into the waking day" — if pre-dawn, the day's been going a long time, so don't
+  // excuse low intake as "just getting started".
+  const hoursIntoDay = crossedMidnight ? (nowMins / 60 + 24 - 6) : (nowMins / 60 - 6);
+  if (dayDiet.length === 0 && !crossedMidnight && nowMins < 11 * 60) {
     easing.push({ text: `Early in the day — fuelling just getting started.` });
-  } else if (todayDiet.length === 0) {
-    unknown.push("food");
+  } else if (dayDiet.length === 0) {
+    // Late in a day (or past midnight) with no food logged is itself a fuelling gap, not "unknown".
+    if (crossedMidnight || nowMins >= 15 * 60) {
+      raising.push({ text: `No food logged ${crossedMidnight ? "for yesterday" : "today"} — if that's accurate, you're under-fuelled, which compounds the recovery hit.` });
+    } else {
+      unknown.push("food");
+    }
   } else {
-    const cal = todayDiet.reduce((a, m) => a + (m.calories || 0), 0);
-    const protein = todayDiet.reduce((a, m) => a + (m.protein || 0), 0);
+    const cal = dayDiet.reduce((a, m) => a + (m.calories || 0), 0);
+    const protein = dayDiet.reduce((a, m) => a + (m.protein || 0), 0);
     const calTarget = goals.calories || 0;
     const pTarget = goals.protein || 0;
-    // Expected fraction of daily intake by this hour (rough: ramps from ~6am to ~9pm)
-    const dayFrac = Math.max(0, Math.min(1, (nowMins - 6 * 60) / ((21 - 6) * 60)));
+    // Fraction of the day elapsed (cap at 1 once past ~9pm or after midnight)
+    const dayFrac = crossedMidnight ? 1 : Math.max(0, Math.min(1, (nowMins - 6 * 60) / ((21 - 6) * 60)));
     const expectedCal = calTarget * dayFrac;
     const lowProtein = pTarget && protein < pTarget * dayFrac * 0.7;
     const lowCal = calTarget && cal < expectedCal * 0.65;
     if (lowProtein && lowCal) {
-      raising.push({ text: `Under-fuelled so far (${cal} kcal, ${protein}g protein) for this point in the day — under-eating, especially low protein, compounds the recovery hit.` });
+      raising.push({ text: `Under-fuelled (${cal} kcal, ${protein}g protein) ${crossedMidnight ? "across yesterday" : "for this point in the day"} — under-eating, especially low protein, compounds the recovery hit.` });
     } else if (lowProtein) {
-      raising.push({ text: `Protein is behind (${protein}g so far vs ${pTarget}g target) — low protein leaves recovery under-supported.` });
+      raising.push({ text: `Protein is behind (${protein}g vs ${pTarget}g target) — low protein leaves recovery under-supported.` });
     } else if (lowCal) {
-      raising.push({ text: `Calories are behind target for this time of day — under-fuelling compounds recovery stress.` });
+      raising.push({ text: `Calories are behind target — under-fuelling compounds recovery stress.` });
     } else {
-      easing.push({ text: `Fuelling is on track so far today — recovery is supported.` });
+      easing.push({ text: `Fuelling is on track — recovery is supported.` });
     }
   }
 
@@ -623,7 +660,17 @@ function computeNicotineTiming(data, goals) {
   else band = "lower";
   if (band === "lower" && strongOverride) band = "moderate";
 
-  return { band, raising, easing, unknown, strongOverride, time: `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}` };
+  // Guard: the two factors that most define recovery are sleep and training status.
+  // If sleep is unknown, we can't honestly call this a "Lower-impact" window — that would
+  // read like a green light based on missing data. Floor it at Moderate and flag why.
+  const sleepUnknown = unknown.some(u => u === "sleep" || u.startsWith("sleep"));
+  let insufficientData = false;
+  if (band === "lower" && sleepUnknown) {
+    band = "moderate";
+    insufficientData = true;
+  }
+
+  return { band, raising, easing, unknown, strongOverride, insufficientData, crossedMidnight, activeDay, time: `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}` };
 }
 
 // Average a list of "HH:MM" times into minutes-since-midnight.
@@ -976,6 +1023,12 @@ function buildBrain(data, goals) {
         plannedSessions: plans.map(p => ({ when: p.when, label: p.label })),
       };
     })(),
+    journal: (() => {
+      const j = (data.journal || []).filter(e => e.date >= daysAgo(13)).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+      if (!j.length) return null;
+      // Keep it bounded: most recent ~8 entries, trimmed.
+      return j.slice(0, 8).map(e => ({ date: e.date, text: e.text.length > 280 ? e.text.slice(0, 280) + "…" : e.text }));
+    })(),
   };
 }
 
@@ -1138,6 +1191,14 @@ function formatBrainText(brain) {
       });
     }
     lines.push(`NICOTINE COACHING RULES: The user is NOT trying to quit (maybe reduce). Do not lecture or push abstinence. Your job is timing guidance — help them keep intake away from the ~1-2h before training, the post-workout recovery window, and the 1-2h before sleep, since those are when it most blunts gains and recovery. When you cite effects on their data, be honest these are correlations not proven causation. Never invent precise figures like "X% of gains lost".`);
+  }
+
+  // ─── JOURNAL — the user's own words, the context behind the numbers ───
+  if (brain.journal?.length) {
+    lines.push("");
+    lines.push("== JOURNAL (recent notes in the user's own words — use these for context; reference them naturally when relevant, e.g. how they've been feeling, life stress, injuries, what they tried) ==");
+    brain.journal.forEach(e => lines.push(`[${e.date}] ${e.text}`));
+    lines.push(`(These are personal reflections. Weigh them alongside the data — if they wrote they're stressed or hurt, factor that into recovery expectations. Don't quote them back verbatim unless it helps; weave the context in.)`);
   }
 
 
@@ -2823,9 +2884,11 @@ function NicotineTiming({ data, goals }) {
   };
   const meta = bandMeta[t.band];
 
-  const todayName = WEEKDAYS[(new Date().getDay() + 6) % 7];
-  const isTraining = goals.plan?.trainingDays?.includes(todayName);
-  const contextLine = `${isTraining ? "Training day" : "Rest day"} · ${t.time}`;
+  const activeName = WEEKDAYS[(new Date(t.activeDay + "T00:00:00").getDay() + 6) % 7];
+  const isTraining = goals.plan?.trainingDays?.includes(activeName);
+  const contextLine = t.crossedMidnight
+    ? `${isTraining ? "Training day" : "Rest day"} (${activeName}, still up) · ${t.time}`
+    : `${isTraining ? "Training day" : "Rest day"} · ${t.time}`;
 
   return (
     <Card title="If you smoke now" sub="How today's conditions stack — not a recommendation">
@@ -2842,7 +2905,7 @@ function NicotineTiming({ data, goals }) {
 
       {open && (
         <div className="nic-band-detail">
-          <p className="nic-band-note">{meta.note}</p>
+          <p className="nic-band-note">{t.insufficientData ? "Not enough logged today to read your conditions — so this can't be called a lower-impact window. Log last night's sleep for a real read." : meta.note}</p>
 
           {t.raising.length > 0 && (
             <div className="nic-reasons">
@@ -2860,7 +2923,7 @@ function NicotineTiming({ data, goals }) {
 
           {t.unknown.length > 0 && (
             <p className="muted small" style={{ marginTop: 10 }}>
-              Not logged today, so left out of the read: {t.unknown.join(", ")}.
+              Missing from today's read (not logged): {t.unknown.join(", ")}.
             </p>
           )}
 
@@ -2899,6 +2962,156 @@ function NicotineIntakeCard({ data }) {
         <MiniChart points={stats.seriesCount30} height={84} rollingAvg />
       </div>
     </Card>
+  );
+}
+
+// ─── JOURNAL TAB ──────────────────────────────────────────────────────────────
+// A freeform notebook. Each entry = text + timestamp + an auto-captured snapshot of
+// what was logged that day. Recent entries feed the coach's brain.
+
+// Build a compact one-line snapshot of what the user logged on a given date.
+function journalSnapshot(data, dateStr) {
+  const bits = [];
+  const dayDiet = (data.diet || []).filter(d => d.date === dateStr);
+  if (dayDiet.length) {
+    const cal = dayDiet.reduce((a, m) => a + (m.calories || 0), 0);
+    const p = dayDiet.reduce((a, m) => a + (m.protein || 0), 0);
+    bits.push({ icon: "◉", text: `${cal} kcal · ${p}g P` });
+  }
+  const sleep = (data.sleep || []).find(s => s.date === dateStr);
+  if (sleep) bits.push({ icon: "☾", text: `${sleep.duration}h${sleep.quality ? ` ${sleep.quality.toLowerCase()}` : ""}` });
+  const lift = (data.exercise || []).find(e => e.date === dateStr);
+  const sport = (data.sports || []).find(s => s.date === dateStr);
+  if (lift) bits.push({ icon: "◆", text: lift.label || "workout" });
+  if (sport) bits.push({ icon: "◇", text: `${sport.sport}${sport.duration ? ` ${sport.duration}m` : ""}` });
+  const nic = (data.nicotine || []).filter(n => n.date === dateStr);
+  if (nic.length) bits.push({ icon: "🚬", text: `${nic.length}×` });
+  return bits;
+}
+
+function JournalTab({ data, goals, addEntry, deleteEntry }) {
+  const [text, setText] = useState("");
+  const [editingId, setEditingId] = useState(null);
+  const [editText, setEditText] = useState("");
+  const onAdd = addEntry("journal");
+  const onDelete = deleteEntry("journal");
+
+  const entries = (data.journal || []).slice().sort((a, b) => (b.ts || 0) - (a.ts || 0));
+
+  // Rotate a gentle prompt for the blank-page nudge
+  const prompts = [
+    "What's on your mind?",
+    "How did today feel?",
+    "Anything worth remembering?",
+    "What went well, what didn't?",
+    "Notes to your future self…",
+  ];
+  const prompt = useMemo(() => prompts[Math.floor(Date.now() / 86400000) % prompts.length], []);
+
+  function save() {
+    const t = text.trim();
+    if (!t) return;
+    const now = new Date();
+    const date = getTodayStr();
+    onAdd({ id: Date.now(), ts: now.getTime(), date, text: t, snapshot: journalSnapshot(data, date) });
+    haptic(12); SFX.log();
+    toast("✒ Entry saved", { silent: true });
+    setText("");
+  }
+
+  function saveEdit(id) {
+    const t = editText.trim();
+    if (!t) { setEditingId(null); return; }
+    // Re-find entry and update via delete+add isn't ideal; use setData through addEntry's parent.
+    // Simpler: mutate through a dedicated path — we delete then re-add with same id/ts.
+    const orig = entries.find(e => e.id === id);
+    if (orig) {
+      onDelete(id);
+      onAdd({ ...orig, text: t, edited: true });
+    }
+    setEditingId(null); setEditText("");
+    haptic(10);
+  }
+
+  // Group entries by date for the diary feel
+  const groups = [];
+  let lastDate = null;
+  entries.forEach(e => {
+    if (e.date !== lastDate) { groups.push({ date: e.date, items: [] }); lastDate = e.date; }
+    groups[groups.length - 1].items.push(e);
+  });
+
+  function dateLabel(ds) {
+    if (ds === getTodayStr()) return "Today";
+    if (ds === daysAgo(1)) return "Yesterday";
+    const d = new Date(ds + "T00:00:00");
+    return d.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
+  }
+
+  return (
+    <div className="journal">
+      {/* Composer */}
+      <div className="journal-composer">
+        <textarea
+          className="journal-input"
+          value={text}
+          onChange={e => setText(e.target.value)}
+          placeholder={prompt}
+          rows={4}
+        />
+        <div className="journal-composer-foot">
+          <span className="journal-hint">{text.trim() ? `${text.trim().length} characters` : "Saved privately · your coach can read recent notes"}</span>
+          <button className="btn journal-save" onClick={save} disabled={!text.trim()}>Save entry</button>
+        </div>
+      </div>
+
+      {/* Feed */}
+      {entries.length === 0 ? (
+        <div className="journal-empty">
+          <div className="journal-empty-mark">✒</div>
+          <p className="journal-empty-title">Your notebook is empty</p>
+          <p className="journal-empty-hint">Jot down how training felt, what's going on in life, a tweak you tried, a win, a worry. Anything you write here gives your coach the context the numbers can't.</p>
+        </div>
+      ) : (
+        groups.map(g => (
+          <div key={g.date} className="journal-day">
+            <div className="journal-day-head">{dateLabel(g.date)}</div>
+            {g.items.map(e => (
+              <div key={e.id} className="journal-entry">
+                <div className="journal-entry-time">
+                  {new Date(e.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                  {e.edited && <span className="journal-edited"> · edited</span>}
+                </div>
+                {editingId === e.id ? (
+                  <div className="journal-edit">
+                    <textarea value={editText} onChange={ev => setEditText(ev.target.value)} rows={4} className="journal-input" />
+                    <div className="journal-edit-actions">
+                      <button className="btn-ghost" onClick={() => setEditingId(null)}>Cancel</button>
+                      <button className="btn" onClick={() => saveEdit(e.id)}>Save</button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <p className="journal-entry-text">{e.text}</p>
+                    {e.snapshot?.length > 0 && (
+                      <div className="journal-snapshot">
+                        {e.snapshot.map((s, i) => (
+                          <span key={i} className="journal-snap-pill"><span className="journal-snap-icon">{s.icon}</span>{s.text}</span>
+                        ))}
+                      </div>
+                    )}
+                    <div className="journal-entry-actions">
+                      <button className="journal-act" onClick={() => { setEditingId(e.id); setEditText(e.text); }}>Edit</button>
+                      <button className="journal-act journal-act-del" onClick={() => { onDelete(e.id); haptic(10); }}>Delete</button>
+                    </div>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        ))
+      )}
+    </div>
   );
 }
 
@@ -4218,6 +4431,7 @@ function AppShell({ session, syncing }) {
           {activeTab === "Log" && <LogTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} initialSub={logSub} onSaveGoals={setGoals} setData={setData} />}
           {activeTab === "History" && <HistoryTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />}
           {activeTab === "Coach" && <CoachTab data={data} goals={goals} />}
+          {activeTab === "Journal" && <JournalTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} setData={setData} />}
           {activeTab === "Settings" && <SettingsTab data={data} goals={goals} onSaveGoals={setGoals} onClearAll={clearAll} onImport={importData} session={session} onSignOut={signOut} />}
         </main>
 
@@ -4242,6 +4456,7 @@ function TabIcon({ name, active }) {
   if (name === "Log") return <svg {...common}><circle cx="12" cy="12" r="9" /><path d="M12 8v8M8 12h8" /></svg>;
   if (name === "History") return <svg {...common}><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 4v4h4" /><path d="M12 8v4l3 2" /></svg>;
   if (name === "Coach") return <svg {...common}><path d="M12 3l2.1 5.4L19.5 9l-4 3.6 1.2 5.4L12 15.8 7.3 18l1.2-5.4L4.5 9l5.4-.6L12 3z" /></svg>;
+  if (name === "Journal") return <svg {...common}><path d="M12 6.5C10.5 5 8 4.5 4 4.8v13c4-.3 6.5.2 8 1.7 1.5-1.5 4-2 8-1.7v-13c-4-.3-6.5.2-8 1.7z" /><path d="M12 6.5V19" /></svg>;
   if (name === "Settings") return <svg {...common}><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z" /></svg>;
   return null;
 }
@@ -4314,19 +4529,19 @@ body::after {
   position: fixed; bottom: 0; left: 0; right: 0;
   background: rgba(10,11,15,0.94); backdrop-filter: blur(24px) saturate(140%); -webkit-backdrop-filter: blur(24px) saturate(140%);
   border-top: 1px solid var(--border);
-  display: flex; padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); gap: 2px;
+  display: flex; padding: 8px 6px calc(8px + env(safe-area-inset-bottom)); gap: 1px;
   z-index: 100;
 }
 .tabbtn {
-  flex: 1; background: transparent; border: none; color: var(--muted);
+  flex: 1; min-width: 0; background: transparent; border: none; color: var(--muted);
   display: flex; flex-direction: column; align-items: center; gap: 3px;
-  padding: 8px 4px 7px; cursor: pointer; border-radius: 12px;
+  padding: 8px 2px 7px; cursor: pointer; border-radius: 11px;
   transition: color .22s var(--ease-out), background .25s var(--ease-out), transform .12s ease;
   font-family: inherit; position: relative; -webkit-tap-highlight-color: transparent;
   min-height: 52px; justify-content: center;
 }
 .tabbtn::before {
-  content: ""; position: absolute; inset: 0; border-radius: 12px; z-index: -1;
+  content: ""; position: absolute; inset: 0; border-radius: 11px; z-index: -1;
   background: var(--accent-dim);
   opacity: 0; transform: scale(.8); transition: opacity .25s var(--ease-out), transform .35s var(--spring);
 }
@@ -4336,7 +4551,7 @@ body::after {
 .tabbtn.active svg, .tabbtn.active .tabbtn-icon { animation: iconPop .4s var(--spring); }
 @keyframes iconPop { 0% { transform: scale(1); } 45% { transform: scale(1.22); } 100% { transform: scale(1); } }
 .tabbtn-icon { font-size: 1.15rem; line-height: 1; }
-.tabbtn-label { font-size: .66rem; font-weight: 600; letter-spacing: .01em; }
+.tabbtn-label { font-size: .62rem; font-weight: 600; letter-spacing: 0; white-space: nowrap; }
 
 .main { animation: fade .3s var(--ease-out); }
 @keyframes fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
@@ -5083,4 +5298,54 @@ input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
   .nic-stat-grid { grid-template-columns: repeat(2, 1fr); }
   .nic-quick { grid-template-columns: 1fr 1fr; }
 }
+
+/* ─── Journal (paper-style notebook) ─── */
+.journal { display: flex; flex-direction: column; gap: 22px; padding-top: 4px; }
+.journal-composer {
+  background: linear-gradient(180deg, #faf6ec 0%, #f4eedd 100%);
+  border-radius: 16px; padding: 16px; box-shadow: 0 6px 22px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.5);
+  position: relative;
+}
+/* subtle ruled-paper feel via a faint left margin line */
+.journal-composer::before { content: ""; position: absolute; left: 30px; top: 12px; bottom: 64px; width: 1px; background: rgba(210,120,110,0.25); }
+.journal-input {
+  width: 100%; background: transparent; border: none; outline: none; resize: none;
+  font-family: 'DM Serif Display', Georgia, serif; font-size: 1.08rem; line-height: 1.65;
+  color: #2a2620; padding: 2px 2px 2px 14px; min-height: 84px;
+}
+.journal-input::placeholder { color: #b3a892; font-style: italic; }
+.journal-composer-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; padding-left: 14px; }
+.journal-hint { font-size: .72rem; color: #9c9079; }
+.journal-save { padding: 10px 18px; min-height: 42px; background: #2a2620; color: #faf6ec; }
+.journal-save:hover:not(:disabled) { box-shadow: 0 4px 14px rgba(0,0,0,0.3); }
+.journal-save:disabled { opacity: .4; }
+
+.journal-day { display: flex; flex-direction: column; gap: 10px; }
+.journal-day-head { font-family: 'DM Serif Display', serif; font-size: 1.05rem; color: var(--text); padding-left: 2px; position: relative; }
+.journal-day-head::after { content: ""; display: block; height: 1px; background: var(--border); margin-top: 8px; }
+
+.journal-entry {
+  background: linear-gradient(180deg, #faf7f0 0%, #f6f1e6 100%);
+  border-radius: 13px; padding: 14px 16px; box-shadow: 0 3px 12px rgba(0,0,0,0.22);
+  position: relative;
+}
+.journal-entry-time { font-size: .7rem; color: #a89c84; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; margin-bottom: 6px; }
+.journal-edited { color: #b9ad95; font-weight: 400; text-transform: none; letter-spacing: 0; }
+.journal-entry-text { font-family: 'DM Serif Display', Georgia, serif; font-size: 1.02rem; line-height: 1.6; color: #2a2620; margin: 0; white-space: pre-wrap; }
+.journal-snapshot { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; padding-top: 11px; border-top: 1px dashed rgba(150,135,110,0.3); }
+.journal-snap-pill { display: inline-flex; align-items: center; gap: 5px; font-size: .72rem; color: #6b6354; background: rgba(150,135,110,0.12); padding: 4px 9px; border-radius: 8px; }
+.journal-snap-icon { font-size: .8rem; }
+.journal-entry-actions { display: flex; gap: 14px; margin-top: 11px; }
+.journal-act { background: none; border: none; font-family: inherit; font-size: .76rem; font-weight: 600; color: #9c8f78; cursor: pointer; padding: 2px 0; -webkit-tap-highlight-color: transparent; }
+.journal-act:active { opacity: .6; }
+.journal-act-del { color: #c17b6e; }
+.journal-edit { margin-top: 4px; }
+.journal-edit .journal-input { background: rgba(255,255,255,0.4); border-radius: 8px; min-height: 80px; }
+.journal-edit-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.journal-edit-actions .btn, .journal-edit-actions .btn-ghost { padding: 8px 16px; min-height: 38px; }
+
+.journal-empty { text-align: center; padding: 40px 24px; }
+.journal-empty-mark { font-size: 2.4rem; color: var(--muted); margin-bottom: 12px; }
+.journal-empty-title { font-family: 'DM Serif Display', serif; font-size: 1.2rem; color: var(--text); margin: 0 0 8px; }
+.journal-empty-hint { font-size: .88rem; line-height: 1.6; color: var(--text-2); max-width: 420px; margin: 0 auto; }
 `;
