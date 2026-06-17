@@ -4,7 +4,7 @@ import { supabase, hasSupabase } from "./supabase";
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const TABS = ["Home", "Log", "History", "Coach", "Settings"];
 const STORAGE_KEY = "fitlog_v5";
-const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [] };
+const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], nicotine: [], nicotinePlans: [] };
 const defaultProfile = {
   // Body
   sex: "", age: "", heightCm: "", weightKg: "",
@@ -35,6 +35,23 @@ const sportsOptions = ["Running","Football","Basketball","Tennis","Swimming","Cy
 const sleepQuality = ["Poor", "Fair", "Good", "Great", "Excellent"];
 const intensityLevels = ["Light", "Moderate", "Intense", "All-out"];
 
+// ─── NICOTINE ─────────────────────────────────────────────────────────────────
+const NIC_TYPES = [
+  { key: "cigarette", label: "Cigarette", icon: "🚬", unit: "cigarettes", combustion: true },
+  { key: "vape", label: "Vape", icon: "💨", unit: "puffs", combustion: false },
+  { key: "pouch", label: "Pouch", icon: "⬜", unit: "pouches", combustion: false },
+];
+const NIC_CONTEXTS = ["craving", "stress", "social", "post-meal", "post-workout", "boredom", "drinking", "after waking"];
+// One-tap defaults shown as quick-add chips. User's common entries.
+const NIC_QUICK = [
+  { type: "cigarette", amount: 1, label: "1 cig" },
+  { type: "vape", amount: 10, label: "Vape (10 puffs)" },
+  { type: "vape", amount: 1, label: "1 puff" },
+  { type: "pouch", amount: 1, mg: 6, label: "Pouch 6mg" },
+];
+// Approx nicotine mg per unit, for a rough combined "nicotine load" estimate.
+const NIC_MG = { cigarette: 1.2, vape: 0.05, pouch: 6 }; // pouch overridden by its own mg if set
+
 // ─── WORKOUT PLANNING ─────────────────────────────────────────────────────────
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const SPLIT_TYPES = [
@@ -47,7 +64,7 @@ const SPLIT_TYPES = [
 ];
 const defaultPlan = { split: "Push / Pull / Legs", trainingDays: ["Mon", "Tue", "Thu", "Fri", "Sat"], assignments: {}, notes: "" };
 
-const TYPE_DOT = { sleep: "#6ee7f7", diet: "#f9c97e", exercise: "#f47e6e", sports: "#8fd989", water: "#5cc8df", supplements: "#b4a8e8" };
+const TYPE_DOT = { sleep: "#6ee7f7", diet: "#f9c97e", exercise: "#f47e6e", sports: "#8fd989", water: "#5cc8df", supplements: "#b4a8e8", nicotine: "#d98fa8" };
 const TYPE_ICON = { sleep: "◐", diet: "◉", exercise: "◆", sports: "◇", water: "◊", supplements: "⊕" };
 
 // ─── AI MODEL PREFERENCE ──────────────────────────────────────────────────────
@@ -210,14 +227,24 @@ const SFX = {
 //   Set 1: 60 kg × 10   |   60 kg x 10   |   60kg × 10 @ RPE 8
 //   Bodyweight: × 12     |   Incline Run: 5 km in 30 min (ignored gracefully)
 function parseWorkout(text) {
-  if (!text) return { exercises: [], totalVolume: 0, totalSets: 0 };
+  if (!text) return { exercises: [], totalVolume: 0, totalSets: 0, avgRPE: null };
   const lines = text.split("\n").map(l => l.trim());
   const exercises = [];
   let current = null;
   let totalVolume = 0, totalSets = 0;
+  const rpeValues = [];
 
   const setRe = /(?:set\s*\d+\s*[:.]?\s*)?(\d+(?:\.\d+)?)\s*(kg|lb|lbs)?\s*[x×]\s*(\d+)/i;
   const bwRe = /[x×]\s*(\d+)\s*(?:reps)?$/i;
+  // RPE can appear as "@ RPE 8", "RPE 8", "@8", "@ 8.5" — capture the number (0-10, allow .5)
+  const rpeRe = /(?:@\s*)?rpe\s*(\d{1,2}(?:\.\d)?)|@\s*(\d{1,2}(?:\.\d)?)\b/i;
+
+  function extractRPE(line) {
+    const m = line.match(rpeRe);
+    if (!m) return null;
+    const v = parseFloat(m[1] ?? m[2]);
+    return (v >= 0 && v <= 10) ? v : null;
+  }
 
   for (const line of lines) {
     if (!line) continue;
@@ -232,7 +259,9 @@ function parseWorkout(text) {
       const unit = (m[2] || "kg").toLowerCase().replace("lbs", "lb");
       const reps = parseInt(m[3], 10);
       const wKg = unit === "lb" ? weight * 0.453592 : weight;
-      current.sets.push({ weight, unit, reps });
+      const rpe = extractRPE(line);
+      if (rpe != null) rpeValues.push(rpe);
+      current.sets.push({ weight, unit, reps, rpe });
       current.volume += wKg * reps;
       totalVolume += wKg * reps;
       totalSets++;
@@ -241,7 +270,9 @@ function parseWorkout(text) {
     // Bodyweight set like "× 12"
     const bw = line.match(bwRe);
     if (bw && current && !m) {
-      current.sets.push({ weight: 0, unit: "kg", reps: parseInt(bw[1], 10) });
+      const rpe = extractRPE(line);
+      if (rpe != null) rpeValues.push(rpe);
+      current.sets.push({ weight: 0, unit: "kg", reps: parseInt(bw[1], 10), rpe });
       totalSets++;
       continue;
     }
@@ -253,7 +284,8 @@ function parseWorkout(text) {
   }
   // Drop exercises with no sets (likely stray header lines)
   const withSets = exercises.filter(e => e.sets.length > 0);
-  return { exercises: withSets, totalVolume: Math.round(totalVolume), totalSets };
+  const avgRPE = rpeValues.length ? +(rpeValues.reduce((a, b) => a + b, 0) / rpeValues.length).toFixed(1) : null;
+  return { exercises: withSets, totalVolume: Math.round(totalVolume), totalSets, avgRPE };
 }
 
 // Best set for an exercise = highest weight; tie-break on reps. Returns {weight, unit, reps} or null.
@@ -327,6 +359,131 @@ function computeAchievements(data, goals, streak) {
   a.push({ id: "sleep7", icon: "😴", title: "Well rested", got: goodSleepNights >= 7 });
   a.push({ id: "logs100", icon: "📈", title: "100 entries", got: totalLogs >= 100 });
   return a;
+}
+
+// ─── NICOTINE ANALYTICS ───────────────────────────────────────────────────────
+// Computes totals, rolling averages, and honest correlations from the user's own data.
+// Returns null-ish fields gracefully when there isn't enough data yet.
+function nicMg(entry) {
+  if (entry.type === "pouch") return (entry.amount || 0) * (entry.mg || NIC_MG.pouch);
+  return (entry.amount || 0) * (NIC_MG[entry.type] || 0);
+}
+function computeNicotineStats(data) {
+  const nic = data.nicotine || [];
+  const today = getTodayStr();
+  const byDay = {}; // date -> { mg, count, byType }
+  nic.forEach(e => {
+    if (!e.date) return;
+    if (!byDay[e.date]) byDay[e.date] = { mg: 0, count: 0, cigarette: 0, vape: 0, pouch: 0 };
+    const d = byDay[e.date];
+    d.mg += nicMg(e);
+    d.count += 1;
+    d[e.type] = (d[e.type] || 0) + (e.amount || 0);
+  });
+
+  const sumWindow = (days) => {
+    let mg = 0, count = 0, daysWithData = 0;
+    for (let i = 0; i < days; i++) {
+      const ds = daysAgo(i);
+      if (byDay[ds]) { mg += byDay[ds].mg; count += byDay[ds].count; daysWithData++; }
+    }
+    return { mg, count, daysWithData };
+  };
+
+  const todayStats = byDay[today] || { mg: 0, count: 0, cigarette: 0, vape: 0, pouch: 0 };
+  const w7 = sumWindow(7);
+  const w30 = sumWindow(30);
+  // Rolling averages per day (over the window length, treating no-log days as 0)
+  const avg7 = +(w7.mg / 7).toFixed(1);
+  const avg30 = +(w30.mg / 30).toFixed(1);
+  const avgCount7 = +(w7.count / 7).toFixed(1);
+
+  // Daily series for the trend chart (last 30 days, mg per day)
+  const series30 = Array.from({ length: 30 }, (_, i) => {
+    const ds = daysAgo(29 - i);
+    return { value: byDay[ds] ? +byDay[ds].mg.toFixed(1) : 0, label: ds };
+  });
+
+  // Type breakdown over last 30 days
+  const typeTotals = { cigarette: 0, vape: 0, pouch: 0 };
+  nic.filter(e => e.date >= daysAgo(29)).forEach(e => { typeTotals[e.type] = (typeTotals[e.type] || 0) + (e.amount || 0); });
+
+  // Context tag frequency (last 30d)
+  const contextCounts = {};
+  nic.filter(e => e.date >= daysAgo(29)).forEach(e => (e.contexts || []).forEach(c => { contextCounts[c] = (contextCounts[c] || 0) + 1; }));
+  const topContexts = Object.entries(contextCounts).sort((a, b) => b[1] - a[1]).slice(0, 3);
+
+  return { byDay, today: todayStats, w7, w30, avg7, avg30, avgCount7, series30, typeTotals, topContexts, totalDaysLogged: Object.keys(byDay).length };
+}
+
+// Honest, data-gated correlations. Only returns a finding when there's enough signal.
+// Compares "higher intake" vs "lower intake" days/weeks within the user's OWN data.
+function computeNicotineCorrelations(data) {
+  const nic = data.nicotine || [];
+  if (nic.length < 10) return { ready: false, reason: "Keep logging — correlations unlock once there's about 2 weeks of data." };
+
+  const stats = computeNicotineStats(data);
+  const byDay = stats.byDay;
+  // Only consider days that have BOTH a nicotine value (0 counts) and the comparison metric.
+  const findings = [];
+
+  // Helper: split days into high vs low nicotine (above/below median mg) and compare a metric
+  function compareByNicotine(metricForDate, label, unit, minPairs = 8) {
+    const rows = [];
+    // Look back 60 days
+    for (let i = 0; i < 60; i++) {
+      const ds = daysAgo(i);
+      const mg = byDay[ds] ? byDay[ds].mg : 0;
+      const metric = metricForDate(ds);
+      if (metric != null) rows.push({ mg, metric });
+    }
+    if (rows.length < minPairs) return null;
+    const mgs = rows.map(r => r.mg).sort((a, b) => a - b);
+    const median = mgs[Math.floor(mgs.length / 2)];
+    const high = rows.filter(r => r.mg > median);
+    const low = rows.filter(r => r.mg <= median);
+    if (high.length < 3 || low.length < 3) return null;
+    const avg = arr => arr.reduce((a, b) => a + b.metric, 0) / arr.length;
+    const hi = avg(high), lo = avg(low);
+    const diff = hi - lo;
+    return { hi, lo, diff, label, unit, nHigh: high.length, nLow: low.length };
+  }
+
+  // Sleep duration vs nicotine
+  const sleepByDate = {};
+  (data.sleep || []).forEach(s => { if (s.date) sleepByDate[s.date] = s.duration; });
+  const sleepCorr = compareByNicotine(ds => sleepByDate[ds] ?? null, "sleep", "h");
+  if (sleepCorr && Math.abs(sleepCorr.diff) >= 0.4) {
+    const mins = Math.abs(Math.round(sleepCorr.diff * 60));
+    findings.push(`On your higher-nicotine days, average sleep was about ${mins} min ${sleepCorr.diff < 0 ? "shorter" : "longer"} (${sleepCorr.hi.toFixed(1)}h vs ${sleepCorr.lo.toFixed(1)}h).`);
+  }
+
+  // Workout RPE vs nicotine (same-day)
+  const rpeByDate = {};
+  (data.exercise || []).forEach(e => { const p = e._parsed || parseWorkout(e.text || ""); if (p.avgRPE != null && e.date) rpeByDate[e.date] = p.avgRPE; });
+  const rpeCorr = compareByNicotine(ds => rpeByDate[ds] ?? null, "RPE", "");
+  if (rpeCorr && Math.abs(rpeCorr.diff) >= 0.5) {
+    findings.push(`On higher-nicotine days, your logged session RPE averaged ${rpeCorr.hi.toFixed(1)} vs ${rpeCorr.lo.toFixed(1)} — sessions felt ${rpeCorr.diff > 0 ? "harder" : "easier"}.`);
+  }
+
+  // Calories vs nicotine (appetite)
+  const calByDate = {};
+  (data.diet || []).forEach(m => { if (m.date) calByDate[m.date] = (calByDate[m.date] || 0) + (m.calories || 0); });
+  const calCorr = compareByNicotine(ds => calByDate[ds] ?? null, "calories", "kcal");
+  if (calCorr && Math.abs(calCorr.diff) >= 150) {
+    findings.push(`On higher-nicotine days, you ate about ${Math.abs(Math.round(calCorr.diff))} kcal ${calCorr.diff < 0 ? "less" : "more"} on average (${Math.round(calCorr.hi)} vs ${Math.round(calCorr.lo)}).`);
+  }
+
+  // Sleep quality (map quality words to score)
+  const qMap = { Poor: 1, Fair: 2, Good: 3, Great: 4, Excellent: 4 };
+  const sleepQByDate = {};
+  (data.sleep || []).forEach(s => { if (s.date && qMap[s.quality]) sleepQByDate[s.date] = qMap[s.quality]; });
+  const sqCorr = compareByNicotine(ds => sleepQByDate[ds] ?? null, "sleep quality", "");
+  if (sqCorr && Math.abs(sqCorr.diff) >= 0.4) {
+    findings.push(`On higher-nicotine days, your sleep quality rating trended ${sqCorr.diff < 0 ? "lower" : "higher"}.`);
+  }
+
+  return { ready: true, findings, enoughForMore: nic.length >= 20 };
 }
 
 
@@ -524,6 +681,9 @@ function buildBrain(data, goals) {
   const volume7 = last7Lifts.reduce((sum, e) => sum + ((e._parsed || parseWorkout(e.text || "")).totalVolume || 0), 0);
   const volume7_olderHalf = inWindow(data.exercise, 14).filter(e => e.date < daysAgo(6)).reduce((sum, e) => sum + ((e._parsed || parseWorkout(e.text || "")).totalVolume || 0), 0);
   const volumeTrend = (volume7 && volume7_olderHalf) ? volume7 - volume7_olderHalf : null;
+  // Average session RPE over last 7 days (from parsed Strong RPE), if logged
+  const rpe7vals = last7Lifts.map(e => (e._parsed || parseWorkout(e.text || "")).avgRPE).filter(v => v != null);
+  const avgRPE7 = rpe7vals.length ? +(rpe7vals.reduce((a, b) => a + b, 0) / rpe7vals.length).toFixed(1) : null;
   const trainingDates = new Set([...data.exercise.map(e => e.date), ...data.sports.map(s => s.date)]);
   let consecutiveTrained = 0;
   {
@@ -641,7 +801,7 @@ function buildBrain(data, goals) {
       avgSleep: avgSleep7, sleepDebt: +sleepDebt7.toFixed(1),
       avgBedtime, avgWakeTime, wkdayAvgSleep, wkendAvgSleep,
       avgFirstMeal, avgLastMeal,
-      sessions: last7TotalSessions, volumeKg: Math.round(volume7), volumeTrend, calorieTrend,
+      sessions: last7TotalSessions, volumeKg: Math.round(volume7), volumeTrend, calorieTrend, avgRPE: avgRPE7,
       consecutiveTrained, daysSinceLastRest,
       recentPRs, streak,
       avgWaterMl: avgWaterMl7,
@@ -651,6 +811,18 @@ function buildBrain(data, goals) {
     wins,
     profile: goals.profile || {},
     strategy: goals.strategy || {},
+    nicotine: (() => {
+      if (!data.nicotine || data.nicotine.length === 0) return null;
+      const ns = computeNicotineStats(data);
+      const plans = (data.nicotinePlans || []).filter(p => p.when && new Date(p.when) >= new Date(Date.now() - 3600000))
+        .sort((a, b) => a.when.localeCompare(b.when)).slice(0, 3);
+      return {
+        today: ns.today.count, avg7: ns.avgCount7, mg7: ns.avg7, mg30: ns.avg30,
+        last7: ns.w7.count, last30: ns.w30.count,
+        types: ns.typeTotals, topContexts: ns.topContexts.map(([c]) => c),
+        plannedSessions: plans.map(p => ({ when: p.when, label: p.label })),
+      };
+    })(),
   };
 }
 
@@ -790,9 +962,31 @@ function formatBrainText(brain) {
     lines.push(`Meal timing: avg first meal ${w.avgFirstMeal}, avg last meal ${w.avgLastMeal} (eating window ~${meanGap(w.avgFirstMeal, w.avgLastMeal)}h)`);
   }
   lines.push(`Training: ${w.sessions} sessions | ${w.volumeKg.toLocaleString()}kg volume${w.volumeTrend != null ? ` (${w.volumeTrend > 0 ? "+" : ""}${w.volumeTrend.toLocaleString()}kg vs prev wk)` : ""} | ${w.consecutiveTrained}-day streak | ${w.daysSinceLastRest} days since rest`);
+  if (w.avgRPE != null) lines.push(`Avg session RPE (last 7d): ${w.avgRPE}/10`);
   if (w.avgWaterMl != null) lines.push(`Water: ${w.avgWaterMl}ml/day avg`);
   if (w.recentPRs.length) lines.push(`Recent PRs: ${w.recentPRs.slice(0, 3).map(p => `${p.name} ${p.weight}${p.unit}×${p.reps} on ${p.date}`).join("; ")}`);
   lines.push(`Logging streak: ${w.streak} day${w.streak === 1 ? "" : "s"}`);
+
+  // ─── NICOTINE ─────────────────────────────────────────────────────────────
+  if (brain.nicotine) {
+    const nic = brain.nicotine;
+    lines.push("");
+    lines.push("== NICOTINE ==");
+    lines.push(`Today: ${nic.today} entries | 7-day: ${nic.last7} entries (${nic.avg7}/day) | 30-day: ${nic.last30} entries`);
+    lines.push(`Est. nicotine load: ${nic.mg7}mg/day (7d), ${nic.mg30}mg/day (30d)`);
+    const typeBits = Object.entries(nic.types).filter(([, v]) => v > 0).map(([t, v]) => `${t} ${v}`);
+    if (typeBits.length) lines.push(`Type mix (30d): ${typeBits.join(", ")}`);
+    if (nic.topContexts.length) lines.push(`Common triggers: ${nic.topContexts.join(", ")}`);
+    if (nic.plannedSessions.length) {
+      lines.push(`PLANNED sessions (user told you in advance — treat as EXPECTED, do NOT nag about these; instead help protect training/sleep around them):`);
+      nic.plannedSessions.forEach(p => {
+        const d = new Date(p.when);
+        lines.push(`  • ${p.label} — ${d.toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`);
+      });
+    }
+    lines.push(`NICOTINE COACHING RULES: The user is NOT trying to quit (maybe reduce). Do not lecture or push abstinence. Your job is timing guidance — help them keep intake away from the ~1-2h before training, the post-workout recovery window, and the 1-2h before sleep, since those are when it most blunts gains and recovery. When you cite effects on their data, be honest these are correlations not proven causation. Never invent precise figures like "X% of gains lost".`);
+  }
+
 
   // ─── DAY-BY-DAY TIMELINES — the chronological "map" the user asked for ───
   // For each of the last 7 days, list every event in order. Lets the model
@@ -1349,7 +1543,7 @@ function useConfirm() {
 }
 
 // ─── HOME TAB ─────────────────────────────────────────────────────────────────
-function HomeTab({ data, goals, onAddWater, onNav }) {
+function HomeTab({ data, goals, onAddWater, onAddNicotine, onNav }) {
   const today = getTodayStr();
   const now = new Date();
   const hr = now.getHours();
@@ -1396,6 +1590,15 @@ function HomeTab({ data, goals, onAddWater, onNav }) {
     onAddWater({ id: Date.now(), date: today, ml: 250, ts: Date.now() });
     SFX.water();
     toast("💧 +250ml water logged", { silent: true });
+  }
+
+  function quickNicotine() {
+    // Logs the user's primary quick entry (first in NIC_QUICK). Long-press not available on web,
+    // so for other types they use the Nicotine tab; this covers the most common one-tap case.
+    const q = NIC_QUICK[0];
+    onAddNicotine({ id: Date.now(), date: today, ts: Date.now(), type: q.type, amount: q.amount, mg: q.mg, contexts: [] });
+    haptic(12); SFX.tap();
+    toast(`🚬 ${q.label} logged`, { silent: true });
   }
 
   return (
@@ -1447,10 +1650,13 @@ function HomeTab({ data, goals, onAddWater, onNav }) {
         <button className="qa" onClick={() => onNav("Log", "exercise")}>
           <span className="qa-icon">◆</span><span>Log workout</span>
         </button>
-        <button className="qa" onClick={() => onNav("Coach")}>
-          <span className="qa-icon">✦</span><span>Ask coach</span>
+        <button className="qa" onClick={quickNicotine} onContextMenu={e => { e.preventDefault(); onNav("Log", "nicotine"); }}>
+          <span className="qa-icon">🚬</span><span>Log {NIC_QUICK[0].label}</span>
         </button>
       </div>
+      <button className="qa-wide" onClick={() => onNav("Coach")}>
+        <span className="qa-icon">✦</span><span>Ask coach</span>
+      </button>
 
       {/* TODAY LOGGED */}
       <Card title="Today">
@@ -1502,6 +1708,7 @@ const LOG_SUBTABS = [
   { key: "exercise", label: "Workout" },
   { key: "sports", label: "Sport" },
   { key: "intake", label: "Intake" },
+  { key: "nicotine", label: "Nicotine" },
 ];
 
 function RecentList({ entries, render }) {
@@ -1518,7 +1725,7 @@ function RecentList({ entries, render }) {
   );
 }
 
-function LogTab({ data, goals, addEntry, deleteEntry, initialSub, onSaveGoals }) {
+function LogTab({ data, goals, addEntry, deleteEntry, initialSub, onSaveGoals, setData }) {
   const [sub, setSub] = useState(initialSub || "plan");
   useEffect(() => { if (initialSub) setSub(initialSub); }, [initialSub]);
 
@@ -1538,6 +1745,7 @@ function LogTab({ data, goals, addEntry, deleteEntry, initialSub, onSaveGoals })
       {sub === "exercise" && <ExerciseForm onAdd={addEntry("exercise")} recent={data.exercise} />}
       {sub === "sports" && <SportsForm onAdd={addEntry("sports")} recent={data.sports} />}
       {sub === "intake" && <IntakeTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />}
+      {sub === "nicotine" && <NicotineTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} setData={setData} />}
     </div>
   );
 }
@@ -2382,6 +2590,325 @@ function SupplementForm({ data, onAdd, onDelete }) {
   );
 }
 
+// ─── NICOTINE TAB ──
+function NicotineTab({ data, goals, addEntry, deleteEntry, setData }) {
+  const [view, setView] = useState("log"); // log | trends | impact | plan
+  return (
+    <div className="stack">
+      <div className="seg seg-four">
+        <button className={`seg-btn ${view === "log" ? "active" : ""}`} onClick={() => setView("log")}>Log</button>
+        <button className={`seg-btn ${view === "trends" ? "active" : ""}`} onClick={() => setView("trends")}>Trends</button>
+        <button className={`seg-btn ${view === "plan" ? "active" : ""}`} onClick={() => setView("plan")}>Plan</button>
+        <button className={`seg-btn ${view === "impact" ? "active" : ""}`} onClick={() => setView("impact")}>Impact</button>
+      </div>
+      {view === "log" && <NicotineLog data={data} onAdd={addEntry("nicotine")} onDelete={deleteEntry("nicotine")} />}
+      {view === "trends" && <NicotineTrends data={data} />}
+      {view === "plan" && <NicotinePlan data={data} setData={setData} />}
+      {view === "impact" && <NicotineImpact data={data} goals={goals} />}
+    </div>
+  );
+}
+
+function NicotineLog({ data, onAdd, onDelete }) {
+  const [type, setType] = useState("cigarette");
+  const [amount, setAmount] = useState(1);
+  const [mg, setMg] = useState(6);
+  const [contexts, setContexts] = useState([]);
+  const typeInfo = NIC_TYPES.find(t => t.key === type);
+  const today = getTodayStr();
+  const todayNic = (data.nicotine || []).filter(n => n.date === today);
+
+  function toggleContext(c) {
+    haptic(8);
+    setContexts(prev => prev.includes(c) ? prev.filter(x => x !== c) : [...prev, c]);
+  }
+
+  function add(entry) {
+    const ts = Date.now();
+    onAdd({ id: ts, date: getTodayStr(), ts, contexts: [], ...entry });
+    haptic(12);
+    const ti = NIC_TYPES.find(t => t.key === entry.type);
+    toast(`${ti?.icon || ""} ${entry.label || ti?.label || "Logged"}`.trim(), { silent: true });
+    SFX.tap();
+  }
+
+  function quickAdd(q) {
+    add({ type: q.type, amount: q.amount, mg: q.mg, label: q.label });
+  }
+
+  function detailedAdd() {
+    add({ type, amount: +amount || 1, mg: type === "pouch" ? (+mg || 6) : undefined, contexts });
+    setContexts([]);
+  }
+
+  // Running totals today
+  const todayCount = todayNic.length;
+  const todayUnits = todayNic.reduce((a, n) => a + (n.amount || 0), 0);
+
+  return (
+    <div className="stack">
+      {/* QUICK ADD */}
+      <Card title="Quick add" sub="One tap to log your usuals">
+        <div className="nic-quick">
+          {NIC_QUICK.map((q, i) => {
+            const ti = NIC_TYPES.find(t => t.key === q.type);
+            return (
+              <button key={i} className="nic-quick-btn" onClick={() => quickAdd(q)}>
+                <span className="nic-quick-icon">{ti?.icon}</span>
+                <span>{q.label}</span>
+              </button>
+            );
+          })}
+        </div>
+        {todayCount > 0 && (
+          <p className="muted small" style={{ marginTop: 12, textAlign: "center" }}>
+            Today: {todayCount} {todayCount === 1 ? "entry" : "entries"} · {todayUnits} units logged
+          </p>
+        )}
+      </Card>
+
+      {/* DETAILED */}
+      <Card title="Log with detail" sub="Type, amount & context">
+        <div className="nic-types">
+          {NIC_TYPES.map(t => (
+            <button key={t.key} className={`nic-type ${type === t.key ? "on" : ""}`} onClick={() => { setType(t.key); haptic(8); }}>
+              <span className="nic-type-icon">{t.icon}</span>
+              <span>{t.label}</span>
+            </button>
+          ))}
+        </div>
+        <div className="field-grid">
+          <label>Amount ({typeInfo?.unit})<input type="number" value={amount} onChange={e => setAmount(e.target.value)} min="0" step={type === "vape" ? "1" : "1"} /></label>
+          {type === "pouch" && <label>Strength (mg)<input type="number" value={mg} onChange={e => setMg(e.target.value)} min="0" /></label>}
+        </div>
+        <div className="weekgrid-label">Context (optional)</div>
+        <div className="nic-contexts">
+          {NIC_CONTEXTS.map(c => (
+            <button key={c} className={`nic-ctx ${contexts.includes(c) ? "on" : ""}`} onClick={() => toggleContext(c)}>{c}</button>
+          ))}
+        </div>
+        <button className="btn full" style={{ marginTop: 14 }} onClick={detailedAdd}>Log it</button>
+      </Card>
+
+      {/* TODAY LIST */}
+      {todayNic.length > 0 && (
+        <Card title="Today">
+          <div className="list">
+            {todayNic.slice().reverse().map(n => {
+              const ti = NIC_TYPES.find(t => t.key === n.type);
+              const t = new Date(n.ts || Date.now());
+              return (
+                <div key={n.id} className="list-row">
+                  <div className="list-main">
+                    <div>{ti?.icon} {n.amount} {ti?.unit}{n.type === "pouch" && n.mg ? ` · ${n.mg}mg` : ""}</div>
+                    {n.contexts?.length > 0 && <div className="muted small">{n.contexts.join(", ")}</div>}
+                  </div>
+                  <span className="muted">{t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                  <button className="x" onClick={() => onDelete(n.id)}>×</button>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function NicotineTrends({ data }) {
+  const stats = computeNicotineStats(data);
+  const corr = computeNicotineCorrelations(data);
+  const hasData = (data.nicotine || []).length > 0;
+
+  if (!hasData) {
+    return <Card title="Your intake"><Empty title="No nicotine logged yet" hint="Log a few entries and your trends + correlations will appear here." /></Card>;
+  }
+
+  const typeOrder = ["cigarette", "vape", "pouch"];
+  return (
+    <div className="stack">
+      {/* STATIC STATS PANEL */}
+      <Card title="Your intake" sub="Totals & rolling averages">
+        <div className="nic-stat-grid">
+          <div className="nic-stat">
+            <span className="nic-stat-v">{stats.today.count}</span>
+            <span className="nic-stat-l">today</span>
+          </div>
+          <div className="nic-stat">
+            <span className="nic-stat-v">{stats.avgCount7}</span>
+            <span className="nic-stat-l">/day (7d avg)</span>
+          </div>
+          <div className="nic-stat">
+            <span className="nic-stat-v">{stats.w7.count}</span>
+            <span className="nic-stat-l">last 7 days</span>
+          </div>
+          <div className="nic-stat">
+            <span className="nic-stat-v">{stats.w30.count}</span>
+            <span className="nic-stat-l">last 30 days</span>
+          </div>
+        </div>
+        <div className="nic-mg-row">
+          <span>Est. nicotine: <strong>{stats.avg7}mg/day</strong> (7d) · <strong>{stats.avg30}mg/day</strong> (30d)</span>
+        </div>
+        {/* Type breakdown */}
+        <div className="nic-types-breakdown">
+          {typeOrder.filter(t => stats.typeTotals[t] > 0).map(t => {
+            const ti = NIC_TYPES.find(x => x.key === t);
+            return <span key={t} className="nic-type-pill">{ti?.icon} {stats.typeTotals[t]} {ti?.unit} <span className="muted">(30d)</span></span>;
+          })}
+        </div>
+        {stats.topContexts.length > 0 && (
+          <p className="muted small" style={{ marginTop: 10 }}>
+            Most common triggers: {stats.topContexts.map(([c, n]) => `${c} (${n})`).join(", ")}
+          </p>
+        )}
+      </Card>
+
+      {/* TREND CHART */}
+      <Card title="30-day trend" sub="Estimated nicotine (mg) per day">
+        <MiniChart points={stats.series30} height={90} unit="mg" rollingAvg />
+      </Card>
+
+      {/* CORRELATIONS */}
+      <Card title="Patterns in your data" sub="Correlations, not proven causation">
+        {!corr.ready ? (
+          <p className="muted small" style={{ lineHeight: 1.6 }}>{corr.reason}</p>
+        ) : corr.findings.length === 0 ? (
+          <p className="muted small" style={{ lineHeight: 1.6 }}>No strong patterns yet across your sleep, RPE, or calories. Keep logging and they'll surface if they exist.</p>
+        ) : (
+          <>
+            <ul className="nic-corr-list">
+              {corr.findings.map((f, i) => <li key={i}>{f}</li>)}
+            </ul>
+            <p className="muted small" style={{ marginTop: 10, lineHeight: 1.5, fontStyle: "italic" }}>
+              These are associations in your own logs — not proof that nicotine caused them. Many things move together.
+            </p>
+          </>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function NicotinePlan({ data, setData }) {
+  const [when, setWhen] = useState("");
+  const [label, setLabel] = useState("");
+  const plans = (data.nicotinePlans || []).filter(p => !p.when || new Date(p.when) >= new Date(Date.now() - 86400000))
+    .sort((a, b) => (a.when || "").localeCompare(b.when || ""));
+
+  function addPlan() {
+    if (!when) return;
+    const p = { id: Date.now(), when, label: label.trim() || "Night out" };
+    setData(d => ({ ...d, nicotinePlans: [...(d.nicotinePlans || []), p] }));
+    toast("📅 Session planned");
+    setWhen(""); setLabel("");
+  }
+  function removePlan(id) {
+    setData(d => ({ ...d, nicotinePlans: (d.nicotinePlans || []).filter(p => p.id !== id) }));
+  }
+
+  return (
+    <div className="stack">
+      <Card title="Plan a session" sub="Tell the coach when you'll be out — it adjusts guidance, won't flag it as a red alert">
+        <div className="field-grid">
+          <label>When<input type="datetime-local" value={when} onChange={e => setWhen(e.target.value)} /></label>
+          <label>What<input type="text" value={label} onChange={e => setLabel(e.target.value)} placeholder="Clubbing, friends, etc." /></label>
+        </div>
+        <button className="btn full" onClick={addPlan} disabled={!when}>Add planned session</button>
+      </Card>
+
+      {plans.length > 0 && (
+        <Card title="Upcoming">
+          <div className="list">
+            {plans.map(p => (
+              <div key={p.id} className="list-row">
+                <div className="list-main">
+                  <div>{p.label}</div>
+                  <div className="muted small">{new Date(p.when).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</div>
+                </div>
+                <button className="x" onClick={() => removePlan(p.id)}>×</button>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      <Card title="How this helps">
+        <p className="muted small" style={{ lineHeight: 1.6 }}>
+          When you log a planned night out, the coach treats that intake as expected — it won't nag you about it. Instead it helps you protect your training around it: suggesting you keep your hard sessions away from the recovery window after, and watching how these nights show up in your sleep and next-day RPE.
+        </p>
+      </Card>
+    </div>
+  );
+}
+
+function NicotineImpact({ data, goals }) {
+  // Compute lower- vs higher-impact windows from the user's plan + typical sleep
+  const plan = goals.plan;
+  const todayName = WEEKDAYS[(new Date().getDay() + 6) % 7];
+  const isTrainingDay = plan?.trainingDays?.includes(todayName);
+
+  return (
+    <div className="stack">
+      {/* TIMING GUIDANCE */}
+      <Card title="Timing guidance" sub="Keep intake away from your training & recovery windows">
+        <div className="nic-timing">
+          <div className="nic-window higher">
+            <div className="nic-window-h">⚠ Higher-impact windows</div>
+            <ul>
+              <li><strong>~1–2h before training</strong> — vasoconstriction reduces blood flow to working muscles, blunting your pump and performance.</li>
+              <li><strong>The recovery window after training</strong> (roughly the next 2–4h) — this is when nutrient delivery and muscle protein synthesis ramp up; constricting blood vessels works against that.</li>
+              <li><strong>1–2h before bed</strong> — nicotine is a stimulant and fragments sleep, which is your biggest recovery lever.</li>
+            </ul>
+          </div>
+          <div className="nic-window lower">
+            <div className="nic-window-h">✓ Lower-impact windows</div>
+            <ul>
+              <li>Well clear of training — several hours before or after a session.</li>
+              <li>Earlier in the day, far from bedtime, so sleep is protected.</li>
+              <li>On rest days, away from sleep, the training-specific cost is lowest.</li>
+            </ul>
+          </div>
+        </div>
+        <p className="muted small" style={{ marginTop: 12, lineHeight: 1.5 }}>
+          {isTrainingDay
+            ? `Today is a training day (${plan?.assignments?.[todayName] || "training"}). Try to keep intake out of the couple of hours either side of your session, and away from bedtime.`
+            : `Today is a rest day — the training-specific cost is lower, but keeping intake away from bedtime still protects your recovery.`}
+        </p>
+      </Card>
+
+      {/* EDUCATION PANEL */}
+      <Card title="How nicotine affects training" sub="Mechanisms — evidence-based">
+        <div className="nic-edu">
+          <div className="nic-edu-item">
+            <div className="nic-edu-h">🩸 Vasoconstriction</div>
+            <p>Nicotine narrows blood vessels, reducing blood, oxygen, and nutrient delivery to muscles. That can blunt recovery and muscle protein synthesis. This effect comes from the nicotine itself — so it applies to vapes and pouches too, not just cigarettes.</p>
+          </div>
+          <div className="nic-edu-item">
+            <div className="nic-edu-h">🫁 Cardio capacity</div>
+            <p>Smoking's carbon monoxide binds your red blood cells and lowers oxygen-carrying capacity, hurting endurance and work capacity. Vaping and pouches avoid combustion (no CO/tar) — but the nicotine still constricts vessels.</p>
+          </div>
+          <div className="nic-edu-item">
+            <div className="nic-edu-h">😴 Recovery & sleep</div>
+            <p>Nicotine fragments sleep and is a stimulant near bedtime. Tendon, bone, and wound healing are all impaired, and injury recovery slows.</p>
+          </div>
+          <div className="nic-edu-item">
+            <div className="nic-edu-h">🍽 Appetite</div>
+            <p>Nicotine suppresses appetite, which can quietly skew your calorie intake — worth watching against your macro targets, especially if you're trying to eat in a surplus.</p>
+          </div>
+          <div className="nic-edu-item">
+            <div className="nic-edu-h">🚬 vs 💨 vs ⬜ Format matters</div>
+            <p>Cigarettes add combustion harms (tar, carbon monoxide) on top of nicotine. Vapes and pouches remove the tar and CO — but they keep the nicotine-driven vascular, sleep, and recovery effects. Less is not none.</p>
+          </div>
+        </div>
+        <p className="muted small" style={{ marginTop: 12, lineHeight: 1.5, fontStyle: "italic" }}>
+          These are established mechanisms. There's no honest single number for "X cigarettes costs Y% of gains" — anyone who gives you one is making it up. The real signal is the mechanisms above plus your own logged trends over time.
+        </p>
+      </Card>
+    </div>
+  );
+}
+
 // ─── HISTORY TAB ──────────────────────────────────────────────────────────────
 function HistoryTab({ data, goals, addEntry, deleteEntry }) {
   const [view, setView] = useState("trends"); // trends | lists
@@ -2564,6 +3091,7 @@ function ListsView({ data, deleteEntry }) {
     { key: "sports", label: "Sports", icon: "◇" },
     { key: "water", label: "Water", icon: "◊" },
     { key: "supplements", label: "Supplements", icon: "⊕" },
+    { key: "nicotine", label: "Nicotine", icon: "🚬" },
   ];
   const entries = data[cat] || [];
   const shown = entries.slice(0, limit);
@@ -2653,6 +3181,10 @@ function HistItem({ item, type, onDelete }) {
   } else if (type === "supplements") {
     main = item.name;
     tags = [item.dose, item.ts && new Date(item.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })].filter(Boolean);
+  } else if (type === "nicotine") {
+    const ti = NIC_TYPES.find(t => t.key === item.type);
+    main = `${ti?.icon || ""} ${item.amount} ${ti?.unit || item.type}${item.type === "pouch" && item.mg ? ` · ${item.mg}mg` : ""}`.trim();
+    tags = [item.ts && new Date(item.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), ...(item.contexts || [])].filter(Boolean);
   }
 
   const hasDetail = detail && (typeof detail === "string" ? detail.trim() : true);
@@ -3689,8 +4221,8 @@ function AppShell({ session, syncing }) {
         </header>
 
         <main className="main">
-          {activeTab === "Home" && <HomeTab data={data} goals={goals} onAddWater={addEntry("water")} onNav={navTo} />}
-          {activeTab === "Log" && <LogTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} initialSub={logSub} onSaveGoals={setGoals} />}
+          {activeTab === "Home" && <HomeTab data={data} goals={goals} onAddWater={addEntry("water")} onAddNicotine={addEntry("nicotine")} onNav={navTo} />}
+          {activeTab === "Log" && <LogTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} initialSub={logSub} onSaveGoals={setGoals} setData={setData} />}
           {activeTab === "History" && <HistoryTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />}
           {activeTab === "Coach" && <CoachTab data={data} goals={goals} />}
           {activeTab === "Settings" && <SettingsTab data={data} goals={goals} onSaveGoals={setGoals} onClearAll={clearAll} onImport={importData} session={session} onSignOut={signOut} />}
@@ -4501,4 +5033,61 @@ input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
 .scan-manual input { flex: 1; }
 .bc-portion { margin-bottom: 12px; }
 @media (prefers-reduced-motion: reduce) { .scan-line { animation: none; top: 50%; } }
+
+/* ─── Nicotine ─── */
+.seg-four .seg-btn { font-size: .78rem; padding: 9px 4px; }
+.qa-wide { width: 100%; margin-top: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 13px; padding: 15px 14px; display: flex; align-items: center; justify-content: center; gap: 11px; color: var(--text); font-family: inherit; font-size: .88rem; font-weight: 600; cursor: pointer; min-height: 56px; transition: border-color .2s, transform .15s var(--spring), box-shadow .2s; -webkit-tap-highlight-color: transparent; }
+.qa-wide:hover { border-color: var(--border-strong); transform: translateY(-2px); box-shadow: var(--shadow-card); }
+.qa-wide:active { transform: translateY(0) scale(.97); }
+
+.nic-quick { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.nic-quick-btn { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 16px 8px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 13px; color: var(--text); font-family: inherit; font-size: .82rem; font-weight: 600; cursor: pointer; min-height: 78px; justify-content: center; transition: border-color .2s, transform .14s var(--spring), background .2s; -webkit-tap-highlight-color: transparent; }
+.nic-quick-btn:hover { border-color: var(--accent-glow); background: var(--surface); }
+.nic-quick-btn:active { transform: scale(.95); }
+.nic-quick-icon { font-size: 1.5rem; }
+
+.nic-types { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 14px; }
+.nic-type { display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 13px 6px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; color: var(--text-2); font-family: inherit; font-size: .8rem; font-weight: 600; cursor: pointer; transition: all .18s var(--ease-out); -webkit-tap-highlight-color: transparent; }
+.nic-type-icon { font-size: 1.4rem; }
+.nic-type.on { border-color: var(--accent); background: var(--accent-dim); color: var(--accent); }
+.nic-type:active { transform: scale(.95); }
+
+.nic-contexts { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; }
+.nic-ctx { padding: 7px 13px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 16px; color: var(--text-2); font-family: inherit; font-size: .78rem; font-weight: 500; cursor: pointer; transition: all .15s; -webkit-tap-highlight-color: transparent; }
+.nic-ctx.on { border-color: var(--accent); background: var(--accent-dim); color: var(--accent); }
+.nic-ctx:active { transform: scale(.93); }
+
+.nic-stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 14px; }
+.nic-stat { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 12px 4px; background: var(--surface-2); border-radius: 11px; text-align: center; }
+.nic-stat-v { font-family: 'DM Serif Display', serif; font-size: 1.35rem; color: var(--accent); line-height: 1; }
+.nic-stat-l { font-size: .62rem; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; line-height: 1.2; }
+.nic-mg-row { font-size: .85rem; color: var(--text-2); padding: 10px 12px; background: var(--surface-2); border-radius: 10px; margin-bottom: 12px; }
+.nic-mg-row strong { color: var(--text); }
+.nic-types-breakdown { display: flex; flex-wrap: wrap; gap: 8px; }
+.nic-type-pill { font-size: .8rem; color: var(--text-2); background: var(--surface-2); border: 1px solid var(--border); padding: 5px 11px; border-radius: 9px; }
+
+.nic-corr-list { margin: 0; padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 9px; }
+.nic-corr-list li { position: relative; padding-left: 18px; font-size: .87rem; line-height: 1.5; color: var(--text); }
+.nic-corr-list li::before { content: "→"; position: absolute; left: 0; color: var(--accent); font-weight: 700; }
+
+.nic-timing { display: flex; flex-direction: column; gap: 12px; }
+.nic-window { border-radius: 12px; padding: 14px; border: 1px solid var(--border); }
+.nic-window.higher { background: rgba(244,126,110,0.07); border-color: rgba(244,126,110,0.25); }
+.nic-window.lower { background: rgba(143,217,137,0.07); border-color: rgba(143,217,137,0.25); }
+.nic-window-h { font-size: .82rem; font-weight: 700; margin-bottom: 8px; }
+.nic-window.higher .nic-window-h { color: var(--bad); }
+.nic-window.lower .nic-window-h { color: var(--good); }
+.nic-window ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; }
+.nic-window li { font-size: .84rem; line-height: 1.5; color: var(--text-2); }
+.nic-window li strong { color: var(--text); }
+
+.nic-edu { display: flex; flex-direction: column; gap: 14px; }
+.nic-edu-item { }
+.nic-edu-h { font-size: .88rem; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+.nic-edu-item p { font-size: .85rem; line-height: 1.55; color: var(--text-2); margin: 0; }
+
+@media (max-width: 520px) {
+  .nic-stat-grid { grid-template-columns: repeat(2, 1fr); }
+  .nic-quick { grid-template-columns: 1fr 1fr; }
+}
 `;
