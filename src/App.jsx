@@ -708,8 +708,12 @@ function computeRecovery(data, goals) {
   const reasons = [];   // { text, dir: "neg" | "pos" } — neg pushes toward rest
   const unknown = [];
   let negScore = 0;     // weighted points pushing toward rest
+  const negByCat = {};  // weighted negatives grouped by category → finds the limiter
 
-  const add = (text, dir, weight = 1) => { reasons.push({ text, dir }); if (dir === "neg") negScore += weight; };
+  const add = (text, dir, weight = 1, category = "load") => {
+    reasons.push({ text, dir, category });
+    if (dir === "neg") { negScore += weight; negByCat[category] = (negByCat[category] || 0) + weight; }
+  };
 
   // What does the plan say for today?
   const todayName = WEEKDAYS[(new Date(today + "T00:00:00").getDay() + 6) % 7];
@@ -724,8 +728,8 @@ function computeRecovery(data, goals) {
     unknown.push("last night's sleep");
   } else {
     const poor = lastSleep.quality === "Poor" || lastSleep.quality === "Fair";
-    if (lastSleep.duration < 5.5) add(`Only ${lastSleep.duration}h sleep last night — recovery is significantly down`, "neg", 2);
-    else if (lastSleep.duration < 7 || poor) add(`Slept ${lastSleep.duration}h${poor ? ` (${lastSleep.quality.toLowerCase()})` : ""} last night — a bit under-recovered`, "neg", 1);
+    if (lastSleep.duration < 5.5) add(`Only ${lastSleep.duration}h sleep last night — recovery is significantly down`, "neg", 2, "sleep");
+    else if (lastSleep.duration < 7 || poor) add(`Slept ${lastSleep.duration}h${poor ? ` (${lastSleep.quality.toLowerCase()})` : ""} last night — a bit under-recovered`, "neg", 1, "sleep");
     else add(`Slept ${lastSleep.duration}h (${(lastSleep.quality || "ok").toLowerCase()}) last night — well rested`, "pos");
   }
 
@@ -756,7 +760,7 @@ function computeRecovery(data, goals) {
     if (toBed >= -60 && toBed <= 24 * 60) hoursToBed = +(toBed / 60).toFixed(1);
   }
   // Surface as context (not heavily weighted — informational, plus a nudge if up very late)
-  if (hoursAwake != null && hoursAwake >= 16) add(`You've been awake ~${hoursAwake}h — long day, recovery capacity is lower late`, "neg", 0.5);
+  if (hoursAwake != null && hoursAwake >= 16) add(`You've been awake ~${hoursAwake}h — long day, recovery capacity is lower late`, "neg", 0.5, "sleep");
 
   const sleepTiming = { hoursAwake, hoursToBed, nextBedLabel, lastWake: lastSleep?.wakeTime || null, lastBed: lastSleep?.bedtime || null };
 
@@ -764,8 +768,8 @@ function computeRecovery(data, goals) {
   const last7Sleep = (data.sleep || []).filter(s => s.date >= daysAgo(6));
   if (last7Sleep.length >= 3) {
     const debt = last7Sleep.reduce((d, s) => d + (8 - s.duration), 0);
-    if (debt > 8) add(`Sleep debt is high (~${debt.toFixed(0)}h short this week)`, "neg", 2);
-    else if (debt > 4) add(`Some sleep debt building this week (~${debt.toFixed(0)}h)`, "neg", 1);
+    if (debt > 8) add(`Sleep debt is high (~${debt.toFixed(0)}h short this week)`, "neg", 2, "sleep");
+    else if (debt > 4) add(`Some sleep debt building this week (~${debt.toFixed(0)}h)`, "neg", 1, "sleep");
   }
 
   // ── Consecutive training days / days since rest ──
@@ -773,8 +777,8 @@ function computeRecovery(data, goals) {
   let consec = 0;
   { let cur = new Date(); if (!trainDates.has(getTodayStr())) cur.setDate(cur.getDate() - 1);
     for (;;) { const ds = localDateStr(cur); if (trainDates.has(ds)) { consec++; cur.setDate(cur.getDate() - 1); } else break; } }
-  if (consec >= 5) add(`Trained ${consec} days straight with no rest — strong deload signal`, "neg", 2);
-  else if (consec >= 3) add(`${consec} training days in a row — fatigue accumulating`, "neg", 1);
+  if (consec >= 5) add(`Trained ${consec} days straight with no rest — strong deload signal`, "neg", 2, "load");
+  else if (consec >= 3) add(`${consec} training days in a row — fatigue accumulating`, "neg", 1, "load");
   else if (consec === 0 && trainDates.size > 0) add(`Rested recently — you're fresh`, "pos");
 
   // ── Recent RPE trend (from parsed Strong data) ──
@@ -782,7 +786,7 @@ function computeRecovery(data, goals) {
     .map(e => (e._parsed || parseWorkout(e.text || "")).avgRPE).filter(v => v != null);
   if (last5Lifts.length >= 2) {
     const avgRPE = last5Lifts.reduce((a, b) => a + b, 0) / last5Lifts.length;
-    if (avgRPE >= 8.5) add(`Recent sessions have felt very hard (avg RPE ${avgRPE.toFixed(1)})`, "neg", 1);
+    if (avgRPE >= 8.5) add(`Recent sessions have felt very hard (avg RPE ${avgRPE.toFixed(1)})`, "neg", 1, "load");
     else if (avgRPE <= 6.5) add(`Recent sessions felt manageable (avg RPE ${avgRPE.toFixed(1)})`, "pos");
   }
 
@@ -792,19 +796,42 @@ function computeRecovery(data, goals) {
   const calDays = Object.values(calByDay);
   if (calDays.length >= 2 && goals.calories) {
     const avg = calDays.reduce((a, b) => a + b, 0) / calDays.length;
-    if (avg < goals.calories * 0.7) add(`Under-eating recently (~${Math.round(avg)} vs ${goals.calories} target) — under-fuelled recovery`, "neg", 1);
+    if (avg < goals.calories * 0.7) add(`Under-eating recently (~${Math.round(avg)} vs ${goals.calories} target) — under-fuelled recovery`, "neg", 1, "fuel");
+  }
+
+  // ── Protein adequacy (B1) & aggressive-deficit signal (A1) ──
+  const pdRec = computeProteinDistribution(data, goals);
+  if (pdRec && pdRec.confidence !== "Low" && pdRec.proteinGoal && pdRec.avgProtein < pdRec.proteinGoal * 0.8) {
+    add(`Protein's been low (~${pdRec.avgProtein}g vs ${pdRec.proteinGoal}g) — under-supports tissue repair`, "neg", 1, "fuel");
+  }
+  const wtRec = computeWeightTrend(data);
+  if (wtRec && wtRec.confidence !== "Low" && wtRec.pctBWPerWeek != null && wtRec.pctBWPerWeek <= -0.9) {
+    add(`Losing weight fast (trend ${wtRec.pctBWPerWeek}%BW/wk) — an aggressive deficit lowers recovery capacity`, "neg", 1, "fuel");
+  }
+
+  // ── Carbs vs a hard session (conservative placeholder until the C1 glycogen engine) ──
+  if (goals.carbs) {
+    const hardSession = (data.exercise || []).some(e => {
+      if (e.date !== today && e.date !== daysAgo(1)) return false;
+      const pr = e._parsed || parseWorkout(e.text || "");
+      return (pr.avgRPE != null && pr.avgRPE >= 8) || (pr.totalVolume != null && pr.totalVolume >= 12000);
+    }) || (data.sports || []).some(s => (s.date === today || s.date === daysAgo(1)) && (s.duration || 0) >= 60);
+    const carbsToday = (data.diet || []).filter(d => d.date === today).reduce((a, d) => a + (d.carbs || 0), 0);
+    if (hardSession && carbsToday > 0 && carbsToday < goals.carbs * 0.5) {
+      add(`Hard session but carbs are low today (~${Math.round(carbsToday)}g vs ${goals.carbs}g) — glycogen may be under-replenished`, "neg", 0.5, "carbs");
+    }
   }
 
   // ── Journal sentiment (light touch — only explicit fatigue words) ──
   const recentJournal = (data.journal || []).filter(e => e.date >= daysAgo(2));
   const fatigueWords = /\b(exhausted|drained|run down|rundown|burnt out|burned out|wrecked|sore|aching|tired|sick|ill|stressed|no energy|knackered)\b/i;
   const flagged = recentJournal.find(e => fatigueWords.test(e.text));
-  if (flagged) add(`Your recent journal notes mention feeling run down`, "neg", 1);
+  if (flagged) add(`Your recent journal notes mention feeling run down`, "neg", 1, "stress");
 
   // ── Nicotine load (only if notably high) ──
   if ((data.nicotine || []).length) {
     const ns = computeNicotineStats(data);
-    if (ns.avg7 > 0 && ns.today.count >= 5) add(`High nicotine intake today may blunt recovery`, "neg", 0.5);
+    if (ns.avg7 > 0 && ns.today.count >= 5) add(`High nicotine intake today may blunt recovery`, "neg", 0.5, "stress");
   }
 
   // ── ROLL INTO VERDICT ──
@@ -824,7 +851,21 @@ function computeRecovery(data, goals) {
   else if (verdict === "go" && !plannedToday) reconcile = `You're recovered, but today is a scheduled rest day. Extra rest never hurts — or move a session here if you're keen.`;
   else if (verdict === "caution" && plannedToday) reconcile = `Plan says ${todayLabel}. You can train, but keep intensity in check and cut volume if it feels rough.`;
 
-  return { verdict, reasons, unknown, lowData, plannedToday, todayLabel, reconcile, negScore, sleepTiming };
+  // ── LIMITER + READINESS ──
+  // The limiter is the category dragging recovery down the most — the single
+  // bottleneck to name instead of generic advice. Only surfaced once there's
+  // meaningful negative load (caution/rest); at "go" nothing is limiting.
+  const catLabels = { sleep: "Sleep", fuel: "Fuel / nutrition", carbs: "Carbs / glycogen", load: "Training load", stress: "Stress / lifestyle" };
+  let limiter = null;
+  const ranked = Object.entries(negByCat).sort((a, b) => b[1] - a[1]);
+  if (ranked.length && negScore >= 2) {
+    const [cat, w] = ranked[0];
+    const topReason = reasons.find(r => r.dir === "neg" && r.category === cat);
+    limiter = { category: cat, label: catLabels[cat] || cat, weight: w, topReason: topReason ? topReason.text : null };
+  }
+  const readiness = Math.max(0, Math.min(100, Math.round(100 - negScore * 14)));
+
+  return { verdict, reasons, unknown, lowData, plannedToday, todayLabel, reconcile, negScore, sleepTiming, limiter, readiness, negByCat };
 }
 
 
@@ -1248,6 +1289,9 @@ function buildBrain(data, goals) {
   // ── PROTEIN DISTRIBUTION / MPS (B1 engine)
   const proteinDist = computeProteinDistribution(data, goals);
 
+  // ── RECOVERY (D1 engine — now fed to the Coach, not just the Plan card)
+  const recovery = computeRecovery(data, goals);
+
   // ── DERIVED INSIGHTS — high-signal flags
   // Insights are now { text, priority: "critical" | "important" | "notable" }
   // Critical = recovery is at risk or strategy is broken; Important = clear pattern worth acting on;
@@ -1375,6 +1419,14 @@ function buildBrain(data, goals) {
     wins,
     weight: weightTrend,
     proteinDist,
+    recovery: {
+      verdict: recovery.verdict,
+      readiness: recovery.readiness,
+      limiter: recovery.limiter,
+      plannedToday: recovery.plannedToday,
+      todayLabel: recovery.todayLabel,
+      topNeg: recovery.reasons.filter(r => r.dir === "neg").slice(0, 4).map(r => r.text),
+    },
     profile: goals.profile || {},
     strategy: goals.strategy || {},
     nicotine: (() => {
@@ -1558,6 +1610,22 @@ function formatBrainText(brain) {
     if (pd.avgSkew != null) lines.push(`Skew: ~${pd.avgSkew}% of daily protein in the single biggest meal${pd.avgLargestGap != null ? ` | avg largest gap between feedings: ${pd.avgLargestGap}h` : ""}`);
     if (pd.preEligibleDays >= 1) lines.push(`Pre-sleep protein: ${pd.preOKDays}/${pd.preEligibleDays} nights had a ≥20g feeding within 3h of bedtime`);
     lines.push(`When advising on protein, treat DISTRIBUTION (per-meal dose + timing) separately from total grams — if the total is already met, the lever is spreading it, not "eat more protein".${pd.confidence === "Low" ? " Confidence Low (few logged days) — keep it gentle." : ""}`);
+  }
+
+  // ─── RECOVERY ─────────────────────────────────────────────────────────────
+  if (brain.recovery) {
+    const rc = brain.recovery;
+    const vlabel = rc.verdict === "go" ? "good to train" : rc.verdict === "caution" ? "train with caution" : "rest";
+    lines.push("");
+    lines.push("== RECOVERY (today's training readiness) ==");
+    lines.push(`Verdict: ${vlabel} | readiness: ${rc.readiness}/100 | plan today: ${rc.plannedToday ? rc.todayLabel : "rest day"}`);
+    if (rc.limiter) {
+      lines.push(`#1 LIMITER right now: ${rc.limiter.label}${rc.limiter.topReason ? ` — ${rc.limiter.topReason}` : ""}. If recovery comes up, name THIS specific bottleneck rather than generic "rest more" advice.`);
+      const others = (rc.topNeg || []).filter(t => t !== rc.limiter.topReason).slice(0, 3);
+      if (others.length) lines.push(`Other drags on recovery: ${others.join("; ")}`);
+    } else {
+      lines.push(`Nothing is meaningfully limiting recovery right now — fine to train as planned.`);
+    }
   }
 
   // ─── NICOTINE ─────────────────────────────────────────────────────────────
@@ -2497,6 +2565,23 @@ function PlanTab({ data, goals, onSaveGoals }) {
         </div>
 
         {recovery.reconcile && <p className="rec-reconcile">{recovery.reconcile}</p>}
+
+        {recovery.readiness != null && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, margin: "10px 0" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+              <span className="muted small">Recovery readiness</span>
+              <strong style={{ fontSize: 18 }}>{recovery.readiness}<span className="muted" style={{ fontSize: 13 }}>/100</span></strong>
+            </div>
+            <div className="rt-bar" style={{ margin: 0 }}>
+              <div className="rt-bar-fill" style={{ width: `${recovery.readiness}%`, background: recovery.readiness >= 70 ? "var(--good)" : recovery.readiness >= 50 ? "#f9c97e" : "var(--bad)" }} />
+            </div>
+            {recovery.limiter && (
+              <div className="small" style={{ marginTop: 2 }}>
+                <span style={{ fontWeight: 600 }}>Limiter — {recovery.limiter.label}:</span> <span className="muted">{recovery.limiter.topReason}</span>
+              </div>
+            )}
+          </div>
+        )}
 
         {(recovery.sleepTiming?.hoursAwake != null || recovery.sleepTiming?.hoursToBed != null) && (
           <div className="rec-sleep-timing">
