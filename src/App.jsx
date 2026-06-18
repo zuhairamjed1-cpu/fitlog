@@ -716,6 +716,37 @@ function computeRecovery(data, goals) {
     else add(`Slept ${lastSleep.duration}h (${(lastSleep.quality || "ok").toLowerCase()}) last night — well rested`, "pos");
   }
 
+  // ── Sleep timing: hours awake since waking, estimated hours until next sleep ──
+  const now = new Date();
+  const nowMins = now.getHours() * 60 + now.getMinutes();
+  const minsOf = t => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ""); return m ? +m[1] * 60 + +m[2] : null; };
+  // Hours awake: from last logged wake time (if today/last night)
+  let hoursAwake = null;
+  if (lastSleep?.wakeTime) {
+    const wake = minsOf(lastSleep.wakeTime);
+    if (wake != null) {
+      // If the sleep log is for today, wake was today; otherwise assume it was yesterday morning
+      const wakeWasToday = lastSleep.date === today;
+      let mins = nowMins - wake;
+      if (!wakeWasToday) mins += 24 * 60; // woke yesterday
+      if (mins >= 0 && mins < 36 * 60) hoursAwake = +(mins / 60).toFixed(1);
+    }
+  }
+  // Estimated next bedtime: 7-day average bedtime (fallback last night's)
+  const recentBeds = (data.sleep || []).filter(s => s.date >= daysAgo(7) && s.bedtime).map(s => s.bedtime);
+  let nextBedMins = recentBeds.length >= 2 ? avgTimeMins(recentBeds, true) : (lastSleep?.bedtime ? minsOf(lastSleep.bedtime) : null);
+  let hoursToBed = null, nextBedLabel = null;
+  if (nextBedMins != null) {
+    nextBedLabel = `${String(Math.floor((nextBedMins % 1440) / 60)).padStart(2, "0")}:${String(nextBedMins % 60).padStart(2, "0")}`;
+    let toBed = nextBedMins - nowMins;
+    if (toBed < -60) toBed += 24 * 60; // bedtime already passed → next one is tomorrow
+    if (toBed >= -60 && toBed <= 24 * 60) hoursToBed = +(toBed / 60).toFixed(1);
+  }
+  // Surface as context (not heavily weighted — informational, plus a nudge if up very late)
+  if (hoursAwake != null && hoursAwake >= 16) add(`You've been awake ~${hoursAwake}h — long day, recovery capacity is lower late`, "neg", 0.5);
+
+  const sleepTiming = { hoursAwake, hoursToBed, nextBedLabel, lastWake: lastSleep?.wakeTime || null, lastBed: lastSleep?.bedtime || null };
+
   // ── 7-day sleep debt ──
   const last7Sleep = (data.sleep || []).filter(s => s.date >= daysAgo(6));
   if (last7Sleep.length >= 3) {
@@ -780,7 +811,7 @@ function computeRecovery(data, goals) {
   else if (verdict === "go" && !plannedToday) reconcile = `You're recovered, but today is a scheduled rest day. Extra rest never hurts — or move a session here if you're keen.`;
   else if (verdict === "caution" && plannedToday) reconcile = `Plan says ${todayLabel}. You can train, but keep intensity in check and cut volume if it feels rough.`;
 
-  return { verdict, reasons, unknown, lowData, plannedToday, todayLabel, reconcile, negScore };
+  return { verdict, reasons, unknown, lowData, plannedToday, todayLabel, reconcile, negScore, sleepTiming };
 }
 
 
@@ -1375,13 +1406,21 @@ async function callClaude({ system, userText, imageBase64, imageMediaType, maxTo
 // The web search tool — lets Claude look up real nutrition data for branded/restaurant foods.
 const WEB_SEARCH_TOOL = [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }];
 
-// Robustly pull a JSON object out of a response that may contain prose around it.
+// Robustly pull a JSON object out of a response that may contain prose around it,
+// markdown fences, trailing commas, or smart quotes.
 function extractJSON(raw) {
-  let s = raw.replace(/```json|```/g, "").trim();
+  if (!raw || typeof raw !== "string") throw new Error("Empty AI response");
+  let s = raw.replace(/```(?:json)?/gi, "").trim();
   const start = s.indexOf("{");
   const end = s.lastIndexOf("}");
   if (start !== -1 && end !== -1 && end > start) s = s.slice(start, end + 1);
-  return JSON.parse(s);
+  s = s.replace(/,\s*([}\]])/g, "$1"); // remove trailing commas
+  try {
+    return JSON.parse(s);
+  } catch {
+    const s2 = s.replace(/[\u201C\u201D]/g, '"').replace(/[\u2018\u2019]/g, "'");
+    return JSON.parse(s2);
+  }
 }
 
 async function estimateSportsCalories(sport, duration, intensity, weight) {
@@ -1484,7 +1523,7 @@ ${COACH_PRINCIPLES}
 Return ONLY JSON:
 {"overallScore":<1-10>,"summary":"<2-3 sentences referencing specific numbers and their strategy if relevant>","sections":[{"category":"Sleep & Recovery","score":<1-10>,"status":"good|warning|critical","insight":"<specific with their numbers>","tips":["<concrete action with numbers>","<tip>","<tip>"]},{"category":"Nutrition","score":<1-10>,"status":"good|warning|critical","insight":"<specific>","tips":["<tip>","<tip>","<tip>"]},{"category":"Training","score":<1-10>,"status":"good|warning|critical","insight":"<specific>","tips":["<tip>","<tip>","<tip>"]},{"category":"Calorie Balance","score":<1-10>,"status":"good|warning|critical","insight":"<specific>","tips":["<tip>","<tip>","<tip>"]}],"priorityAction":"<the SINGLE most impactful action this week — concrete and specific>"}`;
   const raw = await callClaude({ system, maxTokens: 2200, userText: formatBrainText(brain) });
-  return JSON.parse(raw.replace(/```json|```/g, "").trim());
+  return extractJSON(raw);
 }
 
 // Suggests which split day goes on each chosen training day.
@@ -1494,7 +1533,7 @@ Assign a specific workout to each available training day, optimizing recovery (d
 Return ONLY JSON mapping each available day to a short workout label:
 {"assignments":{${plan.trainingDays.map(d => `"${d}":"<label>"`).join(",")}},"rationale":"<1-2 sentence explanation of the arrangement>"}`;
   const raw = await callClaude({ system: sys, maxTokens: 700, userText: `Arrange my ${plan.split} across: ${plan.trainingDays.join(", ")}.` });
-  return JSON.parse(raw.replace(/```json|```/g, "").trim());
+  return extractJSON(raw);
 }
 
 // Conversational plan builder — the user describes what they want in plain English,
@@ -1525,7 +1564,9 @@ Their stated fitness goal: ${goals.goal}.
 ${current?.trainingDays?.length ? `Their current plan: split="${current.split}", training days=${current.trainingDays.join(", ")}. They may want to keep or change it.` : ""}
 
 === HARD RULES (follow exactly) ===
-1. PARSE MESSY INPUT CHARITABLY. The user may have typos, slang, shorthand, no punctuation ("futbol", "trian", "shldrs", "chest n arms"). Always interpret their intent — NEVER return a generic template that ignores what they said, and never reply that you didn't understand. Extract: how many days, which specific days (if named), muscle/movement priorities, sports, time limits, injuries.
+1. PARSE MESSY INPUT CHARITABLY. The user may have typos, slang, shorthand, no punctuation ("futbol", "trian", "shldrs", "chest n arms", "anteriro posteriro", "fridyas"). Always interpret their intent — NEVER return a generic template that ignores what they said, and never reply that you didn't understand. Extract: how many days, which specific days (if named, including misspelled weekdays like "fridyas"=Friday, "tuseday"=Tuesday), muscle/movement priorities, sports, time limits, injuries, and the SPLIT TYPE they named.
+   - Recognize any named split even if misspelled or uncommon: Push/Pull/Legs, Upper/Lower, Full Body, Bro Split, Arnold, and ANTERIOR/POSTERIOR (front-chain vs back-chain: anterior = quads, chest, front delts, biceps; posterior = hamstrings, glutes, back, rear delts, triceps). If they name a split, BUILD THAT SPLIT — do not substitute a different one.
+   - If they give a clear instruction like "6 days, anterior/posterior, rest on Friday", that is fully specified — build it directly. Six days with Friday rest means train Mon-Thu + Sat-Sun, alternating anterior/posterior.
 2. HONOR THE LITERAL REQUEST. If they said a number of days, a specific day, or a focus — that is non-negotiable unless it's clearly unsafe.
 3. SUGGEST BETTER, BUT THEY OVERRULE. If their request is suboptimal (e.g. legs the day before their football, or 6 hard days while showing sleep debt), build the SAFER version as your primary plan AND set "alternativeNote" explaining what you changed and why. But if their request is explicit and they'd clearly insist, still respect it — put your concern in "alternativeNote", don't silently override a clear instruction.
 4. YOU PICK THE NUMBER OF TRAINING DAYS when the user doesn't specify — based on their goal, experience level, and current recovery (don't prescribe 6 days to someone with sleep debt or a beginner).
@@ -1558,7 +1599,7 @@ Return ONLY valid JSON, no markdown:
     maxTokens: 1500,
     userText: `Here's what I want for my training week, in my own words:\n\n"${prompt}"\n\nParse it carefully (typos and all) and design my week.`,
   });
-  return JSON.parse(raw.replace(/```json|```/g, "").trim());
+  return extractJSON(raw);
 }
 
 // Looks at recent training + sleep to recommend whether to train, go light, or rest/deload today.
@@ -1583,7 +1624,7 @@ Return ONLY JSON: {"recommendation":"train|light|rest","reason":"<2-3 sentences 
     maxTokens: 700,
     userText: `${formatBrainText(brain)}\n\nWhat should I do today?`,
   });
-  return JSON.parse(raw.replace(/```json|```/g, "").trim());
+  return extractJSON(raw);
 }
 
 // Analyzes a physique photo and recommends specific actions toward the user's goal.
@@ -2114,11 +2155,23 @@ function PlanTab({ data, goals, onSaveGoals }) {
   async function buildPlan() {
     if (!prompt.trim() || building) return;
     setBuilding(true); setBuildErr(""); setBuildResult(null);
-    try {
-      const r = await buildPlanFromPrompt(prompt, goals, { split, trainingDays }, data);
-      if (!r || !r.trainingDays?.length) throw new Error();
-      setBuildResult(r);
-    } catch { setBuildErr("Couldn't build that plan. Try rephrasing what you want."); }
+    let lastErr = null;
+    // Try up to twice — models occasionally return malformed JSON; a retry usually fixes it.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const r = await buildPlanFromPrompt(prompt, goals, { split, trainingDays }, data);
+        if (!r || !Array.isArray(r.trainingDays) || r.trainingDays.length === 0) {
+          throw new Error("no-days");
+        }
+        // Validate day keys
+        r.trainingDays = r.trainingDays.filter(d => WEEKDAYS.includes(d));
+        if (r.trainingDays.length === 0) throw new Error("bad-days");
+        setBuildResult(r);
+        setBuilding(false);
+        return;
+      } catch (e) { lastErr = e; }
+    }
+    setBuildErr("The AI's response didn't come back cleanly. Tap the button once more — it usually works on the next try.");
     setBuilding(false);
   }
 
@@ -2185,6 +2238,23 @@ function PlanTab({ data, goals, onSaveGoals }) {
         </div>
 
         {recovery.reconcile && <p className="rec-reconcile">{recovery.reconcile}</p>}
+
+        {(recovery.sleepTiming?.hoursAwake != null || recovery.sleepTiming?.hoursToBed != null) && (
+          <div className="rec-sleep-timing">
+            {recovery.sleepTiming.hoursAwake != null && (
+              <div className="rec-st-item">
+                <span className="rec-st-icon">☀</span>
+                <span>Awake <strong>{recovery.sleepTiming.hoursAwake}h</strong>{recovery.sleepTiming.lastWake ? ` (since ${recovery.sleepTiming.lastWake})` : ""}</span>
+              </div>
+            )}
+            {recovery.sleepTiming.hoursToBed != null && recovery.sleepTiming.hoursToBed >= 0 && (
+              <div className="rec-st-item">
+                <span className="rec-st-icon">☾</span>
+                <span>~<strong>{recovery.sleepTiming.hoursToBed}h</strong> till usual bedtime ({recovery.sleepTiming.nextBedLabel})</span>
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="rec-reasons">
           {recovery.reasons.length === 0 && recovery.unknown.length === 0 && (
@@ -5298,6 +5368,10 @@ input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
 .rec-band-caution { border-color: rgba(249,201,126,0.3); background: rgba(249,201,126,0.07); }
 .rec-band-rest { border-color: rgba(244,126,110,0.35); background: rgba(244,126,110,0.08); }
 .rec-reconcile { font-size: .84rem; line-height: 1.5; color: var(--text-2); background: var(--surface-2); border-radius: 10px; padding: 10px 12px; margin-top: 12px; }
+.rec-sleep-timing { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.rec-st-item { display: flex; align-items: center; gap: 7px; font-size: .8rem; color: var(--text-2); background: var(--surface-2); border-radius: 9px; padding: 8px 11px; }
+.rec-st-item strong { color: var(--text); }
+.rec-st-icon { font-size: .9rem; }
 .rec-reasons { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
 .rec-reason-row { display: flex; gap: 9px; font-size: .85rem; line-height: 1.45; color: var(--text); }
 .rec-reason-mark { flex-shrink: 0; font-size: .7rem; margin-top: 3px; }
