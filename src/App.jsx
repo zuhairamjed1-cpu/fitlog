@@ -940,6 +940,106 @@ function computeWeightTrend(data) {
   };
 }
 
+// ─── PROTEIN DISTRIBUTION / MPS ENGINE (B1) ─────────────────────────────────
+// Deterministic, needs NO new data — runs on the per-meal protein + timestamps
+// already logged. Muscle protein synthesis is maximized per eating-occasion by
+// crossing a ~0.4 g/kg leucine-trigger dose, and total daily MPS is higher with
+// 3–5 such feedings spread out than with the same protein crammed into 1–2 big
+// meals. Counts "effective feedings", skew, the largest protein gap, and
+// pre-sleep coverage, then feeds the brain + a UI card.
+function minsOfTime(t) { if (!t) return null; const m = /^(\d{1,2}):(\d{2})/.exec(t); return m ? +m[1] * 60 + +m[2] : null; }
+
+function proteinPerMealTarget(data, goals) {
+  const bwTrend = computeWeightTrend(data);
+  const profileBw = goals?.profile?.weightKg ? parseFloat(goals.profile.weightKg) : null;
+  const bw = (bwTrend && bwTrend.current) || (profileBw && profileBw > 0 ? profileBw : null);
+  return { bw, perMeal: bw ? Math.round(0.4 * bw) : 30 };
+}
+
+// Cluster a day's diet entries into feedings: timed entries within 45 min chain
+// into one feeding (protein summed); untimed entries group by meal label so
+// itemized logging (chicken + rice at lunch) counts as ONE feeding, not two.
+function clusterFeedings(dayEntries) {
+  const timed = dayEntries.filter(e => minsOfTime(e.time) != null).map(e => ({ ...e, _m: minsOfTime(e.time) })).sort((a, b) => a._m - b._m);
+  const untimed = dayEntries.filter(e => minsOfTime(e.time) == null);
+  const feedings = [];
+  let cur = null;
+  for (const e of timed) {
+    const pro = e.protein || 0;
+    if (cur && e._m - cur.endMin <= 45) { cur.proteinG += pro; cur.endMin = e._m; }
+    else { cur = { proteinG: pro, startMin: e._m, endMin: e._m, hasTime: true }; feedings.push(cur); }
+  }
+  const byLabel = {};
+  untimed.forEach(e => { const k = e.meal || "Meal"; byLabel[k] = (byLabel[k] || 0) + (e.protein || 0); });
+  Object.values(byLabel).forEach(p => feedings.push({ proteinG: p, startMin: null, endMin: null, hasTime: false }));
+  return feedings;
+}
+
+function computeProteinDistribution(data, goals) {
+  const diet = data.diet || [];
+  if (diet.length === 0) return null;
+  const { bw, perMeal } = proteinPerMealTarget(data, goals);
+  const proteinGoal = goals?.protein || 0;
+  const today = getTodayStr();
+  const windowDays = Array.from({ length: 7 }, (_, i) => daysAgo(6 - i));
+
+  const dayStats = [];
+  windowDays.forEach(date => {
+    const entries = diet.filter(d => d.date === date);
+    if (entries.length === 0) return;
+    const feedings = clusterFeedings(entries);
+    const dayProtein = entries.reduce((a, e) => a + (e.protein || 0), 0);
+    const effective = feedings.filter(f => f.proteinG >= perMeal).length;
+    const anyTime = feedings.some(f => f.hasTime);
+    const timed = feedings.filter(f => f.hasTime).sort((a, b) => a.startMin - b.startMin);
+    let largestGap = null;
+    if (timed.length >= 2) { let g = 0; for (let i = 1; i < timed.length; i++) g = Math.max(g, (timed[i].startMin - timed[i - 1].startMin) / 60); largestGap = +g.toFixed(1); }
+    const maxFeed = feedings.reduce((m, f) => Math.max(m, f.proteinG), 0);
+    const skew = dayProtein > 0 ? maxFeed / dayProtein : null;
+    const slp = (data.sleep || []).find(s => s.date === date);
+    const bedMin = slp ? minsOfTime(slp.bedtime) : null;
+    let preSleepEligible = false, preSleepOK = false;
+    if (bedMin != null && timed.length) {
+      preSleepEligible = true;
+      const bedAdj = bedMin < 300 ? bedMin + 1440 : bedMin; // wrap past-midnight bedtimes
+      preSleepOK = timed.some(f => f.proteinG >= 20 && bedAdj - f.startMin >= 0 && bedAdj - f.startMin <= 180);
+    }
+    dayStats.push({ dayProtein, effective, anyTime, largestGap, skew, preSleepEligible, preSleepOK, hitGoal: proteinGoal ? dayProtein >= proteinGoal : false });
+  });
+  if (dayStats.length === 0) return null;
+
+  const mean = arr => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+  const daysWithMeals = dayStats.length;
+  const daysWithTimes = dayStats.filter(d => d.anyTime).length;
+  const avgEffective = +mean(dayStats.map(d => d.effective)).toFixed(1);
+  const avgProtein = Math.round(mean(dayStats.map(d => d.dayProtein)));
+  const goalHitDays = dayStats.filter(d => d.hitGoal).length;
+  const skews = dayStats.map(d => d.skew).filter(v => v != null);
+  const avgSkew = skews.length ? +(mean(skews) * 100).toFixed(0) : null;
+  const gaps = dayStats.map(d => d.largestGap).filter(v => v != null);
+  const avgLargestGap = gaps.length ? +mean(gaps).toFixed(1) : null;
+  const preEligibleDays = dayStats.filter(d => d.preSleepEligible).length;
+  const preOKDays = dayStats.filter(d => d.preSleepOK).length;
+
+  let confidence = "Low";
+  if (daysWithMeals >= 4) confidence = "Moderate";
+  if (daysWithMeals >= 6 && daysWithTimes >= 4) confidence = "High";
+
+  const todayEntries = diet.filter(d => d.date === today);
+  const todayFeedings = clusterFeedings(todayEntries).sort((a, b) => (a.startMin ?? 99999) - (b.startMin ?? 99999));
+  const todaySnap = {
+    dayProtein: Math.round(todayEntries.reduce((a, e) => a + (e.protein || 0), 0)),
+    effective: todayFeedings.filter(f => f.proteinG >= perMeal).length,
+    feedings: todayFeedings.map(f => ({
+      proteinG: Math.round(f.proteinG),
+      effective: f.proteinG >= perMeal,
+      time: f.hasTime ? `${String(Math.floor(f.startMin / 60)).padStart(2, "0")}:${String(f.startMin % 60).padStart(2, "0")}` : null,
+    })),
+  };
+
+  return { bw, perMeal, proteinGoal, avgEffective, avgProtein, goalHitDays, daysWithMeals, daysWithTimes, avgSkew, avgLargestGap, preEligibleDays, preOKDays, confidence, today: todaySnap };
+}
+
 function buildBrain(data, goals) {
   const now = new Date();
   const today = getTodayStr();
@@ -1145,6 +1245,9 @@ function buildBrain(data, goals) {
   // ── WEIGHT TREND (A1 engine)
   const weightTrend = computeWeightTrend(data);
 
+  // ── PROTEIN DISTRIBUTION / MPS (B1 engine)
+  const proteinDist = computeProteinDistribution(data, goals);
+
   // ── DERIVED INSIGHTS — high-signal flags
   // Insights are now { text, priority: "critical" | "important" | "notable" }
   // Critical = recovery is at risk or strategy is broken; Important = clear pattern worth acting on;
@@ -1200,6 +1303,20 @@ function buildBrain(data, goals) {
     if (pct != null && pct < -1.2) insights.push({ text: `Losing fast: trend ${pct}%BW/wk — aggressive enough to risk muscle loss; a smaller deficit may protect lean mass`, priority: "notable" });
   }
 
+  // --- protein distribution / MPS (B1 — no new data needed) ---
+  if (proteinDist && proteinDist.confidence !== "Low") {
+    const pd = proteinDist;
+    const hittingTotal = pd.proteinGoal && pd.avgProtein >= pd.proteinGoal * 0.9;
+    if (hittingTotal && pd.avgEffective < 3) {
+      insights.push({ text: `Protein TOTAL is on point (${pd.avgProtein}g/day) but distribution isn't: only ${pd.avgEffective} of your meals/day cross the ~${pd.perMeal}g MPS threshold (aim 3–5). Same protein, more growth stimulus if you shift some earlier.`, priority: "important" });
+    } else if (pd.avgEffective < 3 && pd.daysWithMeals >= 4) {
+      insights.push({ text: `Few MPS-effective protein feedings: ${pd.avgEffective}/day cross ~${pd.perMeal}g (aim 3–5)`, priority: "notable" });
+    }
+    if (pd.avgSkew != null && pd.avgSkew >= 50) insights.push({ text: `Protein skewed: ~${pd.avgSkew}% of the day's protein lands in one meal — spreading it raises total daily MPS`, priority: "notable" });
+    if (pd.avgLargestGap != null && pd.avgLargestGap >= 6) insights.push({ text: `Long protein gaps: ~${pd.avgLargestGap}h between feedings on average — a mid-gap feeding keeps MPS elevated`, priority: "notable" });
+    if (pd.preEligibleDays >= 3 && pd.preOKDays / pd.preEligibleDays < 0.4) insights.push({ text: `Rarely a protein feeding near bedtime (${pd.preOKDays}/${pd.preEligibleDays} nights) — a ~30–40g pre-sleep dose may support overnight recovery`, priority: "notable" });
+  }
+
   // --- NOTABLE: contextual patterns the AI should mention if relevant ---
   if (avgLastMeal && minsOf(avgLastMeal) > 21 * 60) insights.push({ text: `Eating late: avg last meal at ${avgLastMeal} — may affect sleep quality`, priority: "notable" });
   if (trainNightAvg != null && restNightAvg != null && Math.abs(trainNightAvg - restNightAvg) > 0.8) {
@@ -1220,6 +1337,9 @@ function buildBrain(data, goals) {
     const pct = weightTrend.pctBWPerWeek, gl = (goals.goal || "").toLowerCase();
     if (gl.includes("muscle") && pct >= 0.15 && pct <= 0.6) wins.push(`Lean-gain pace dialed in: trend +${pct}%BW/wk`);
     if ((gl.includes("fat") || gl.includes("lose")) && pct <= -0.4 && pct >= -1.0) wins.push(`Fat-loss pace dialed in: trend ${pct}%BW/wk`);
+  }
+  if (proteinDist && proteinDist.confidence !== "Low" && proteinDist.avgEffective >= 3.5 && proteinDist.daysWithMeals >= 4) {
+    wins.push(`Protein distribution dialed: ~${proteinDist.avgEffective} MPS-effective feedings/day`);
   }
 
   return {
@@ -1254,6 +1374,7 @@ function buildBrain(data, goals) {
     insights,
     wins,
     weight: weightTrend,
+    proteinDist,
     profile: goals.profile || {},
     strategy: goals.strategy || {},
     nicotine: (() => {
@@ -1426,6 +1547,17 @@ function formatBrainText(brain) {
       lines.push(`Note: latest scale reading is ${wt.divergence > 0 ? "above" : "below"} the trend by ${Math.abs(wt.divergence)}kg — likely water/glycogen, not real tissue change. Judge progress by the trend, not the daily number.`);
     }
     lines.push(`Use the TREND weight + rate for any energy-balance reasoning.${wt.confidence === "Low" ? " Confidence is Low (few weigh-ins) — treat the rate as provisional and avoid strong conclusions." : ""}`);
+  }
+
+  // ─── PROTEIN DISTRIBUTION (MPS) ───────────────────────────────────────────
+  if (brain.proteinDist) {
+    const pd = brain.proteinDist;
+    lines.push("");
+    lines.push("== PROTEIN DISTRIBUTION / MPS (distribution is a SEPARATE lever from daily total — 3–5 feedings each crossing the per-meal threshold beats the same protein skewed into 1–2 meals) ==");
+    lines.push(`Per-meal MPS threshold: ~${pd.perMeal}g (${pd.bw ? `0.4g/kg × ${pd.bw}kg` : "default — no bodyweight set"}) | avg effective feedings/day: ${pd.avgEffective} (target 3–5) | avg daily protein: ${pd.avgProtein}g${pd.proteinGoal ? ` (goal ${pd.proteinGoal}g, hit ${pd.goalHitDays}/${pd.daysWithMeals}d)` : ""} | confidence: ${pd.confidence}`);
+    if (pd.avgSkew != null) lines.push(`Skew: ~${pd.avgSkew}% of daily protein in the single biggest meal${pd.avgLargestGap != null ? ` | avg largest gap between feedings: ${pd.avgLargestGap}h` : ""}`);
+    if (pd.preEligibleDays >= 1) lines.push(`Pre-sleep protein: ${pd.preOKDays}/${pd.preEligibleDays} nights had a ≥20g feeding within 3h of bedtime`);
+    lines.push(`When advising on protein, treat DISTRIBUTION (per-meal dose + timing) separately from total grams — if the total is already met, the lever is spreading it, not "eat more protein".${pd.confidence === "Low" ? " Confidence Low (few logged days) — keep it gentle." : ""}`);
   }
 
   // ─── NICOTINE ─────────────────────────────────────────────────────────────
@@ -2651,6 +2783,47 @@ function BarcodeScanner({ onResult, onClose }) {
 }
 
 // ─── DIET FORM ──
+// Protein timing card (B1) — shows today's feedings vs the MPS threshold.
+function ProteinTimingCard({ data, goals }) {
+  const pd = computeProteinDistribution(data, goals);
+  if (!pd) return null;
+  const t = pd.today;
+  const target = pd.perMeal;
+  return (
+    <Card title="Protein timing" sub={`MPS-effective feedings today · ~${target}g per-meal threshold${pd.bw ? "" : " (set your weight to personalize)"}`}>
+      <div className="center-stack">
+        <div style={{ fontSize: 30, fontWeight: 700, lineHeight: 1 }}>
+          {t.effective}<span className="muted" style={{ fontSize: 15, marginLeft: 6 }}>of 3–5 target</span>
+        </div>
+        <div className="muted small">{t.dayProtein}g protein logged today</div>
+      </div>
+      {t.feedings.length > 0 ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 12 }}>
+          {t.feedings.map((f, i) => {
+            const pct = Math.min(100, Math.round((f.proteinG / Math.max(target, 1)) * 100));
+            return (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span className="muted small" style={{ width: 40, textAlign: "right" }}>{f.time || "—"}</span>
+                <div className="rt-bar" style={{ margin: 0, flex: 1 }}>
+                  <div className="rt-bar-fill" style={{ width: `${pct}%`, ...(f.effective ? {} : { background: "var(--muted)" }) }} />
+                </div>
+                <span className="small" style={{ width: 50 }}>{f.proteinG}g {f.effective ? "✓" : ""}</span>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="muted small" style={{ marginTop: 8 }}>No meals logged today yet.</div>
+      )}
+      {t.effective < 3 && t.feedings.length > 0 && (
+        <div className="muted small" style={{ marginTop: 10, lineHeight: 1.5 }}>
+          Aim for 3–5 meals that each clear ~{target}g. Spreading protein across the day raises total muscle-building stimulus vs. one big hit — even at the same daily total.
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function DietForm({ onAdd, recent, goals, data, todayDiet = [] }) {
   const [date, setDate] = useState(getTodayStr());
   const [time, setTime] = useState(() => {
@@ -2785,6 +2958,7 @@ function DietForm({ onAdd, recent, goals, data, todayDiet = [] }) {
         <div className="rt-hint">{pLeft > 0 ? `${pLeft}g protein to go today` : "✓ protein goal hit"}</div>
       </div>
     )}
+    <ProteinTimingCard data={data} goals={goals} />
     <Card title="Log meal" sub="Describe what you ate or upload a photo">
       <div className="field-grid three">
         <label>Date<input type="date" value={date} onChange={e => setDate(e.target.value)} /></label>
