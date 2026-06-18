@@ -1081,6 +1081,46 @@ function computeProteinDistribution(data, goals) {
   return { bw, perMeal, proteinGoal, avgEffective, avgProtein, goalHitDays, daysWithMeals, daysWithTimes, avgSkew, avgLargestGap, preEligibleDays, preOKDays, confidence, today: todaySnap };
 }
 
+// ─── INSIGHT PRIORITIZATION ENGINE (F1) ─────────────────────────────────────
+// The engines (A1/B1/D1 + the pattern detectors) each push insights with a
+// priority tier, and they already gate out anything below Moderate confidence —
+// so confidence is handled upstream. This layer scores the remaining insights by
+// IMPACT (priority) × ACTIONABILITY (does it embed a concrete next step?), ranks
+// them, and dedupes by topic into a single headline focus list. Nothing is
+// dropped from the full list; dedupe only shapes the top-N.
+function insightCategory(text) {
+  const t = (text || "").toLowerCase();
+  if (/sleep|bedtime|rested|circadian|awake|deload|overtrain/.test(t)) return "sleep/recovery";
+  if (/protein|mps|feeding|leucine/.test(t)) return "protein";
+  if (/carb|glycogen/.test(t)) return "carbs";
+  if (/trend weight|%bw|lean-gain|gaining fast|losing fast|surplus|deficit|maintenance|calorie|kcal|under-eat|fuel/.test(t)) return "energy/weight";
+  if (/volume|rpe|days in a row|days straight|training/.test(t)) return "training";
+  if (/hydration|water/.test(t)) return "hydration";
+  return "other";
+}
+
+function prioritizeInsights(insights) {
+  const impactByPriority = { critical: 100, important: 60, notable: 30 };
+  const actionCue = /\b(shift|add|move|consider|recheck|aim|spread|reduce|increase|swap|deload|smaller|protect|raise|cut|keep|prioriti|eat)\b/i;
+  const scored = (insights || []).map((ins, idx) => {
+    let score = impactByPriority[ins.priority] ?? 20;
+    if (ins.text.includes("—") || ins.text.includes(" - ")) score += 8; // embeds a "what to do"
+    if (actionCue.test(ins.text)) score += 7;
+    return { ...ins, category: insightCategory(ins.text), score, _idx: idx };
+  });
+  const ranked = scored.slice().sort((a, b) => b.score - a.score || a._idx - b._idx);
+  // headline focus: highest-scored per category, up to 5 (keeps the top list diverse)
+  const seen = new Set();
+  const top = [];
+  for (const i of ranked) {
+    if (seen.has(i.category)) continue;
+    seen.add(i.category);
+    top.push(i);
+    if (top.length >= 5) break;
+  }
+  return { ranked, top };
+}
+
 function buildBrain(data, goals) {
   const now = new Date();
   const today = getTodayStr();
@@ -1416,6 +1456,7 @@ function buildBrain(data, goals) {
       trainNightSleep: trainNightAvg, restNightSleep: restNightAvg,
     },
     insights,
+    topInsights: prioritizeInsights(insights).top,
     wins,
     weight: weightTrend,
     proteinDist,
@@ -1535,20 +1576,26 @@ function formatBrainText(brain) {
   if (tp.lastMealTime) lines.push(`Last meal today: ${tp.lastMealTime}${tp.hoursSinceLastMeal != null ? ` (${tp.hoursSinceLastMeal}h ago)` : ""}`);
   else lines.push(`No meals logged for today yet.`);
 
-  // ─── KEY SIGNALS — grouped by priority ────────────────────────────────────
-  // CRITICAL = must address; IMPORTANT = lead with if relevant; NOTABLE = mention only if asked
-  const critical = brain.insights.filter(i => i.priority === "critical");
-  const important = brain.insights.filter(i => i.priority === "important");
-  const notable = brain.insights.filter(i => i.priority === "notable");
-  if (critical.length || important.length || notable.length) {
+  // ─── KEY SIGNALS — ranked top priorities, then the rest grouped by tier ─────
+  const topInsights = brain.topInsights || [];
+  const topTexts = new Set(topInsights.map(i => i.text));
+  const rest = brain.insights.filter(i => !topTexts.has(i.text));
+  const critical = rest.filter(i => i.priority === "critical");
+  const important = rest.filter(i => i.priority === "important");
+  const notable = rest.filter(i => i.priority === "notable");
+  if (topInsights.length || critical.length || important.length || notable.length) {
     lines.push("");
     lines.push("== KEY SIGNALS ==");
+    if (topInsights.length) {
+      lines.push("TOP PRIORITIES (ranked highest-leverage first — lead with #1 unless the user asks about something else):");
+      topInsights.forEach((i, n) => lines.push(`  ${n + 1}. ${i.text}`));
+    }
     if (critical.length) {
-      lines.push("CRITICAL (address even if not asked):");
+      lines.push("Other CRITICAL (address even if not asked):");
       critical.forEach(i => lines.push("  • " + i.text));
     }
     if (important.length) {
-      lines.push("IMPORTANT (lead with if relevant):");
+      lines.push("Other IMPORTANT (lead with if relevant):");
       important.forEach(i => lines.push("  • " + i.text));
     }
     if (notable.length) {
@@ -2306,6 +2353,11 @@ function HomeTab({ data, goals, onAddWater, onAddNicotine, onNav }) {
     toast(`🚬 ${q.label} logged`, { silent: true });
   }
 
+  // F1 — ranked top insights for the "Focus now" card
+  const focus = useMemo(() => {
+    try { return buildBrain(data, goals).topInsights || []; } catch { return []; }
+  }, [data, goals]);
+
   return (
     <div className="stack">
       {/* GREETING */}
@@ -2343,6 +2395,20 @@ function HomeTab({ data, goals, onAddWater, onAddNicotine, onNav }) {
           </>
         )}
       </Card>
+
+      {/* FOCUS NOW — ranked highest-leverage signals (F1) */}
+      {focus.length > 0 && (
+        <Card title="Focus now" sub="Your highest-leverage signals, ranked">
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {focus.slice(0, 3).map((f, i) => (
+              <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                <span style={{ fontWeight: 700, color: "var(--accent)", minWidth: 16, lineHeight: 1.5 }}>{i + 1}</span>
+                <span className="small" style={{ lineHeight: 1.5 }}>{f.text}</span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       {/* QUICK ACTIONS */}
       <div className="quick-actions">
