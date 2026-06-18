@@ -625,7 +625,7 @@ function computeNicotineTiming(data, goals) {
   const recentBedtimes = (data.sleep || []).filter(s => s.date >= daysAgo(7) && s.bedtime).map(s => s.bedtime);
   let bedtimeMins = null;
   if (recentBedtimes.length >= 2) {
-    bedtimeMins = avgTimeMins(recentBedtimes, true);
+    bedtimeMins = avgTimeMins(recentBedtimes);
   } else if (lastSleep?.bedtime) {
     bedtimeMins = minsOf(lastSleep.bedtime);
     if (bedtimeMins != null && bedtimeMins < 5 * 60) bedtimeMins += 24 * 60;
@@ -675,15 +675,28 @@ function computeNicotineTiming(data, goals) {
 
 // Average a list of "HH:MM" times into minutes-since-midnight.
 // wrapPM: treat after-midnight times (before 5am) as the prior night (+24h) for bedtime math.
-function avgTimeMins(times, wrapPM = false) {
-  const mins = times.map(t => {
-    const m = /^(\d{1,2}):(\d{2})/.exec(t); if (!m) return null;
-    let v = +m[1] * 60 + +m[2];
-    if (wrapPM && v < 5 * 60) v += 24 * 60;
-    return v;
-  }).filter(v => v != null);
-  if (!mins.length) return null;
-  return Math.round(mins.reduce((a, b) => a + b, 0) / mins.length);
+// Average a list of "HH:MM" clock times correctly using a CIRCULAR mean.
+// Linear averaging of clock times is wrong when they straddle midnight
+// (e.g. 23:00 and 01:00 should average to 00:00, not 12:00). We treat each
+// time as an angle on a 24h clock, average the unit vectors, convert back.
+function avgTimeMins(times) {
+  const valid = times
+    .map(t => { const m = /^(\d{1,2}):(\d{2})/.exec(t); return m ? (+m[1] * 60 + +m[2]) : null; })
+    .filter(v => v != null && v >= 0 && v < 1440);
+  if (!valid.length) return null;
+  let sx = 0, sy = 0;
+  for (const v of valid) {
+    const ang = (v / 1440) * 2 * Math.PI;
+    sx += Math.cos(ang);
+    sy += Math.sin(ang);
+  }
+  // All vectors cancelled out (rare) → fall back to plain mean
+  if (Math.abs(sx) < 1e-9 && Math.abs(sy) < 1e-9) {
+    return Math.round(valid.reduce((a, b) => a + b, 0) / valid.length);
+  }
+  let ang = Math.atan2(sy, sx);
+  if (ang < 0) ang += 2 * Math.PI;
+  return Math.round((ang / (2 * Math.PI)) * 1440) % 1440;
 }
 
 // ─── RECOVERY ENGINE ──────────────────────────────────────────────────────────
@@ -734,7 +747,7 @@ function computeRecovery(data, goals) {
   }
   // Estimated next bedtime: 7-day average bedtime (fallback last night's)
   const recentBeds = (data.sleep || []).filter(s => s.date >= daysAgo(7) && s.bedtime).map(s => s.bedtime);
-  let nextBedMins = recentBeds.length >= 2 ? avgTimeMins(recentBeds, true) : (lastSleep?.bedtime ? minsOf(lastSleep.bedtime) : null);
+  let nextBedMins = recentBeds.length >= 2 ? avgTimeMins(recentBeds) : (lastSleep?.bedtime ? minsOf(lastSleep.bedtime) : null);
   let hoursToBed = null, nextBedLabel = null;
   if (nextBedMins != null) {
     nextBedLabel = `${String(Math.floor((nextBedMins % 1440) / 60)).padStart(2, "0")}:${String(nextBedMins % 60).padStart(2, "0")}`;
@@ -1163,17 +1176,11 @@ function buildBrain(data, goals) {
 // Helpers for time math. avgTimeHHMM averages a list of "HH:MM" strings.
 // `wrapPM` handles bedtime (treating 00:00–05:00 as the same night, after midnight, by adding 24h).
 function avgTimeHHMM(times, wrapPM = false) {
+  // wrapPM kept for call-site compatibility but no longer needed — circular mean
+  // handles midnight-straddling times correctly.
   if (!times || !times.length) return null;
-  const mins = times.map(t => {
-    const m = /^(\d{1,2}):(\d{2})/.exec(t);
-    if (!m) return null;
-    let v = +m[1] * 60 + +m[2];
-    if (wrapPM && v < 5 * 60) v += 24 * 60; // bedtime after midnight counts as previous night
-    return v;
-  }).filter(v => v != null);
-  if (!mins.length) return null;
-  let avg = Math.round(mins.reduce((a, b) => a + b, 0) / mins.length);
-  if (avg >= 24 * 60) avg -= 24 * 60;
+  const avg = avgTimeMins(times);
+  if (avg == null) return null;
   return `${String(Math.floor(avg / 60)).padStart(2, "0")}:${String(avg % 60).padStart(2, "0")}`;
 }
 
