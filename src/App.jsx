@@ -4,7 +4,7 @@ import { supabase, hasSupabase } from "./supabase";
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const TABS = ["Home", "Log", "History", "Coach", "Journal", "Settings"];
 const STORAGE_KEY = "fitlog_v5";
-const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], nicotine: [], nicotinePlans: [], journal: [] };
+const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], nicotine: [], nicotinePlans: [], journal: [], weight: [] };
 const defaultProfile = {
   // Body
   sex: "", age: "", heightCm: "", weightKg: "",
@@ -64,7 +64,7 @@ const SPLIT_TYPES = [
 ];
 const defaultPlan = { split: "Push / Pull / Legs", trainingDays: ["Mon", "Tue", "Thu", "Fri", "Sat"], assignments: {}, notes: "" };
 
-const TYPE_DOT = { sleep: "#6ee7f7", diet: "#f9c97e", exercise: "#f47e6e", sports: "#8fd989", water: "#5cc8df", supplements: "#b4a8e8", nicotine: "#d98fa8" };
+const TYPE_DOT = { sleep: "#6ee7f7", diet: "#f9c97e", exercise: "#f47e6e", sports: "#8fd989", water: "#5cc8df", supplements: "#b4a8e8", nicotine: "#d98fa8", weight: "#e8c97e" };
 const TYPE_ICON = { sleep: "◐", diet: "◉", exercise: "◆", sports: "◇", water: "◊", supplements: "⊕" };
 
 // ─── AI MODEL PREFERENCE ──────────────────────────────────────────────────────
@@ -862,6 +862,84 @@ async function fileToResizedBase64(file, maxDim = 1280, quality = 0.85) {
 // Single source of truth for every AI call. Pre-computes the patterns and insights
 // the model would otherwise have to derive from raw data — so every feature gets
 // the same sharp understanding of where the user is right now.
+// ─── WEIGHT TREND ENGINE (A1) ───────────────────────────────────────────────
+// Deterministic. Smooths raw scale weight with an EWMA to strip out daily
+// water / glycogen / gut noise, then reports rate of change (g/wk and %BW/wk),
+// direction, and a raw-vs-trend divergence note. Returns null when there's no
+// weight data so the brain and UI can skip the section entirely.
+function computeWeightTrend(data) {
+  const raw = (data.weight || []).filter(w => w && w.kg > 0 && w.date);
+  if (raw.length === 0) return null;
+
+  // One value per day = the EARLIEST weigh-in that day (morning-fasted is the
+  // most consistent reading, so we anchor on it).
+  const byDay = {};
+  raw.forEach(w => { const cur = byDay[w.date]; if (!cur || (w.ts || 0) < (cur.ts || 0)) byDay[w.date] = w; });
+  const days = Object.keys(byDay).sort(); // ascending YYYY-MM-DD
+  const series = days.map(d => ({ date: d, kg: byDay[d].kg }));
+
+  const latestRaw = series[series.length - 1].kg;
+  const nDays = series.length;
+  const dayMs = 86400000;
+  const latestMs = new Date(days[days.length - 1] + "T00:00:00").getTime();
+  const spanDays = Math.round((latestMs - new Date(days[0] + "T00:00:00").getTime()) / dayMs);
+
+  // Trend level + rate of change come from an ordinary least-squares fit over
+  // the RAW daily weigh-ins in the last ≤21 days, via Theil–Sen: the median of
+  // every pairwise slope. Like OLS it's unbiased for a linear trend (no EWMA
+  // lag), but unlike OLS it's robust — one water/refeed/glycogen spike can't
+  // lever the slope, because the median ignores outlier pairs. We also refuse to
+  // express a *weekly* rate until the window spans ≥7 days.
+  const WINDOW_DAYS = 20;
+  const windowStartMs = latestMs - WINDOW_DAYS * dayMs;
+  const wpts = series
+    .filter(s => new Date(s.date + "T00:00:00").getTime() >= windowStartMs)
+    .map(s => ({ x: (new Date(s.date + "T00:00:00").getTime() - windowStartMs) / dayMs, y: s.kg }));
+  const median = arr => { if (!arr.length) return null; const a = [...arr].sort((p, q) => p - q); const m = a.length >> 1; return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2; };
+  const windowSpan = wpts.length ? wpts[wpts.length - 1].x - wpts[0].x : 0;
+  let ratePerWeekKg = null, current = latestRaw, residSd = 0;
+  if (wpts.length >= 2 && windowSpan >= 7) {
+    const slopes = [];
+    for (let i = 0; i < wpts.length; i++)
+      for (let j = i + 1; j < wpts.length; j++)
+        if (wpts[j].x !== wpts[i].x) slopes.push((wpts[j].y - wpts[i].y) / (wpts[j].x - wpts[i].x));
+    const slopePerDay = median(slopes);
+    const intercept = median(wpts.map(p => p.y - slopePerDay * p.x));
+    ratePerWeekKg = +(slopePerDay * 7).toFixed(3);
+    const latestX = (latestMs - windowStartMs) / dayMs;
+    current = +(intercept + slopePerDay * latestX).toFixed(2);
+    const resid = wpts.map(p => p.y - (intercept + slopePerDay * p.x));
+    const mr = resid.reduce((a, b) => a + b, 0) / resid.length;
+    residSd = Math.sqrt(resid.reduce((a, b) => a + (b - mr) ** 2, 0) / resid.length);
+  } else if (wpts.length >= 2) {
+    // Enough weigh-ins but too short a span to call a weekly rate — still give a
+    // robust current level (median of the window) so the UI can show a number.
+    current = +median(wpts.map(p => p.y)).toFixed(2);
+  }
+  const ratePerWeekG = ratePerWeekKg != null ? Math.round(ratePerWeekKg * 1000) : null;
+  const pctBWPerWeek = (ratePerWeekKg != null && current) ? +((ratePerWeekKg / current) * 100).toFixed(2) : null;
+
+  // Direction with a ~100 g/wk noise floor.
+  let direction = "flat";
+  if (ratePerWeekG != null) { if (ratePerWeekG > 100) direction = "gaining"; else if (ratePerWeekG < -100) direction = "losing"; }
+
+  // Raw vs trend divergence — today's scale reading vs the fitted trend line.
+  const divergence = +(latestRaw - current).toFixed(2);
+  const sd = residSd;
+
+  // Confidence from density + span, knocked down if the scale is very noisy.
+  let confidence = "Low";
+  if (nDays >= 5 && spanDays >= 10) confidence = "Moderate";
+  if (nDays >= 10 && spanDays >= 14) confidence = "High";
+  if (confidence === "High" && sd > 1.0) confidence = "Moderate";
+
+  return {
+    current, latestRaw, latestDate: days[days.length - 1],
+    ratePerWeekKg, ratePerWeekG, pctBWPerWeek,
+    direction, divergence, nDays, spanDays, confidence,
+  };
+}
+
 function buildBrain(data, goals) {
   const now = new Date();
   const today = getTodayStr();
@@ -1064,6 +1142,9 @@ function buildBrain(data, goals) {
   const trainNightAvg = trainNightSleep.length ? +(trainNightSleep.reduce((a, s) => a + s.duration, 0) / trainNightSleep.length).toFixed(1) : null;
   const restNightAvg = restNightSleep.length ? +(restNightSleep.reduce((a, s) => a + s.duration, 0) / restNightSleep.length).toFixed(1) : null;
 
+  // ── WEIGHT TREND (A1 engine)
+  const weightTrend = computeWeightTrend(data);
+
   // ── DERIVED INSIGHTS — high-signal flags
   // Insights are now { text, priority: "critical" | "important" | "notable" }
   // Critical = recovery is at risk or strategy is broken; Important = clear pattern worth acting on;
@@ -1102,6 +1183,23 @@ function buildBrain(data, goals) {
     insights.push({ text: `Hydration low: avg ${avgWaterMl7}ml/day vs ${goals.waterGoalMl}ml target`, priority: "important" });
   }
 
+  // --- weight trend vs intent (only once there's enough signal) ---
+  if (weightTrend && weightTrend.confidence !== "Low" && weightTrend.ratePerWeekG != null) {
+    const pct = weightTrend.pctBWPerWeek;
+    const goalLower = (goals.goal || "").toLowerCase();
+    const phase = (goals.strategy?.phase || "").toLowerCase();
+    const wantGain = goalLower.includes("muscle") || /bulk|surplus|gain/.test(phase);
+    const wantLose = goalLower.includes("fat") || goalLower.includes("lose") || /cut|deficit/.test(phase);
+    const rateStr = `${weightTrend.ratePerWeekG > 0 ? "+" : ""}${weightTrend.ratePerWeekG}g/wk`;
+    if (wantGain && weightTrend.direction !== "gaining") {
+      insights.push({ text: `Goal is to build muscle but trend weight is ${weightTrend.direction} (${rateStr}) — not the surplus the plan assumes; recheck intake vs true maintenance`, priority: "important" });
+    } else if (wantLose && weightTrend.direction !== "losing") {
+      insights.push({ text: `Goal is fat loss but trend weight is ${weightTrend.direction} (${rateStr}) — the intended deficit isn't translating to weight change`, priority: "important" });
+    }
+    if (pct != null && pct > 1.0) insights.push({ text: `Gaining fast: trend +${pct}%BW/wk, above the ~0.25–0.5%/wk lean-gain range — more of this is likely fat than muscle`, priority: "notable" });
+    if (pct != null && pct < -1.2) insights.push({ text: `Losing fast: trend ${pct}%BW/wk — aggressive enough to risk muscle loss; a smaller deficit may protect lean mass`, priority: "notable" });
+  }
+
   // --- NOTABLE: contextual patterns the AI should mention if relevant ---
   if (avgLastMeal && minsOf(avgLastMeal) > 21 * 60) insights.push({ text: `Eating late: avg last meal at ${avgLastMeal} — may affect sleep quality`, priority: "notable" });
   if (trainNightAvg != null && restNightAvg != null && Math.abs(trainNightAvg - restNightAvg) > 0.8) {
@@ -1118,6 +1216,11 @@ function buildBrain(data, goals) {
   if (recentPRs.length > 0) wins.push(`${recentPRs.length} recent PR${recentPRs.length === 1 ? "" : "s"}: ${recentPRs.slice(0, 2).map(p => `${p.name} ${p.weight}${p.unit}×${p.reps}`).join(", ")}`);
   if (streak >= 7) wins.push(`${streak}-day logging streak`);
   if (avgWaterMl7 != null && goals.waterGoalMl && avgWaterMl7 >= goals.waterGoalMl * 0.9) wins.push(`Hydration consistent: ${avgWaterMl7}ml/day avg`);
+  if (weightTrend && weightTrend.confidence !== "Low" && weightTrend.pctBWPerWeek != null) {
+    const pct = weightTrend.pctBWPerWeek, gl = (goals.goal || "").toLowerCase();
+    if (gl.includes("muscle") && pct >= 0.15 && pct <= 0.6) wins.push(`Lean-gain pace dialed in: trend +${pct}%BW/wk`);
+    if ((gl.includes("fat") || gl.includes("lose")) && pct <= -0.4 && pct >= -1.0) wins.push(`Fat-loss pace dialed in: trend ${pct}%BW/wk`);
+  }
 
   return {
     // Real-time awareness
@@ -1150,6 +1253,7 @@ function buildBrain(data, goals) {
     },
     insights,
     wins,
+    weight: weightTrend,
     profile: goals.profile || {},
     strategy: goals.strategy || {},
     nicotine: (() => {
@@ -1307,6 +1411,22 @@ function formatBrainText(brain) {
   if (w.avgWaterMl != null) lines.push(`Water: ${w.avgWaterMl}ml/day avg`);
   if (w.recentPRs.length) lines.push(`Recent PRs: ${w.recentPRs.slice(0, 3).map(p => `${p.name} ${p.weight}${p.unit}×${p.reps} on ${p.date}`).join("; ")}`);
   lines.push(`Logging streak: ${w.streak} day${w.streak === 1 ? "" : "s"}`);
+
+  // ─── BODYWEIGHT ───────────────────────────────────────────────────────────
+  if (brain.weight) {
+    const wt = brain.weight;
+    lines.push("");
+    lines.push("== BODYWEIGHT (trend weight is the smoothed line — it reflects real tissue change; the raw daily number is mostly water/glycogen/gut) ==");
+    const rateStr = wt.ratePerWeekG != null
+      ? `${wt.ratePerWeekG > 0 ? "+" : ""}${wt.ratePerWeekG}g/wk${wt.pctBWPerWeek != null ? ` (${wt.pctBWPerWeek > 0 ? "+" : ""}${wt.pctBWPerWeek}%BW/wk)` : ""}`
+      : "rate not yet estimable";
+    lines.push(`Trend weight: ${wt.current}kg | latest scale: ${wt.latestRaw}kg (${wt.latestDate}) | ${wt.nDays} weigh-ins over ${wt.spanDays}d | confidence: ${wt.confidence}`);
+    lines.push(`Direction: ${wt.direction} — ${rateStr}`);
+    if (Math.abs(wt.divergence) >= 0.6) {
+      lines.push(`Note: latest scale reading is ${wt.divergence > 0 ? "above" : "below"} the trend by ${Math.abs(wt.divergence)}kg — likely water/glycogen, not real tissue change. Judge progress by the trend, not the daily number.`);
+    }
+    lines.push(`Use the TREND weight + rate for any energy-balance reasoning.${wt.confidence === "Low" ? " Confidence is Low (few weigh-ins) — treat the rate as provisional and avoid strong conclusions." : ""}`);
+  }
 
   // ─── NICOTINE ─────────────────────────────────────────────────────────────
   if (brain.nicotine) {
@@ -2937,10 +3057,12 @@ function IntakeTab({ data, goals, addEntry, deleteEntry }) {
     <div className="stack">
       <div className="seg">
         <button className={`seg-btn ${view === "water" ? "active" : ""}`} onClick={() => setView("water")}>💧 Water</button>
-        <button className={`seg-btn ${view === "supp" ? "active" : ""}`} onClick={() => setView("supp")}>⊕ Supplements</button>
+        <button className={`seg-btn ${view === "supp" ? "active" : ""}`} onClick={() => setView("supp")}>⊕ Supps</button>
+        <button className={`seg-btn ${view === "weight" ? "active" : ""}`} onClick={() => setView("weight")}>⚖ Weight</button>
       </div>
       {view === "water" && <WaterForm data={data} goals={goals} onAdd={addEntry("water")} onDelete={deleteEntry("water")} />}
       {view === "supp" && <SupplementForm data={data} onAdd={addEntry("supplements")} onDelete={deleteEntry("supplements")} />}
+      {view === "weight" && <WeightForm data={data} goals={goals} onAdd={addEntry("weight")} onDelete={deleteEntry("weight")} />}
     </div>
   );
 }
@@ -3047,6 +3169,84 @@ function SupplementForm({ data, onAdd, onDelete }) {
                   </div>
                   <span className="muted">{t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
                   <button className="x" onClick={() => onDelete(s.id)}>×</button>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ─── BODYWEIGHT ──
+function WeightForm({ data, goals, onAdd, onDelete }) {
+  const today = getTodayStr();
+  const [kg, setKg] = useState("");
+  const todayWeights = (data.weight || []).filter(w => w.date === today);
+  const trend = computeWeightTrend(data);
+  const hasAny = (data.weight || []).length > 0;
+  const lastLogged = hasAny ? [...data.weight].sort((a, b) => (b.ts || 0) - (a.ts || 0))[0] : null;
+
+  const save = () => {
+    const v = parseFloat(kg);
+    if (!v || v <= 0) return;
+    onAdd({ id: Date.now(), date: today, kg: +v.toFixed(2), ts: Date.now() });
+    toast(`⚖ ${v.toFixed(1)}kg logged`);
+    setKg("");
+  };
+
+  // Chart: one point per day (earliest weigh-in) across the last 30 days.
+  const points = Array.from({ length: 30 }, (_, i) => {
+    const d = daysAgo(29 - i);
+    const dayEntries = (data.weight || []).filter(w => w.date === d);
+    let val = null;
+    if (dayEntries.length) val = dayEntries.reduce((a, b) => ((a.ts || 0) <= (b.ts || 0) ? a : b)).kg;
+    return { value: val, label: d };
+  });
+
+  const dirIcon = trend ? (trend.direction === "gaining" ? "↑" : trend.direction === "losing" ? "↓" : "→") : "";
+  const rateLabel = trend && trend.ratePerWeekG != null
+    ? `${trend.ratePerWeekG > 0 ? "+" : ""}${trend.ratePerWeekG} g/wk${trend.pctBWPerWeek != null ? ` · ${trend.pctBWPerWeek > 0 ? "+" : ""}${trend.pctBWPerWeek}%BW/wk` : ""}`
+    : "Need a few more weigh-ins to estimate rate";
+
+  return (
+    <div className="stack">
+      <Card title="Log weight" sub={lastLogged ? `Last: ${lastLogged.kg}kg on ${formatShortDate(lastLogged.date)}` : "Weigh in the morning, after the toilet, before eating — that's the most consistent reading"}>
+        <div className="row">
+          <input type="number" step="0.1" inputMode="decimal" value={kg} onChange={e => setKg(e.target.value)} placeholder={lastLogged ? String(lastLogged.kg) : "e.g. 80.5"} />
+          <span className="muted">kg</span>
+          <button className="btn" onClick={save} disabled={!kg}>Save</button>
+        </div>
+      </Card>
+
+      {trend ? (
+        <Card title="Trend" sub={`${trend.nDays} weigh-in${trend.nDays === 1 ? "" : "s"} · ${trend.confidence} confidence`}>
+          <div className="center-stack">
+            <div style={{ fontSize: 34, fontWeight: 700, lineHeight: 1 }}>{trend.current}<span className="muted" style={{ fontSize: 18, marginLeft: 4 }}>kg</span></div>
+            <div className="muted">{dirIcon} {trend.direction} · {rateLabel}</div>
+          </div>
+          <MiniChart points={points} height={96} rollingAvg unit="kg" />
+          {Math.abs(trend.divergence) >= 0.6 && (
+            <div className="muted small" style={{ marginTop: 8 }}>
+              Today's scale ({trend.latestRaw}kg) is {Math.abs(trend.divergence)}kg {trend.divergence > 0 ? "above" : "below"} the trend — likely water, not fat. Trust the line, not the daily number.
+            </div>
+          )}
+        </Card>
+      ) : (
+        <Empty icon="⚖" title="No weight logged yet" hint="Log your weight a few mornings this week and a smoothed trend line will appear here." />
+      )}
+
+      {todayWeights.length > 0 && (
+        <Card title="Today's weigh-ins">
+          <div className="list">
+            {todayWeights.slice().sort((a, b) => (b.ts || 0) - (a.ts || 0)).map(w => {
+              const t = new Date(w.ts || Date.now());
+              return (
+                <div key={w.id} className="list-row">
+                  <span className="list-main">{w.kg}kg</span>
+                  <span className="muted">{t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                  <button className="x" onClick={() => onDelete(w.id)}>×</button>
                 </div>
               );
             })}
@@ -3551,6 +3751,7 @@ function ListsView({ data, deleteEntry }) {
     { key: "water", label: "Water", icon: "◊" },
     { key: "supplements", label: "Supplements", icon: "⊕" },
     { key: "nicotine", label: "Nicotine", icon: "🚬" },
+    { key: "weight", label: "Weight", icon: "⚖" },
   ];
   const entries = data[cat] || [];
   const shown = entries.slice(0, limit);
@@ -3644,6 +3845,9 @@ function HistItem({ item, type, onDelete }) {
     const ti = NIC_TYPES.find(t => t.key === item.type);
     main = `${ti?.icon || ""} ${item.amount} ${ti?.unit || item.type}${item.type === "pouch" && item.mg ? ` · ${item.mg}mg` : ""}`.trim();
     tags = [item.ts && new Date(item.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), ...(item.contexts || [])].filter(Boolean);
+  } else if (type === "weight") {
+    main = `${item.kg}kg`;
+    tags = item.ts ? [new Date(item.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })] : [];
   }
 
   const hasDetail = detail && (typeof detail === "string" ? detail.trim() : true);
