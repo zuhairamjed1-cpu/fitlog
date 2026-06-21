@@ -2,9 +2,9 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import { supabase, hasSupabase } from "./supabase";
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
-const TABS = ["Home", "Log", "History", "Coach", "Journal", "Settings"];
+const TABS = ["Home", "Log", "History", "Coach", "Journal", "Settings", "Ejac"];
 const STORAGE_KEY = "fitlog_v5";
-const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], nicotine: [], nicotinePlans: [], journal: [], weight: [] };
+const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], nicotine: [], nicotinePlans: [], journal: [], weight: [], ejac: [] };
 const defaultProfile = {
   // Body
   sex: "", age: "", heightCm: "", weightKg: "",
@@ -64,7 +64,7 @@ const SPLIT_TYPES = [
 ];
 const defaultPlan = { split: "Push / Pull / Legs", trainingDays: ["Mon", "Tue", "Thu", "Fri", "Sat"], assignments: {}, notes: "" };
 
-const TYPE_DOT = { sleep: "#6ee7f7", diet: "#f9c97e", exercise: "#f47e6e", sports: "#8fd989", water: "#5cc8df", supplements: "#b4a8e8", nicotine: "#d98fa8", weight: "#e8c97e" };
+const TYPE_DOT = { sleep: "#6ee7f7", diet: "#f9c97e", exercise: "#f47e6e", sports: "#8fd989", water: "#5cc8df", supplements: "#b4a8e8", nicotine: "#d98fa8", weight: "#e8c97e", ejac: "#9aa8e8" };
 const TYPE_ICON = { sleep: "◐", diet: "◉", exercise: "◆", sports: "◇", water: "◊", supplements: "⊕" };
 
 // ─── AI MODEL PREFERENCE ──────────────────────────────────────────────────────
@@ -1332,6 +1332,17 @@ function buildBrain(data, goals) {
   // ── RECOVERY (D1 engine — now fed to the Coach, not just the Plan card)
   const recovery = computeRecovery(data, goals);
 
+  // ── EJAC (private metric — neutral data only, NO insights/judgments generated)
+  const ejacAll = data.ejac || [];
+  const ejac30 = ejacAll.filter(e => e.date >= daysAgo(29));
+  const ejacSummary = ejacAll.length ? {
+    last7: ejacAll.filter(e => e.date >= daysAgo(6)).length,
+    last30: ejac30.length,
+    avgPerDay30: +(ejac30.length / 30).toFixed(2),
+    pornPct30: ejac30.length ? Math.round(ejac30.filter(e => e.porn).length / ejac30.length * 100) : 0,
+    goonPct30: ejac30.length ? Math.round(ejac30.filter(e => e.gooning).length / ejac30.length * 100) : 0,
+  } : null;
+
   // ── DERIVED INSIGHTS — high-signal flags
   // Insights are now { text, priority: "critical" | "important" | "notable" }
   // Critical = recovery is at risk or strategy is broken; Important = clear pattern worth acting on;
@@ -1468,6 +1479,7 @@ function buildBrain(data, goals) {
       todayLabel: recovery.todayLabel,
       topNeg: recovery.reasons.filter(r => r.dir === "neg").slice(0, 4).map(r => r.text),
     },
+    ejac: ejacSummary,
     profile: goals.profile || {},
     strategy: goals.strategy || {},
     nicotine: (() => {
@@ -1673,6 +1685,15 @@ function formatBrainText(brain) {
     } else {
       lines.push(`Nothing is meaningfully limiting recovery right now — fine to train as planned.`);
     }
+  }
+
+  // ─── PERSONAL METRIC (EJAC) — neutral data only, with guardrails ──────────
+  if (brain.ejac) {
+    const e = brain.ejac;
+    lines.push("");
+    lines.push("== PERSONAL METRIC (EJAC) — private behavioral tracker ==");
+    lines.push(`Last 7d: ${e.last7} sessions | last 30d: ${e.last30} (avg ${e.avgPerDay30}/day) | porn ${e.pornPct30}% | gooning ${e.goonPct30}%`);
+    lines.push(`GUARDRAILS: This is a neutral self-tracked metric. Only discuss it if the user explicitly raises it. Do NOT moralize, pathologize, judge, congratulate, shame, or give unsolicited health/behavioral advice about it. If the user asks, report the numbers factually and matter-of-factly.`);
   }
 
   // ─── NICOTINE ─────────────────────────────────────────────────────────────
@@ -4077,6 +4098,7 @@ function ListsView({ data, deleteEntry }) {
     { key: "supplements", label: "Supplements", icon: "⊕" },
     { key: "nicotine", label: "Nicotine", icon: "🚬" },
     { key: "weight", label: "Weight", icon: "⚖" },
+    { key: "ejac", label: "Ejac", icon: "💧" },
   ];
   const entries = data[cat] || [];
   const shown = entries.slice(0, limit);
@@ -4172,6 +4194,10 @@ function HistItem({ item, type, onDelete }) {
     tags = [item.ts && new Date(item.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), ...(item.contexts || [])].filter(Boolean);
   } else if (type === "weight") {
     main = `${item.kg}kg`;
+    tags = item.ts ? [new Date(item.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })] : [];
+  } else if (type === "ejac") {
+    const flags = [item.porn ? "porn" : null, item.gooning ? "gooning" : null].filter(Boolean);
+    main = "Session" + (flags.length ? ` · ${flags.join(", ")}` : "");
     tags = item.ts ? [new Date(item.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })] : [];
   }
 
@@ -5215,6 +5241,7 @@ function AppShell({ session, syncing }) {
           {activeTab === "Coach" && <CoachTab data={data} goals={goals} />}
           {activeTab === "Journal" && <JournalTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} setData={setData} />}
           {activeTab === "Settings" && <SettingsTab data={data} goals={goals} onSaveGoals={setGoals} onClearAll={clearAll} onImport={importData} session={session} onSignOut={signOut} />}
+          {activeTab === "Ejac" && <EjacTab data={data} addEntry={addEntry} deleteEntry={deleteEntry} />}
         </main>
 
         <nav className="tabbar">
@@ -5231,6 +5258,163 @@ function AppShell({ session, syncing }) {
 }
 
 // ─── TAB ICONS (inline SVG, consistent across devices) ───────────────────────
+// ─── EJAC TAB (private personal habit tracker) ──────────────────────────────
+// Neutral behavioral metric. Logs one entry per session: { id, date, ts, porn,
+// gooning }. Daily count = entries on that date. No coaching or judgments here.
+function EjacTab({ data, addEntry, deleteEntry }) {
+  const today = getTodayStr();
+  const [modalOpen, setModalOpen] = useState(false);
+  const [mPorn, setMPorn] = useState(false);
+  const [mGoon, setMGoon] = useState(false);
+
+  const ejac = data.ejac || [];
+  const onAdd = addEntry("ejac");
+  const onDelete = deleteEntry("ejac");
+
+  const logSession = (porn, gooning) => {
+    onAdd({ id: Date.now(), date: today, ts: Date.now(), porn: !!porn, gooning: !!gooning });
+    haptic(12); SFX.tap();
+    toast("Logged", { silent: true });
+  };
+  const quickAdd = () => logSession(false, false);
+  const saveModal = () => { logSession(mPorn, mGoon); setModalOpen(false); setMPorn(false); setMGoon(false); };
+
+  const inDays = (n) => ejac.filter(e => e.date >= daysAgo(n - 1));
+  const todayList = ejac.filter(e => e.date === today).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  const wk = inDays(7), mo = inDays(30);
+  const tally = arr => ({ total: arr.length, porn: arr.filter(e => e.porn).length, goon: arr.filter(e => e.gooning).length });
+  const T = tally(todayList), W = tally(wk), M = tally(mo);
+  const activeDays30 = new Set(mo.map(e => e.date)).size;
+  const pct = (a, b) => b ? Math.round((a / b) * 100) : 0;
+
+  // Daily bars (last 30 days)
+  const daily = Array.from({ length: 30 }, (_, i) => {
+    const d = daysAgo(29 - i);
+    return { d, n: ejac.filter(e => e.date === d).length };
+  });
+  const dailyMax = Math.max(1, ...daily.map(x => x.n));
+
+  // Weekly trend (last 8 weeks) and monthly trend (last 6 months)
+  const weekly = Array.from({ length: 8 }, (_, i) => {
+    const wi = 7 - i; // oldest..newest
+    const start = daysAgo(wi * 7 + 6), end = daysAgo(wi * 7);
+    const n = ejac.filter(e => e.date >= start && e.date <= end).length;
+    return { value: n, label: start.slice(5) };
+  });
+  const monthly = (() => {
+    const now = new Date();
+    return Array.from({ length: 6 }, (_, i) => {
+      const dt = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1);
+      const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}`;
+      const n = ejac.filter(e => (e.date || "").slice(0, 7) === key).length;
+      return { value: n, label: key.slice(2) };
+    });
+  })();
+
+  const Stat = ({ label, value }) => (
+    <div style={{ flex: 1, textAlign: "center" }}>
+      <div style={{ fontSize: 22, fontWeight: 700 }}>{value}</div>
+      <div className="muted small">{label}</div>
+    </div>
+  );
+
+  return (
+    <div className="stack">
+      <Card title="Today" sub={today}>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Stat label="sessions" value={T.total} />
+          <Stat label="porn" value={T.porn} />
+          <Stat label="gooning" value={T.goon} />
+        </div>
+        <div className="row" style={{ marginTop: 14, gap: 8 }}>
+          <button className="btn" style={{ flex: 1 }} onClick={() => setModalOpen(true)}>+ Log session</button>
+          <button className="btn btn-ghost" onClick={quickAdd}>+1 quick</button>
+        </div>
+      </Card>
+
+      <Card title="This week" sub="last 7 days">
+        <div style={{ display: "flex", gap: 8 }}>
+          <Stat label="sessions" value={W.total} />
+          <Stat label="porn" value={W.porn} />
+          <Stat label="gooning" value={W.goon} />
+        </div>
+      </Card>
+
+      <Card title="This month" sub="last 30 days">
+        <div style={{ display: "flex", gap: 8 }}>
+          <Stat label="sessions" value={M.total} />
+          <Stat label="/day (cal)" value={(M.total / 30).toFixed(2)} />
+          <Stat label="/active day" value={activeDays30 ? (M.total / activeDays30).toFixed(2) : "0"} />
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+          <Stat label="porn %" value={`${pct(M.porn, M.total)}%`} />
+          <Stat label="gooning %" value={`${pct(M.goon, M.total)}%`} />
+        </div>
+      </Card>
+
+      {ejac.length > 0 ? (
+        <>
+          <Card title="Daily frequency" sub="sessions per day · last 30 days">
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 70 }}>
+              {daily.map((x, i) => (
+                <div key={i} title={`${x.d}: ${x.n}`} style={{ flex: 1, height: `${(x.n / dailyMax) * 100}%`, minHeight: x.n ? 3 : 1, background: x.n ? "var(--accent)" : "var(--muted)", opacity: x.n ? 1 : 0.3, borderRadius: 2 }} />
+              ))}
+            </div>
+          </Card>
+          <Card title="Weekly trend" sub="total sessions per week · last 8 weeks">
+            <MiniChart points={weekly} height={90} />
+          </Card>
+          <Card title="Monthly trend" sub="total sessions per month · last 6 months">
+            <MiniChart points={monthly} height={90} />
+          </Card>
+        </>
+      ) : (
+        <Empty icon="•" title="No sessions logged yet" hint="Use + Log session or +1 quick to start building your history." />
+      )}
+
+      {todayList.length > 0 && (
+        <Card title="Today's sessions">
+          <div className="list">
+            {todayList.map(e => (
+              <div key={e.id} className="list-row">
+                <span className="list-main">{e.ts ? new Date(e.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—"}</span>
+                <span className="muted small">{[e.porn ? "porn" : null, e.gooning ? "gooning" : null].filter(Boolean).join(", ") || "—"}</span>
+                <button className="x" onClick={() => onDelete(e.id)}>×</button>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {modalOpen && (
+        <div className="modal-overlay" onClick={() => setModalOpen(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h3 className="modal-title">Log session</h3>
+            <div style={{ margin: "14px 0" }}>
+              <div className="muted small" style={{ marginBottom: 6 }}>Pornography used?</div>
+              <div className="seg">
+                <button className={`seg-btn ${!mPorn ? "active" : ""}`} onClick={() => setMPorn(false)}>No</button>
+                <button className={`seg-btn ${mPorn ? "active" : ""}`} onClick={() => setMPorn(true)}>Yes</button>
+              </div>
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <div className="muted small" style={{ marginBottom: 6 }}>Gooning session?</div>
+              <div className="seg">
+                <button className={`seg-btn ${!mGoon ? "active" : ""}`} onClick={() => setMGoon(false)}>No</button>
+                <button className={`seg-btn ${mGoon ? "active" : ""}`} onClick={() => setMGoon(true)}>Yes</button>
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button className="btn btn-ghost" onClick={() => setModalOpen(false)}>Cancel</button>
+              <button className="btn" onClick={saveModal}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TabIcon({ name, active }) {
   const s = active ? "var(--accent)" : "var(--muted)";
   const common = { width: 22, height: 22, viewBox: "0 0 24 24", fill: "none", stroke: s, strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round" };
@@ -5240,6 +5424,7 @@ function TabIcon({ name, active }) {
   if (name === "Coach") return <svg {...common}><path d="M12 3l2.1 5.4L19.5 9l-4 3.6 1.2 5.4L12 15.8 7.3 18l1.2-5.4L4.5 9l5.4-.6L12 3z" /></svg>;
   if (name === "Journal") return <svg {...common}><path d="M12 6.5C10.5 5 8 4.5 4 4.8v13c4-.3 6.5.2 8 1.7 1.5-1.5 4-2 8-1.7v-13c-4-.3-6.5.2-8 1.7z" /><path d="M12 6.5V19" /></svg>;
   if (name === "Settings") return <svg {...common}><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z" /></svg>;
+  if (name === "Ejac") return <svg {...common}><path d="M12 3c4 5 6.5 8.5 6.5 11.5a6.5 6.5 0 0 1-13 0C5.5 11.5 8 8 12 3z" /></svg>;
   return null;
 }
 
