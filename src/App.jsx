@@ -1251,6 +1251,145 @@ function computeEnergyBalance(data, goals) {
   };
 }
 
+// ─── TRAINING INTELLIGENCE ENGINE ───────────────────────────────────────────
+// Two evidence-graded jobs. (1) Per-lift PROGRESSION: track estimated 1RM per
+// exercise over 8 weeks, flag stalls/regressions vs progress (progressive
+// overload is the strongest strength driver — Strong evidence). (2) Per-muscle
+// weekly VOLUME: map lifts → muscles, count working sets/muscle/week (weekly
+// hard sets is the strongest hypertrophy driver — Strong/Very Strong). The
+// MEV/MAV/MRV landmark NUMBERS are heuristics (Weak evidence) so they're shown
+// as soft bands, never hard verdicts. Name→muscle mapping is fuzzy by nature;
+// unmapped lifts are surfaced rather than silently dropped.
+const MUSCLE_LABELS = { chest: "Chest", back: "Back", shoulders: "Shoulders", biceps: "Biceps", triceps: "Triceps", quads: "Quads", hamstrings: "Hamstrings", glutes: "Glutes", calves: "Calves", abs: "Abs" };
+
+function mapMuscles(rawName) {
+  const n = (rawName || "").toLowerCase().replace(/[()]/g, " ").replace(/\s+/g, " ").trim();
+  if (!n) return null;
+  const P = (primary, secondary = []) => ({ primary, secondary });
+  if (/\b(leg curl|lying curl|seated leg curl|hamstring curl|nordic)\b/.test(n)) return P(["hamstrings"]);
+  if (/\b(romanian|rdl|stiff.?leg|good morning)\b/.test(n)) return P(["hamstrings"], ["glutes", "back"]);
+  if (/\b(leg extension|quad extension)\b/.test(n)) return P(["quads"]);
+  if (/\b(calf|calves)\b/.test(n)) return P(["calves"]);
+  if (/\b(hip thrust|glute bridge|kickback|glute)\b/.test(n)) return P(["glutes"], ["hamstrings"]);
+  if (/\b(leg press|hack squat)\b/.test(n)) return P(["quads"], ["glutes"]);
+  if (/\b(squat)\b/.test(n)) return P(["quads"], ["glutes", "hamstrings"]);
+  if (/\b(lunge|split squat|bulgarian|step.?up)\b/.test(n)) return P(["quads"], ["glutes", "hamstrings"]);
+  if (/\b(deadlift|trap bar)\b/.test(n)) return P(["back"], ["hamstrings", "glutes"]);
+  if (/\b(face pull|rear delt|reverse fly|reverse pec)\b/.test(n)) return P(["shoulders"], ["back"]);
+  if (/\b(lateral raise|side raise|lat raise|side delt)\b/.test(n)) return P(["shoulders"]);
+  if (/\b(overhead press|shoulder press|ohp|military|arnold|push press|strict press)\b/.test(n)) return P(["shoulders"], ["triceps"]);
+  if (/\b(shrug)\b/.test(n)) return P(["back"]);
+  if (/\b(row|pulldown|pull.?up|chin.?up|lat pull|pullover)\b/.test(n)) return P(["back"], ["biceps"]);
+  if (/\bdip\b/.test(n)) return P(["triceps"], ["chest"]);
+  if (/\b(tricep|triceps|pushdown|push.?down|skull|close.?grip|overhead extension)\b/.test(n)) return P(["triceps"]);
+  if (/\bcurl\b/.test(n)) return P(["biceps"]);
+  if (/\b(fly|flye|pec deck|pec.?dec)\b/.test(n)) return P(["chest"], ["shoulders"]);
+  if (/\b(bench|chest press|incline press|decline press|chest)\b/.test(n)) return P(["chest"], ["triceps", "shoulders"]);
+  if (/\bpress\b/.test(n)) return P(["chest"], ["triceps", "shoulders"]);
+  if (/\b(crunch|sit.?up|plank|leg raise|knee raise|hanging|ab wheel|cable crunch|russian twist|core|abs?)\b/.test(n)) return P(["abs"]);
+  if (/\bextension\b/.test(n)) return P(["triceps"]);
+  return null;
+}
+
+function computeTraining(data, goals) {
+  const ex = (data.exercise || []).filter(e => e && e.date);
+  if (ex.length === 0) return null;
+  const getP = e => e._parsed || parseWorkout(e.text || "");
+  const kgOf = s => (s.unit === "lb" ? s.weight * 0.453592 : s.weight);
+
+  // ── PER-MUSCLE WEEKLY VOLUME (last 7 days) ──
+  const weekEx = ex.filter(e => e.date >= daysAgo(6));
+  const setCounts = {}; Object.keys(MUSCLE_LABELS).forEach(m => (setCounts[m] = 0));
+  const unmapped = new Set();
+  let workingSets = 0;
+  weekEx.forEach(e => {
+    getP(e).exercises.forEach(x => {
+      // Approximate working sets: drop obvious warm-ups (<60% of the session's top
+      // load for that lift). Bodyweight lifts (top load 0) count every set.
+      const topW = x.sets.length ? Math.max(...x.sets.map(kgOf)) : 0;
+      const nSets = x.sets.filter(s => (topW <= 0 ? true : kgOf(s) >= 0.6 * topW)).length;
+      if (nSets === 0) return;
+      const mm = mapMuscles(x.name);
+      if (!mm) { unmapped.add(x.name); return; }
+      workingSets += nSets;
+      mm.primary.forEach(m => { if (setCounts[m] != null) setCounts[m] += nSets; });
+      (mm.secondary || []).forEach(m => { if (setCounts[m] != null) setCounts[m] += nSets * 0.5; });
+    });
+  });
+  const band = s => s < 6 ? "low" : s < 10 ? "maint" : s <= 20 ? "growth" : "high";
+  const perMuscle = Object.keys(MUSCLE_LABELS).map(m => ({ muscle: m, label: MUSCLE_LABELS[m], sets: Math.round(setCounts[m] * 2) / 2, band: band(setCounts[m]) }));
+  const trained = perMuscle.filter(x => x.sets > 0);
+  const sortedVol = [...trained].sort((a, b) => b.sets - a.sets);
+  const get = m => setCounts[m] || 0;
+
+  const imbalances = [];
+  const ratioFlag = (a, b, la, lb) => { const va = get(a), vb = get(b); if (va >= 6 && va / Math.max(vb, 0.5) >= 2) imbalances.push(`${la} (${Math.round(va)} sets) is getting ~${(va / Math.max(vb, 0.5)).toFixed(1)}× the volume of ${lb} (${Math.round(vb)})`); };
+  ratioFlag("chest", "back", "Chest", "Back"); ratioFlag("back", "chest", "Back", "Chest");
+  ratioFlag("quads", "hamstrings", "Quads", "Hamstrings");
+
+  const goalMuscle = /muscle|hypertrophy|build|gain/i.test((goals?.goal || "") + " " + (goals?.strategy?.focus || ""));
+  const majors = ["chest", "back", "shoulders", "quads", "hamstrings"];
+  const neglected = workingSets >= 20 ? majors.filter(m => get(m) < 6).map(m => MUSCLE_LABELS[m]) : [];
+
+  // ── PER-LIFT PROGRESSION (last 8 weeks, est 1RM trend) ──
+  const base = daysAgo(55);
+  const byLift = {};
+  ex.filter(e => e.date >= base).forEach(e => {
+    const dayIdx = Math.round((new Date(e.date + "T00:00:00") - new Date(base + "T00:00:00")) / 86400000);
+    getP(e).exercises.forEach(x => {
+      const best = e1rm(bestSet(x.sets));
+      if (best <= 0) return;
+      const key = x.name.toLowerCase().replace(/\s+/g, " ").trim();
+      (byLift[key] = byLift[key] || { display: x.name, pts: [] }).pts.push({ dayIdx, e1rm: best });
+    });
+  });
+  const lifts = [];
+  Object.values(byLift).forEach(L => {
+    const byDay = {};
+    L.pts.forEach(pt => { if (!byDay[pt.dayIdx] || pt.e1rm > byDay[pt.dayIdx].e1rm) byDay[pt.dayIdx] = pt; });
+    const pts = Object.values(byDay).sort((a, b) => a.dayIdx - b.dayIdx);
+    if (pts.length < 3) return;
+    const spanDays = pts[pts.length - 1].dayIdx - pts[0].dayIdx;
+    if (spanDays < 14) return;
+    const n = pts.length, sx = pts.reduce((a, p) => a + p.dayIdx, 0), sy = pts.reduce((a, p) => a + p.e1rm, 0);
+    const sxx = pts.reduce((a, p) => a + p.dayIdx * p.dayIdx, 0), sxy = pts.reduce((a, p) => a + p.dayIdx * p.e1rm, 0);
+    const denom = n * sxx - sx * sx;
+    const slopePerWk = (denom !== 0 ? (n * sxy - sx * sy) / denom : 0) * 7;
+    const meanE = sy / n;
+    const slopePct = meanE > 0 ? +(slopePerWk / meanE * 100).toFixed(1) : 0;
+    let status;
+    if (slopePct >= 0.4) status = "progressing";
+    else if (slopePct <= -0.6) status = "regressing";
+    else status = "stalled";
+    lifts.push({ name: L.display, sessions: pts.length, e1rmNow: Math.round(pts[pts.length - 1].e1rm), slopePct, status, weeks: Math.max(2, Math.round(spanDays / 7)) });
+  });
+  const compoundRe = /bench|squat|deadlift|press|row|pulldown|pull.?up|chin/i;
+  lifts.sort((a, b) => (compoundRe.test(b.name) - compoundRe.test(a.name)) || b.sessions - a.sessions || b.e1rmNow - a.e1rmNow);
+  const stalls = lifts.filter(l => l.status === "stalled" || l.status === "regressing");
+  const progressing = lifts.filter(l => l.status === "progressing");
+
+  // ── INSIGHTS ──
+  const insights = [];
+  stalls.slice(0, 2).forEach(l => insights.push({ text: `${l.name} has ${l.status === "regressing" ? "slipped" : "been flat"} ~${l.weeks} weeks (est 1RM ~${l.e1rmNow}kg). Change a variable — add a set, drop reps and add load, or take a deload week.`, priority: "important" }));
+  if (neglected.length) insights.push({ text: `Under-trained this week: ${neglected.join(", ")} (under ~6 hard sets). For balanced growth, aim ~10+ sets/week each.`, priority: "important" });
+  imbalances.slice(0, 1).forEach(t => insights.push({ text: `Volume imbalance — ${t}. Worth evening out for structural balance and joint health.`, priority: "notable" }));
+  if (goalMuscle && trained.length >= 3) {
+    const lowMaj = majors.filter(m => get(m) > 0 && get(m) < 10);
+    if (lowMaj.length >= 3) insights.push({ text: `Most muscles are under ~10 hard sets this week — below the productive hypertrophy range. If growth is the goal, add volume gradually (a set or two per muscle per week).`, priority: "notable" });
+  }
+  progressing.slice(0, 1).forEach(l => insights.push({ text: `${l.name} is progressing well (est 1RM trending +${l.slopePct}%/wk). Keep the current approach.`, priority: "notable" }));
+
+  let confidence = "Low";
+  if (ex.length >= 6 && weekEx.length >= 2) confidence = "Moderate";
+  if (ex.length >= 12 && lifts.length >= 2) confidence = "High";
+
+  return {
+    week: { perMuscle, trained, sortedVol, mostTrained: sortedVol[0] || null, leastTrained: sortedVol[sortedVol.length - 1] || null, imbalances, neglected, unmapped: [...unmapped], workingSets: Math.round(workingSets), sessions: weekEx.length },
+    progression: { lifts: lifts.slice(0, 6), stalls, progressing, tracked: lifts.length },
+    insights, confidence,
+  };
+}
+
 
 // ─── IMAGE RESIZE ────────────────────────────────────────────────────────────
 // Phone cameras produce huge images. Resize before sending to API for speed + reliability.
@@ -1718,6 +1857,9 @@ function buildBrain(data, goals) {
   // ── ENERGY BALANCE / ADAPTIVE TDEE
   const energy = computeEnergyBalance(data, goals);
 
+  // ── TRAINING INTELLIGENCE (per-lift progression + per-muscle volume)
+  const training = computeTraining(data, goals);
+
   // ── EJAC (private metric — neutral data only, NO insights/judgments generated)
   const ejacAll = data.ejac || [];
   const ejac30 = ejacAll.filter(e => e.date >= daysAgo(29));
@@ -1750,6 +1892,8 @@ function buildBrain(data, goals) {
   }
   // Adaptive TDEE / energy-balance insights (real maintenance, deficit/surplus, plateau, under-logging)
   if (energy && energy.ready) energy.insights.forEach(i => insights.push(i));
+  // Training intelligence insights (stalls, neglected muscles, imbalances, progress)
+  if (training) training.insights.forEach(i => insights.push(i));
 
   // --- IMPORTANT: nutrition and trend issues ---
   if (calDeficit7 != null && Math.abs(calDeficit7) > 400) {
@@ -1868,6 +2012,7 @@ function buildBrain(data, goals) {
     sleepIntel,
     sleepScreen: goals.sleepScreen || null,
     energy,
+    training,
     recovery: {
       verdict: recovery.verdict,
       readiness: recovery.readiness,
@@ -2121,6 +2266,26 @@ function formatBrainText(brain) {
       if (en.plateau) lines.push(`PLATEAU: fat loss has stalled despite an apparent deficit — adaptation or under-logging. Reference this if they ask why the scale isn't moving.`);
       lines.push(`Use the MEASURED maintenance (not formulas) for any calorie-target advice. If their target and measured maintenance disagree, trust the measured number. Confidence ${en.confidence} — ${en.confidence === "Low" ? "treat as provisional and say so" : "solid enough to act on"}.`);
     }
+  }
+
+  // ─── TRAINING INTELLIGENCE (per-lift progression + per-muscle weekly volume) ─
+  if (brain.training) {
+    const tr = brain.training;
+    lines.push("");
+    lines.push("== TRAINING (progression = est-1RM trend per lift; volume = working sets/muscle/week. Progressive overload + weekly volume are the two evidence-based drivers. MEV/MAV/MRV landmark numbers are soft heuristics — guide with them, don't dictate) ==");
+    if (tr.progression.lifts.length) {
+      lines.push(`Lift progression (8wk): ${tr.progression.lifts.map(l => `${l.name} ${l.status}${l.status === "progressing" ? ` +${l.slopePct}%/wk` : ""} (~${l.e1rmNow}kg)`).join("; ")}`);
+      if (tr.progression.stalls.length) lines.push(`STALLED/REGRESSING — needs a variable changed: ${tr.progression.stalls.map(l => l.name).join(", ")}. Suggest concrete fixes (add a set, change rep range + load, or deload), not generic "push harder".`);
+    } else {
+      lines.push(`Not enough repeated sessions yet to trend any single lift (need a lift logged 3+ times over 2+ weeks).`);
+    }
+    if (tr.week.trained.length) {
+      lines.push(`This week's volume (working sets, fractional for secondary): ${tr.week.sortedVol.map(m => `${m.label} ${m.sets}`).join(", ")} — ${tr.week.sessions} sessions.`);
+      if (tr.week.neglected.length) lines.push(`Under-trained majors (<6 sets): ${tr.week.neglected.join(", ")}.`);
+      if (tr.week.imbalances.length) lines.push(`Imbalance: ${tr.week.imbalances[0]}.`);
+    }
+    if (tr.week.unmapped.length) lines.push(`Couldn't map these lifts to muscles (name didn't match): ${tr.week.unmapped.slice(0, 5).join(", ")} — their volume isn't counted, so don't claim total-body volume is complete.`);
+    lines.push(`TRAINING COACHING RULES: For a stall, the fix is a changed variable, not more effort. ~10–20 hard sets/muscle/week is the rough productive range for growth; treat it as guidance, not law. Volume landmarks are individual.`);
   }
 
   // ─── PERSONAL METRIC (EJAC) — neutral data only, with guardrails ──────────
@@ -4813,6 +4978,69 @@ function EnergyBalanceCard({ data, goals }) {
   );
 }
 
+function TrainingCard({ data, goals }) {
+  const tr = useMemo(() => computeTraining(data, goals), [data, goals]);
+  if (!tr) return null;
+
+  const statusMeta = {
+    progressing: { s: "good", label: "Progressing" },
+    stalled: { s: "warn", label: "Stalled" },
+    regressing: { s: "bad", label: "Slipping" },
+  };
+  const bandColor = { low: "var(--muted)", maint: "var(--accent)", growth: "var(--good)", high: "#f9c97e" };
+  const conf = tr.confidence;
+
+  return (
+    <Card title="Training intelligence" sub="Progression + weekly volume" action={<StatusPill status={conf === "High" ? "good" : conf === "Moderate" ? "warn" : null} label={conf} />}>
+      {/* PROGRESSION */}
+      <div className="train-sub">Lift progression <span className="muted">· last 8 weeks</span></div>
+      {tr.progression.lifts.length ? (
+        <div className="train-lifts">
+          {tr.progression.lifts.map((l, i) => {
+            const m = statusMeta[l.status] || { s: null, label: l.status };
+            return (
+              <div key={i} className="train-lift-row">
+                <span className="train-lift-name">{l.name}</span>
+                <span className="train-lift-e1rm">{l.e1rmNow}<span className="muted" style={{ fontSize: 11 }}>kg</span></span>
+                <StatusPill status={m.s} label={l.status === "progressing" ? `+${l.slopePct}%/wk` : m.label} />
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="muted small" style={{ lineHeight: 1.5 }}>Log a lift 3+ times over a couple of weeks and its estimated-1RM trend shows up here.</p>
+      )}
+
+      {/* VOLUME */}
+      <div className="train-sub" style={{ marginTop: 16 }}>This week's volume <span className="muted">· {tr.week.workingSets} working sets · {tr.week.sessions} sessions</span></div>
+      {tr.week.trained.length ? (
+        <div className="train-vol">
+          {tr.week.sortedVol.map((m, i) => (
+            <div key={i} className="train-vol-row">
+              <span className="train-vol-label">{m.label}</span>
+              <div className="train-vol-track"><div className="train-vol-fill" style={{ width: `${Math.min(100, (m.sets / 20) * 100)}%`, background: bandColor[m.band] }} /></div>
+              <span className="train-vol-sets">{m.sets}</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="muted small">No working sets mapped this week yet.</p>
+      )}
+
+      {tr.week.neglected.length > 0 && (
+        <div className="eb-flag" style={{ borderColor: "#f9c97e", color: "#f9c97e" }}>Under-trained this week: {tr.week.neglected.join(", ")} (under ~6 hard sets). For balanced growth, aim ~10+ each.</div>
+      )}
+      {tr.week.imbalances.length > 0 && (
+        <div className="eb-flag" style={{ borderColor: "var(--border-strong)", color: "var(--text-2)", marginTop: 8 }}>{tr.week.imbalances[0]}.</div>
+      )}
+
+      <p className="muted small" style={{ marginTop: 10, lineHeight: 1.45 }}>
+        Volume ranges are rough guidance (~10–20 sets/muscle/week for growth), not rules. Warm-ups are filtered approximately, and lifts are mapped to muscles by name{tr.week.unmapped.length ? ` — couldn't place: ${tr.week.unmapped.slice(0, 3).join(", ")}` : ""}.
+      </p>
+    </Card>
+  );
+}
+
 function TrendsView({ data, goals }) {
   const [range, setRange] = useState(14);
   const series = useMemo(() => Array.from({ length: range }, (_, i) => daysAgo(range - 1 - i)), [range]);
@@ -4863,6 +5091,8 @@ function TrendsView({ data, goals }) {
       </div>
 
       <EnergyBalanceCard data={data} goals={goals} />
+
+      <TrainingCard data={data} goals={goals} />
 
       <ConsistencyHeatmap data={data} />
 
@@ -7496,4 +7726,18 @@ input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
 .eb-v { font-size: 1.1rem; font-weight: 700; }
 .eb-flag { margin-top: 10px; padding: 9px 12px; border-radius: 10px; border: 1px solid; font-size: .82rem; line-height: 1.45; background: rgba(255,255,255,.02); }
 .eb-building { padding: 4px 0; }
+
+/* ─── TRAINING INTELLIGENCE CARD ───────────────────────────────────────────── */
+.train-sub { font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; color: var(--text-2); font-weight: 700; margin: 2px 0 10px; }
+.train-sub .muted { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.train-lifts { display: flex; flex-direction: column; gap: 8px; }
+.train-lift-row { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 10px; }
+.train-lift-name { font-size: .9rem; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.train-lift-e1rm { font-weight: 700; font-size: .95rem; }
+.train-vol { display: flex; flex-direction: column; gap: 7px; }
+.train-vol-row { display: grid; grid-template-columns: 78px 1fr 30px; align-items: center; gap: 10px; }
+.train-vol-label { font-size: .82rem; color: var(--text-2); }
+.train-vol-track { height: 8px; background: var(--surface-2); border-radius: 999px; overflow: hidden; }
+.train-vol-fill { height: 100%; border-radius: 999px; transition: width .3s; }
+.train-vol-sets { font-size: .85rem; font-weight: 700; text-align: right; }
 `;
