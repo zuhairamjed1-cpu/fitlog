@@ -4121,7 +4121,7 @@ function ListsView({ data, deleteEntry }) {
       </div>
       <Card title={label} sub={`${entries.length} ${entries.length === 1 ? "entry" : "entries"}`}>
         {entries.length === 0 ? (
-          <Empty title={`No ${label.toLowerCase()} logged yet`} hint="Head to the Log tab to add some" />
+          <Empty title={`No ${label.toLowerCase()} logged yet`} hint="Tap the ＋ button to add some" />
         ) : (
           <>
             <div className="hist-list">
@@ -4596,8 +4596,8 @@ FORMAT: Markdown — **bold** for key points, bullet lists for steps. Keep it ti
 }
 
 // ─── SETTINGS TAB ─────────────────────────────────────────────────────────────
-function SettingsTab({ data, goals, onSaveGoals, onClearAll, onImport, session, onSignOut }) {
-  const [section, setSection] = useState("goals");
+function SettingsTab({ data, goals, onSaveGoals, onClearAll, onImport, session, onSignOut, initialSection = "goals" }) {
+  const [section, setSection] = useState(initialSection);
 
   return (
     <div className="stack">
@@ -5167,9 +5167,158 @@ function Onboarding({ onDone }) {
   );
 }
 
+// ─── LOG HUB OVERLAY (the center ＋) ─────────────────────────────────────────
+// Full-screen sheet launched by the raised ＋. Shows logging options grouped by
+// intent; tapping one opens that existing form. Reuses every form component.
+function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, setData, initial, onClose }) {
+  const [view, setView] = useState(initial || null);
+  const today = getTodayStr();
+  const groups = [
+    { title: "Nutrition", items: [
+      { key: "diet", label: "Meal", icon: "◉", color: "#f9c97e" },
+      { key: "water", label: "Water", icon: "◊", color: "#5cc8df" },
+      { key: "supps", label: "Supps", icon: "⊕", color: "#b4a8e8" },
+    ] },
+    { title: "Training", items: [
+      { key: "exercise", label: "Workout", icon: "◆", color: "#f47e6e" },
+      { key: "sports", label: "Sport", icon: "◇", color: "#8fd989" },
+      { key: "plan", label: "Plan", icon: "▦", color: "#6ee7f7" },
+    ] },
+    { title: "Body & habits", items: [
+      { key: "sleep", label: "Sleep", icon: "◐", color: "#6ee7f7" },
+      { key: "weight", label: "Weight", icon: "◈", color: "#e8c97e" },
+      { key: "nicotine", label: "Nicotine", icon: "●", color: "#d98fa8" },
+    ] },
+    { title: "Reflect", items: [
+      { key: "journal", label: "Journal", icon: "✎", color: "#9aa8e8" },
+    ] },
+  ];
+  const labelFor = k => { for (const g of groups) for (const it of g.items) if (it.key === k) return it.label; return "Log"; };
+
+  const renderForm = () => {
+    switch (view) {
+      case "diet": return <DietForm onAdd={addEntry("diet")} recent={data.diet} goals={goals} data={data} todayDiet={data.diet.filter(d => d.date === today)} />;
+      case "water": return <WaterForm data={data} goals={goals} onAdd={addEntry("water")} onDelete={deleteEntry("water")} />;
+      case "supps": return <SupplementForm data={data} onAdd={addEntry("supplements")} onDelete={deleteEntry("supplements")} />;
+      case "weight": return <WeightForm data={data} goals={goals} onAdd={addEntry("weight")} onDelete={deleteEntry("weight")} />;
+      case "exercise": return <ExerciseForm onAdd={addEntry("exercise")} recent={data.exercise} />;
+      case "sports": return <SportsForm onAdd={addEntry("sports")} recent={data.sports} />;
+      case "plan": return <PlanTab data={data} goals={goals} onSaveGoals={onSaveGoals} />;
+      case "sleep": return <SleepForm onAdd={addEntry("sleep")} recent={data.sleep} />;
+      case "nicotine": return <NicotineTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />;
+      case "journal": return <JournalTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} setData={setData} />;
+      default: return null;
+    }
+  };
+
+  return (
+    <div className="log-overlay">
+      <div className="log-overlay-head">
+        {view
+          ? <button className="log-back" onClick={() => setView(null)}>‹ All</button>
+          : <span className="log-overlay-title">Log anything</span>}
+        <span className="log-overlay-mid">{view ? labelFor(view) : ""}</span>
+        <button className="log-close" onClick={onClose} aria-label="Close">✕</button>
+      </div>
+      <div className="log-overlay-body">
+        {view ? renderForm() : (
+          <div className="stack">
+            <div className="muted small" style={{ marginBottom: 2 }}>Pick what you want to record</div>
+            {groups.map(g => (
+              <div key={g.title}>
+                <div className="log-group-title">{g.title}</div>
+                <div className="log-grid">
+                  {g.items.map(it => (
+                    <button key={it.key} className="log-tile" onClick={() => { SFX.tap(); haptic(8); setView(it.key); }}>
+                      <span className="log-tile-icon" style={{ color: it.color }}>{it.icon}</span>
+                      <span className="log-tile-label">{it.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── ME (profile + everything secondary, incl. the private tracker) ─────────
+function MeTab({ data, goals, onSaveGoals, onClearAll, onImport, session, onSignOut, addEntry, deleteEntry }) {
+  const [view, setView] = useState("menu"); // menu | settings | ejac
+  const [section, setSection] = useState("goals");
+  const open = (v, s) => { if (s) setSection(s); setView(v); window.scrollTo({ top: 0, behavior: "smooth" }); };
+
+  if (view === "settings") {
+    return (
+      <div className="stack">
+        <button className="log-back" onClick={() => setView("menu")}>‹ Me</button>
+        <SettingsTab data={data} goals={goals} onSaveGoals={onSaveGoals} onClearAll={onClearAll} onImport={onImport} session={session} onSignOut={onSignOut} initialSection={section} />
+      </div>
+    );
+  }
+  if (view === "ejac") {
+    return (
+      <div className="stack">
+        <button className="log-back" onClick={() => setView("menu")}>‹ Me</button>
+        <EjacTab data={data} addEntry={addEntry} deleteEntry={deleteEntry} />
+      </div>
+    );
+  }
+
+  const initial = (session?.user?.email || goals.goal || "•").trim()[0]?.toUpperCase() || "•";
+  const strat = goals.strategy || {};
+  const sub = [goals.goal, strat.phase || strat.focus].filter(Boolean).join(" · ");
+  const Row = ({ icon, label, onClick }) => (
+    <button className="me-row" onClick={onClick}>
+      <span className="me-row-icon">{icon}</span>
+      <span className="me-row-label">{label}</span>
+      <span className="me-row-chev">›</span>
+    </button>
+  );
+
+  return (
+    <div className="stack">
+      <div className="me-profile">
+        <div className="me-avatar">{initial}</div>
+        <div>
+          <div className="me-name">{session?.user?.email || "Your profile"}</div>
+          {sub && <div className="muted small" style={{ marginTop: 3 }}>{sub}</div>}
+        </div>
+      </div>
+
+      <div>
+        <div className="me-group-title">Setup</div>
+        <div className="me-rows">
+          <Row icon="⊙" label="Goals & targets" onClick={() => open("settings", "goals")} />
+          <Row icon="◔" label="About me & strategy" onClick={() => open("settings", "goals")} />
+        </div>
+      </div>
+
+      <div>
+        <div className="me-group-title">Preferences</div>
+        <div className="me-rows">
+          <Row icon="✦" label="AI model & sound" onClick={() => open("settings", "goals")} />
+        </div>
+      </div>
+
+      <div>
+        <div className="me-group-title">Data &amp; private</div>
+        <div className="me-rows">
+          <Row icon="⬇" label="Export & backup" onClick={() => open("settings", "export")} />
+          <Row icon="⌗" label="Manage data" onClick={() => open("settings", "data")} />
+          <Row icon="◯" label="Private tracker" onClick={() => open("ejac")} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AppShell({ session, syncing }) {
   const [activeTab, setActiveTab] = useState("Home");
-  const [logSub, setLogSub] = useState(null);
+  const [logOpen, setLogOpen] = useState(false);
+  const [logInitial, setLogInitial] = useState(null);
   const [data, setData] = useState(loadData);
   const [goals, setGoals] = useState(loadGoals);
   const firstData = useRef(true);
@@ -5208,10 +5357,13 @@ function AppShell({ session, syncing }) {
   }
 
   function navTo(tab, sub) {
-    setActiveTab(tab);
-    if (sub) setLogSub(sub);
+    if (tab === "Log") { setLogInitial(sub || null); setLogOpen(true); SFX.tap(); return; }
+    setActiveTab(tab === "History" ? "Insights" : tab);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
+  function openLog(view) { setLogInitial(view || null); setLogOpen(true); SFX.tap(); }
+  function closeLog() { setLogOpen(false); setLogInitial(null); }
+  function go(tab) { SFX.tap(); setActiveTab(tab); window.scrollTo({ top: 0, behavior: "smooth" }); }
 
   // First-run onboarding — show until the user completes it
   if (!goals.onboarded) {
@@ -5236,17 +5388,25 @@ function AppShell({ session, syncing }) {
 
         <main className="main">
           {activeTab === "Home" && <HomeTab data={data} goals={goals} onAddWater={addEntry("water")} onAddNicotine={addEntry("nicotine")} onNav={navTo} />}
-          {activeTab === "Log" && <LogTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} initialSub={logSub} onSaveGoals={setGoals} setData={setData} />}
-          {activeTab === "History" && <HistoryTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />}
+          {activeTab === "Insights" && <HistoryTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />}
           {activeTab === "Coach" && <CoachTab data={data} goals={goals} />}
-          {activeTab === "Journal" && <JournalTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} setData={setData} />}
-          {activeTab === "Settings" && <SettingsTab data={data} goals={goals} onSaveGoals={setGoals} onClearAll={clearAll} onImport={importData} session={session} onSignOut={signOut} />}
-          {activeTab === "Ejac" && <EjacTab data={data} addEntry={addEntry} deleteEntry={deleteEntry} />}
+          {activeTab === "Me" && <MeTab data={data} goals={goals} onSaveGoals={setGoals} onClearAll={clearAll} onImport={importData} session={session} onSignOut={signOut} addEntry={addEntry} deleteEntry={deleteEntry} />}
         </main>
 
-        <nav className="tabbar">
-          {TABS.map(tab => (
-            <button key={tab} className={`tabbtn ${activeTab === tab ? "active" : ""}`} onClick={() => { SFX.tap(); setActiveTab(tab); if (tab !== "Log") setLogSub(null); window.scrollTo({ top: 0, behavior: "smooth" }); }}>
+        {logOpen && (
+          <LogOverlay data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} onSaveGoals={setGoals} setData={setData} initial={logInitial} onClose={closeLog} />
+        )}
+
+        <nav className="tabbar tabbar-5">
+          {["Home", "Insights"].map(tab => (
+            <button key={tab} className={`tabbtn ${activeTab === tab ? "active" : ""}`} onClick={() => go(tab)}>
+              <TabIcon name={tab} active={activeTab === tab} />
+              <span className="tabbtn-label">{tab}</span>
+            </button>
+          ))}
+          <button className="tab-plus" onClick={() => openLog(null)} aria-label="Log">＋</button>
+          {["Coach", "Me"].map(tab => (
+            <button key={tab} className={`tabbtn ${activeTab === tab ? "active" : ""}`} onClick={() => go(tab)}>
               <TabIcon name={tab} active={activeTab === tab} />
               <span className="tabbtn-label">{tab}</span>
             </button>
@@ -5424,6 +5584,8 @@ function TabIcon({ name, active }) {
   if (name === "Coach") return <svg {...common}><path d="M12 3l2.1 5.4L19.5 9l-4 3.6 1.2 5.4L12 15.8 7.3 18l1.2-5.4L4.5 9l5.4-.6L12 3z" /></svg>;
   if (name === "Journal") return <svg {...common}><path d="M12 6.5C10.5 5 8 4.5 4 4.8v13c4-.3 6.5.2 8 1.7 1.5-1.5 4-2 8-1.7v-13c-4-.3-6.5.2-8 1.7z" /><path d="M12 6.5V19" /></svg>;
   if (name === "Settings") return <svg {...common}><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z" /></svg>;
+  if (name === "Insights") return <svg {...common}><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 4v4h4" /><path d="M12 8v4l3 2" /></svg>;
+  if (name === "Me") return <svg {...common}><circle cx="12" cy="8" r="4" /><path d="M4 20c0-3.5 3.6-6 8-6s8 2.5 8 6" /></svg>;
   if (name === "Ejac") return <svg {...common}><path d="M12 3c4 5 6.5 8.5 6.5 11.5a6.5 6.5 0 0 1-13 0C5.5 11.5 8 8 12 3z" /></svg>;
   return null;
 }
@@ -6347,4 +6509,95 @@ input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
 .journal-empty-mark { font-size: 2.4rem; color: var(--muted); margin-bottom: 12px; }
 .journal-empty-title { font-family: 'DM Serif Display', serif; font-size: 1.2rem; color: var(--text); margin: 0 0 8px; }
 .journal-empty-hint { font-size: .88rem; line-height: 1.6; color: var(--text-2); max-width: 420px; margin: 0 auto; }
+
+/* ─── NAVIGATION REDESIGN: 5-tab bar + raised center ＋ ─────────────────────── */
+.tabbar-5 { display: flex; align-items: flex-end; justify-content: space-around; }
+.tabbar-5 .tabbtn { flex: 1; }
+.tab-plus {
+  flex: 0 0 auto;
+  width: 56px; height: 56px; min-width: 56px;
+  margin: 0 4px -14px; /* raise it above the bar */
+  border: none; border-radius: 50%;
+  background: var(--accent);
+  color: #06222a; font-size: 30px; font-weight: 300; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 6px 18px var(--accent-glow), 0 2px 6px rgba(0,0,0,.4);
+  transition: transform .12s ease, box-shadow .2s ease;
+}
+.tab-plus:hover { box-shadow: 0 8px 22px var(--accent-glow), 0 2px 8px rgba(0,0,0,.5); }
+.tab-plus:active { transform: scale(.92); }
+
+/* ─── LOG HUB OVERLAY ──────────────────────────────────────────────────────── */
+.log-overlay {
+  position: fixed; inset: 0; z-index: 200;
+  background: var(--bg);
+  display: flex; flex-direction: column;
+  animation: log-rise .22s cubic-bezier(.4,0,.2,1);
+}
+@keyframes log-rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+.log-overlay-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px 16px; border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.log-overlay-title { font-family: 'DM Serif Display', serif; font-size: 1.25rem; color: var(--text); flex: 1; }
+.log-overlay-mid { flex: 1; text-align: center; font-weight: 600; color: var(--text); font-size: .95rem; }
+.log-back {
+  background: none; border: none; color: var(--accent);
+  font-size: .95rem; cursor: pointer; padding: 4px 2px; font-weight: 600;
+}
+.log-close {
+  margin-left: auto; flex: 0 0 auto;
+  width: 34px; height: 34px; border-radius: 50%;
+  background: var(--surface-2); border: 1px solid var(--border);
+  color: var(--text-2); font-size: 1rem; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.log-close:active { background: var(--surface); }
+.log-overlay-body { flex: 1; overflow-y: auto; padding: 16px 16px 40px; }
+.log-group-title {
+  font-size: .72rem; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--muted); font-weight: 700; margin: 16px 2px 8px;
+}
+.log-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.log-tile {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+  padding: 16px 6px 13px;
+  display: flex; flex-direction: column; align-items: center; gap: 9px;
+  cursor: pointer; color: var(--text);
+  transition: transform .1s ease, border-color .2s ease, background .2s ease;
+}
+.log-tile:active { transform: scale(.95); background: var(--surface-2); border-color: var(--border-strong); }
+.log-tile-icon { font-size: 1.5rem; line-height: 1; }
+.log-tile-label { font-size: .82rem; font-weight: 600; }
+
+/* ─── ME PAGE ──────────────────────────────────────────────────────────────── */
+.me-profile {
+  display: flex; align-items: center; gap: 14px;
+  padding: 6px 2px 4px;
+}
+.me-avatar {
+  width: 54px; height: 54px; flex: 0 0 auto; border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), var(--accent-dim));
+  color: #06222a; font-size: 1.4rem; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+}
+.me-name { font-weight: 600; color: var(--text); font-size: 1rem; word-break: break-word; }
+.me-group-title {
+  font-size: .72rem; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--muted); font-weight: 700; margin: 4px 2px 8px;
+}
+.me-rows { display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
+.me-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 14px; background: none; border: none; cursor: pointer;
+  color: var(--text); font-size: .94rem; text-align: left; width: 100%;
+  border-bottom: 1px solid var(--border);
+}
+.me-row:last-child { border-bottom: none; }
+.me-row:active { background: var(--surface-2); }
+.me-row-icon { font-size: 1.1rem; width: 24px; text-align: center; color: var(--accent); flex: 0 0 auto; }
+.me-row-label { flex: 1; }
+.me-row-chev { color: var(--muted); font-size: 1.2rem; }
 `;
