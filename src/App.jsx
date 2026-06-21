@@ -3,6 +3,11 @@ import { supabase, hasSupabase } from "./supabase";
 import { styles } from "./styles";
 import { localDateStr, getTodayStr, formatDate, formatShortDate, daysAgo, daysAgoFrom } from "./lib/dates";
 import { computeWeightTrend } from "./engines/weight";
+import { avgTimeMins, avgTimeHHMM, minsOfTime } from "./lib/time";
+import { parseWorkout, bestSet, e1rm, detectPRs } from "./engines/workout";
+import { clusterFeedings, computeProteinDistribution } from "./engines/protein";
+import { computeEnergyBalance, mifflinBMR } from "./engines/energy";
+import { computeTraining, mapMuscles, MUSCLE_LABELS } from "./engines/training";
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const TABS = ["Home", "Log", "History", "Coach", "Journal", "Settings", "Ejac"];
@@ -221,113 +226,13 @@ const SFX = {
 //   Bench Press (Barbell)
 //   Set 1: 60 kg × 10   |   60 kg x 10   |   60kg × 10 @ RPE 8
 //   Bodyweight: × 12     |   Incline Run: 5 km in 30 min (ignored gracefully)
-function parseWorkout(text) {
-  if (!text) return { exercises: [], totalVolume: 0, totalSets: 0, avgRPE: null };
-  const lines = text.split("\n").map(l => l.trim());
-  const exercises = [];
-  let current = null;
-  let totalVolume = 0, totalSets = 0;
-  const rpeValues = [];
-
-  const setRe = /(?:set\s*\d+\s*[:.]?\s*)?(\d+(?:\.\d+)?)\s*(kg|lb|lbs)?\s*[x×]\s*(\d+)/i;
-  const bwRe = /[x×]\s*(\d+)\s*(?:reps)?$/i;
-  // RPE can appear as "@ RPE 8", "RPE 8", "@8", "@ 8.5" — capture the number (0-10, allow .5)
-  const rpeRe = /(?:@\s*)?rpe\s*(\d{1,2}(?:\.\d)?)|@\s*(\d{1,2}(?:\.\d)?)\b/i;
-
-  function extractRPE(line) {
-    const m = line.match(rpeRe);
-    if (!m) return null;
-    const v = parseFloat(m[1] ?? m[2]);
-    return (v >= 0 && v <= 10) ? v : null;
-  }
-
-  for (const line of lines) {
-    if (!line) continue;
-    const lower = line.toLowerCase();
-    // Skip duration/date/total lines
-    if (/^\d+\s*h(\s*\d+\s*m)?$/i.test(line) || /^\d+\s*m(in)?$/i.test(line)) continue;
-    if (/^(total|duration|volume|notes?|rest)\b/i.test(lower)) continue;
-
-    const m = line.match(setRe);
-    if (m && current) {
-      const weight = parseFloat(m[1]);
-      const unit = (m[2] || "kg").toLowerCase().replace("lbs", "lb");
-      const reps = parseInt(m[3], 10);
-      const wKg = unit === "lb" ? weight * 0.453592 : weight;
-      const rpe = extractRPE(line);
-      if (rpe != null) rpeValues.push(rpe);
-      current.sets.push({ weight, unit, reps, rpe });
-      current.volume += wKg * reps;
-      totalVolume += wKg * reps;
-      totalSets++;
-      continue;
-    }
-    // Bodyweight set like "× 12"
-    const bw = line.match(bwRe);
-    if (bw && current && !m) {
-      const rpe = extractRPE(line);
-      if (rpe != null) rpeValues.push(rpe);
-      current.sets.push({ weight: 0, unit: "kg", reps: parseInt(bw[1], 10), rpe });
-      totalSets++;
-      continue;
-    }
-    // Otherwise treat as an exercise name (must contain a letter, not be too long)
-    if (/[a-z]/i.test(line) && line.length < 60) {
-      current = { name: line.replace(/\s*\(.*?\)\s*$/, "").trim() || line, raw: line, sets: [], volume: 0 };
-      exercises.push(current);
-    }
-  }
-  // Drop exercises with no sets (likely stray header lines)
-  const withSets = exercises.filter(e => e.sets.length > 0);
-  const avgRPE = rpeValues.length ? +(rpeValues.reduce((a, b) => a + b, 0) / rpeValues.length).toFixed(1) : null;
-  return { exercises: withSets, totalVolume: Math.round(totalVolume), totalSets, avgRPE };
-}
 
 // Best set for an exercise = highest weight; tie-break on reps. Returns {weight, unit, reps} or null.
-function bestSet(sets) {
-  if (!sets || !sets.length) return null;
-  return sets.reduce((best, s) => {
-    const sKg = s.unit === "lb" ? s.weight * 0.453592 : s.weight;
-    const bKg = best.unit === "lb" ? best.weight * 0.453592 : best.weight;
-    if (sKg > bKg || (sKg === bKg && s.reps > best.reps)) return s;
-    return best;
-  });
-}
 
 // Estimated 1-rep max (Epley formula) in kg, for comparing PRs fairly across rep ranges.
-function e1rm(set) {
-  if (!set) return 0;
-  const wKg = set.unit === "lb" ? set.weight * 0.453592 : set.weight;
-  if (set.reps <= 0) return 0;
-  return wKg * (1 + set.reps / 30);
-}
 
 // Given a new parsed workout and all prior exercise entries, detect PRs.
 // Returns array of { name, weight, unit, reps } for exercises that beat all-time e1RM.
-function detectPRs(parsed, priorExercises) {
-  if (!parsed?.exercises?.length) return [];
-  // Build best historical e1RM per exercise name (case-insensitive)
-  const history = {};
-  for (const entry of priorExercises) {
-    const p = entry._parsed || parseWorkout(entry.text);
-    for (const ex of p.exercises) {
-      const key = ex.name.toLowerCase();
-      const best = e1rm(bestSet(ex.sets));
-      if (!history[key] || best > history[key]) history[key] = best;
-    }
-  }
-  const prs = [];
-  for (const ex of parsed.exercises) {
-    const key = ex.name.toLowerCase();
-    const bs = bestSet(ex.sets);
-    const newE = e1rm(bs);
-    if (newE > 0 && (history[key] === undefined || newE > history[key] + 0.01)) {
-      // Only count as PR if there was some history OR it's a meaningful lift (avoid first-ever everything)
-      if (history[key] !== undefined) prs.push({ name: ex.name, ...bs });
-    }
-  }
-  return prs;
-}
 
 // ─── ACHIEVEMENTS ─────────────────────────────────────────────────────────────
 function computeAchievements(data, goals, streak) {
@@ -674,25 +579,6 @@ function computeNicotineTiming(data, goals) {
 // Linear averaging of clock times is wrong when they straddle midnight
 // (e.g. 23:00 and 01:00 should average to 00:00, not 12:00). We treat each
 // time as an angle on a 24h clock, average the unit vectors, convert back.
-function avgTimeMins(times) {
-  const valid = times
-    .map(t => { const m = /^(\d{1,2}):(\d{2})/.exec(t); return m ? (+m[1] * 60 + +m[2]) : null; })
-    .filter(v => v != null && v >= 0 && v < 1440);
-  if (!valid.length) return null;
-  let sx = 0, sy = 0;
-  for (const v of valid) {
-    const ang = (v / 1440) * 2 * Math.PI;
-    sx += Math.cos(ang);
-    sy += Math.sin(ang);
-  }
-  // All vectors cancelled out (rare) → fall back to plain mean
-  if (Math.abs(sx) < 1e-9 && Math.abs(sy) < 1e-9) {
-    return Math.round(valid.reduce((a, b) => a + b, 0) / valid.length);
-  }
-  let ang = Math.atan2(sy, sx);
-  if (ang < 0) ang += 2 * Math.PI;
-  return Math.round((ang / (2 * Math.PI)) * 1440) % 1440;
-}
 
 // ─── RECOVERY ENGINE ──────────────────────────────────────────────────────────
 // Instant, rule-based "should I train today?" read from real data. Mirrors the
@@ -1138,106 +1024,8 @@ function computeSleep(data, goals) {
 // thermogenesis automatically. Honesty gates are the whole game: it refuses a
 // confident number when food logging is sparse, and flags the under-logging
 // signature (an implausibly low measured maintenance) instead of trusting it.
-const KCAL_PER_KG = 7700; // energy density of weight change (fat-dominant; rough for lean-mass gain)
 
-function mifflinBMR(profile, weightKg) {
-  const sex = (profile?.sex || "").toLowerCase();
-  const w = weightKg || parseFloat(profile?.weightKg);
-  const h = parseFloat(profile?.heightCm);
-  const a = parseFloat(profile?.age);
-  if (!(w > 0 && h > 0 && a > 0)) return null;
-  const base = 10 * w + 6.25 * h - 5 * a;
-  if (sex.startsWith("m")) return Math.round(base + 5);
-  if (sex.startsWith("f")) return Math.round(base - 161);
-  return Math.round(base - 78); // unknown sex → midpoint of the ±83 constant
-}
 
-function computeEnergyBalance(data, goals) {
-  const WINDOW = 21;
-  const today = getTodayStr();
-
-  // Daily intake over the window — only days with real food logged (≥800 kcal,
-  // to exclude days where a single snack was logged and the rest forgotten).
-  const kcalByDay = {};
-  (data.diet || []).forEach(d => { if (d.date && d.date >= daysAgo(WINDOW - 1)) kcalByDay[d.date] = (kcalByDay[d.date] || 0) + (d.calories || 0); });
-  const datesLogged = Object.keys(kcalByDay).filter(d => kcalByDay[d] >= 800).sort();
-  const loggedDays = datesLogged.length;
-  const earliest = datesLogged[0];
-  const spanDays = earliest ? Math.min(WINDOW, Math.round((new Date(today + "T00:00:00") - new Date(earliest + "T00:00:00")) / 86400000) + 1) : 0;
-  const completeness = spanDays > 0 ? +(loggedDays / spanDays).toFixed(2) : 0;
-  const meanIntake = loggedDays ? Math.round(datesLogged.reduce((a, d) => a + kcalByDay[d], 0) / loggedDays) : null;
-
-  const wt = computeWeightTrend(data);
-  const haveWeight = wt && wt.ratePerWeekKg != null && wt.confidence !== "Low";
-
-  // ── Insufficient-data state — be honest, never fabricate a maintenance number ──
-  if (loggedDays < 10 || spanDays < 14 || !haveWeight || meanIntake == null) {
-    return {
-      ready: false, loggedDays, spanDays, completeness, haveWeight: !!haveWeight,
-      reason: !haveWeight
-        ? "Log your weight a few more mornings — I need a stable 2-week trend before I can measure your real maintenance."
-        : `Keep logging food daily — ${loggedDays}/14 days so far. TDEE is only as honest as your intake logging, so I won't guess until there's enough.`,
-    };
-  }
-
-  const weightChangeKg = +(wt.ratePerWeekKg * (spanDays / 7)).toFixed(2);
-  const tdee = Math.round((meanIntake - (weightChangeKg * KCAL_PER_KG / spanDays)) / 10) * 10;
-  const realDelta = meanIntake - tdee; // <0 = real deficit, >0 = real surplus
-  const absD = Math.abs(realDelta);
-
-  // Sanity floor: a measured maintenance below BMR×1.1 for someone training is
-  // physiologically implausible → the food logs are almost certainly short. When
-  // weight is flat the back-calc makes TDEE≈intake, so the implausibly-low number
-  // itself is the under-logging tell (realDelta will be ~0, not a measured deficit).
-  const curWeight = wt.current || parseFloat(goals?.profile?.weightKg) || null;
-  const bmr = mifflinBMR(goals?.profile, curWeight);
-  const underLogging = bmr != null && tdee < bmr * 1.1 && realDelta < 50;
-
-  let confidence = "Low";
-  if (completeness >= 0.7 && loggedDays >= 12) confidence = "Moderate";
-  if (completeness >= 0.85 && loggedDays >= 18 && wt.confidence === "High") confidence = "High";
-
-  // Goal intent + a sensible recommended intake
-  const phase = (goals?.strategy?.phase || "").toLowerCase();
-  const goal = (goals?.goal || "").toLowerCase();
-  const intent = (/cut|deficit|fat/.test(phase) || goal.includes("fat") || goal.includes("lose")) ? "cut"
-    : (/bulk|surplus|gain/.test(phase) || goal.includes("muscle")) ? "bulk" : "maintain";
-  let recommendedIntake = tdee;
-  if (intent === "cut") recommendedIntake = Math.round((tdee * 0.82) / 10) * 10;   // ~18% deficit
-  else if (intent === "bulk") recommendedIntake = Math.round((tdee * 1.10) / 10) * 10; // ~10% surplus
-
-  // Plateau: fat-loss intent, trend weight ~flat, intake implies a deficit.
-  const flat = Math.abs(wt.ratePerWeekKg) < 0.1; // <100 g/wk
-  const plateau = intent === "cut" && flat && realDelta < -150 && completeness >= 0.7;
-
-  // ── Insights ──
-  const insights = [];
-  if (underLogging) {
-    insights.push({ text: `Your measured maintenance (~${tdee} kcal) is implausibly low for your size — that almost always means food is going unlogged, not a slow metabolism. Tighten logging before trusting any deficit number.`, priority: "important" });
-  } else {
-    const tgt = goals?.calories ?? null;
-    if (tgt && Math.abs(tgt - tdee) >= 150) {
-      insights.push({ text: `Your real maintenance measures ~${tdee} kcal — ${tdee > tgt ? `higher than the ${tgt} your targets assume, so you have more room than you think` : `lower than the ${tgt} your targets assume`}.`, priority: "notable" });
-    }
-    if (intent === "cut" && realDelta >= 0) {
-      insights.push({ text: `You're aiming to lose fat but eating ~${meanIntake}/day — at or above your measured maintenance of ${tdee}. That's why the scale isn't moving; drop below ${tdee} for a real deficit.`, priority: "important" });
-    } else if (intent === "bulk" && realDelta < -100) {
-      insights.push({ text: `You're aiming to gain but eating ~${absD} kcal below your measured maintenance (${tdee}) — you're actually in a deficit, which is why the gain stalled. Eat above ${tdee}.`, priority: "important" });
-    } else if (plateau) {
-      insights.push({ text: `Fat loss has stalled — trend weight is flat while your intake implies a ~${absD} kcal deficit. ${completeness >= 0.8 ? "Adaptation has likely pulled your maintenance down to meet your intake — a short diet break or a further ~150–200 kcal cut will restart it." : "Some intake may be unlogged — tighten logging for a week to tell adaptation from under-recording."}`, priority: "important" });
-    } else if (realDelta < -50) {
-      insights.push({ text: `Eating ~${meanIntake}/day against a measured maintenance of ${tdee} — a real deficit of ~${absD}/day (≈${(absD * 7 / KCAL_PER_KG).toFixed(2)} kg/wk of tissue if held).`, priority: "notable" });
-    } else if (realDelta > 50) {
-      insights.push({ text: `Eating ~${meanIntake}/day against a measured maintenance of ${tdee} — a real surplus of ~${absD}/day.`, priority: "notable" });
-    }
-  }
-
-  return {
-    ready: true, tdee, meanIntake, realDelta, intent, recommendedIntake, currentTarget: goals?.calories ?? null,
-    weightChangeKg, weightRateKgWk: wt.ratePerWeekKg, spanDays, loggedDays, completeness,
-    confidence, bmr, underLogging, plateau, insights,
-  };
-}
 
 // ─── TRAINING INTELLIGENCE ENGINE ───────────────────────────────────────────
 // Two evidence-graded jobs. (1) Per-lift PROGRESSION: track estimated 1RM per
@@ -1248,135 +1036,8 @@ function computeEnergyBalance(data, goals) {
 // MEV/MAV/MRV landmark NUMBERS are heuristics (Weak evidence) so they're shown
 // as soft bands, never hard verdicts. Name→muscle mapping is fuzzy by nature;
 // unmapped lifts are surfaced rather than silently dropped.
-const MUSCLE_LABELS = { chest: "Chest", back: "Back", shoulders: "Shoulders", biceps: "Biceps", triceps: "Triceps", quads: "Quads", hamstrings: "Hamstrings", glutes: "Glutes", calves: "Calves", abs: "Abs" };
 
-function mapMuscles(rawName) {
-  const n = (rawName || "").toLowerCase().replace(/[()]/g, " ").replace(/\s+/g, " ").trim();
-  if (!n) return null;
-  const P = (primary, secondary = []) => ({ primary, secondary });
-  if (/\b(leg curl|lying curl|seated leg curl|hamstring curl|nordic)\b/.test(n)) return P(["hamstrings"]);
-  if (/\b(romanian|rdl|stiff.?leg|good morning)\b/.test(n)) return P(["hamstrings"], ["glutes", "back"]);
-  if (/\b(leg extension|quad extension)\b/.test(n)) return P(["quads"]);
-  if (/\b(calf|calves)\b/.test(n)) return P(["calves"]);
-  if (/\b(hip thrust|glute bridge|kickback|glute)\b/.test(n)) return P(["glutes"], ["hamstrings"]);
-  if (/\b(leg press|hack squat)\b/.test(n)) return P(["quads"], ["glutes"]);
-  if (/\b(squat)\b/.test(n)) return P(["quads"], ["glutes", "hamstrings"]);
-  if (/\b(lunge|split squat|bulgarian|step.?up)\b/.test(n)) return P(["quads"], ["glutes", "hamstrings"]);
-  if (/\b(deadlift|trap bar)\b/.test(n)) return P(["back"], ["hamstrings", "glutes"]);
-  if (/\b(face pull|rear delt|reverse fly|reverse pec)\b/.test(n)) return P(["shoulders"], ["back"]);
-  if (/\b(lateral raise|side raise|lat raise|side delt)\b/.test(n)) return P(["shoulders"]);
-  if (/\b(overhead press|shoulder press|ohp|military|arnold|push press|strict press)\b/.test(n)) return P(["shoulders"], ["triceps"]);
-  if (/\b(shrug)\b/.test(n)) return P(["back"]);
-  if (/\b(row|pulldown|pull.?up|chin.?up|lat pull|pullover)\b/.test(n)) return P(["back"], ["biceps"]);
-  if (/\bdip\b/.test(n)) return P(["triceps"], ["chest"]);
-  if (/\b(tricep|triceps|pushdown|push.?down|skull|close.?grip|overhead extension)\b/.test(n)) return P(["triceps"]);
-  if (/\bcurl\b/.test(n)) return P(["biceps"]);
-  if (/\b(fly|flye|pec deck|pec.?dec)\b/.test(n)) return P(["chest"], ["shoulders"]);
-  if (/\b(bench|chest press|incline press|decline press|chest)\b/.test(n)) return P(["chest"], ["triceps", "shoulders"]);
-  if (/\bpress\b/.test(n)) return P(["chest"], ["triceps", "shoulders"]);
-  if (/\b(crunch|sit.?up|plank|leg raise|knee raise|hanging|ab wheel|cable crunch|russian twist|core|abs?)\b/.test(n)) return P(["abs"]);
-  if (/\bextension\b/.test(n)) return P(["triceps"]);
-  return null;
-}
 
-function computeTraining(data, goals) {
-  const ex = (data.exercise || []).filter(e => e && e.date);
-  if (ex.length === 0) return null;
-  const getP = e => e._parsed || parseWorkout(e.text || "");
-  const kgOf = s => (s.unit === "lb" ? s.weight * 0.453592 : s.weight);
-
-  // ── PER-MUSCLE WEEKLY VOLUME (last 7 days) ──
-  const weekEx = ex.filter(e => e.date >= daysAgo(6));
-  const setCounts = {}; Object.keys(MUSCLE_LABELS).forEach(m => (setCounts[m] = 0));
-  const unmapped = new Set();
-  let workingSets = 0;
-  weekEx.forEach(e => {
-    getP(e).exercises.forEach(x => {
-      // Approximate working sets: drop obvious warm-ups (<60% of the session's top
-      // load for that lift). Bodyweight lifts (top load 0) count every set.
-      const topW = x.sets.length ? Math.max(...x.sets.map(kgOf)) : 0;
-      const nSets = x.sets.filter(s => (topW <= 0 ? true : kgOf(s) >= 0.6 * topW)).length;
-      if (nSets === 0) return;
-      const mm = mapMuscles(x.name);
-      if (!mm) { unmapped.add(x.name); return; }
-      workingSets += nSets;
-      mm.primary.forEach(m => { if (setCounts[m] != null) setCounts[m] += nSets; });
-      (mm.secondary || []).forEach(m => { if (setCounts[m] != null) setCounts[m] += nSets * 0.5; });
-    });
-  });
-  const band = s => s < 6 ? "low" : s < 10 ? "maint" : s <= 20 ? "growth" : "high";
-  const perMuscle = Object.keys(MUSCLE_LABELS).map(m => ({ muscle: m, label: MUSCLE_LABELS[m], sets: Math.round(setCounts[m] * 2) / 2, band: band(setCounts[m]) }));
-  const trained = perMuscle.filter(x => x.sets > 0);
-  const sortedVol = [...trained].sort((a, b) => b.sets - a.sets);
-  const get = m => setCounts[m] || 0;
-
-  const imbalances = [];
-  const ratioFlag = (a, b, la, lb) => { const va = get(a), vb = get(b); if (va >= 6 && va / Math.max(vb, 0.5) >= 2) imbalances.push(`${la} (${Math.round(va)} sets) is getting ~${(va / Math.max(vb, 0.5)).toFixed(1)}× the volume of ${lb} (${Math.round(vb)})`); };
-  ratioFlag("chest", "back", "Chest", "Back"); ratioFlag("back", "chest", "Back", "Chest");
-  ratioFlag("quads", "hamstrings", "Quads", "Hamstrings");
-
-  const goalMuscle = /muscle|hypertrophy|build|gain/i.test((goals?.goal || "") + " " + (goals?.strategy?.focus || ""));
-  const majors = ["chest", "back", "shoulders", "quads", "hamstrings"];
-  const neglected = workingSets >= 20 ? majors.filter(m => get(m) < 6).map(m => MUSCLE_LABELS[m]) : [];
-
-  // ── PER-LIFT PROGRESSION (last 8 weeks, est 1RM trend) ──
-  const base = daysAgo(55);
-  const byLift = {};
-  ex.filter(e => e.date >= base).forEach(e => {
-    const dayIdx = Math.round((new Date(e.date + "T00:00:00") - new Date(base + "T00:00:00")) / 86400000);
-    getP(e).exercises.forEach(x => {
-      const best = e1rm(bestSet(x.sets));
-      if (best <= 0) return;
-      const key = x.name.toLowerCase().replace(/\s+/g, " ").trim();
-      (byLift[key] = byLift[key] || { display: x.name, pts: [] }).pts.push({ dayIdx, e1rm: best });
-    });
-  });
-  const lifts = [];
-  Object.values(byLift).forEach(L => {
-    const byDay = {};
-    L.pts.forEach(pt => { if (!byDay[pt.dayIdx] || pt.e1rm > byDay[pt.dayIdx].e1rm) byDay[pt.dayIdx] = pt; });
-    const pts = Object.values(byDay).sort((a, b) => a.dayIdx - b.dayIdx);
-    if (pts.length < 3) return;
-    const spanDays = pts[pts.length - 1].dayIdx - pts[0].dayIdx;
-    if (spanDays < 14) return;
-    const n = pts.length, sx = pts.reduce((a, p) => a + p.dayIdx, 0), sy = pts.reduce((a, p) => a + p.e1rm, 0);
-    const sxx = pts.reduce((a, p) => a + p.dayIdx * p.dayIdx, 0), sxy = pts.reduce((a, p) => a + p.dayIdx * p.e1rm, 0);
-    const denom = n * sxx - sx * sx;
-    const slopePerWk = (denom !== 0 ? (n * sxy - sx * sy) / denom : 0) * 7;
-    const meanE = sy / n;
-    const slopePct = meanE > 0 ? +(slopePerWk / meanE * 100).toFixed(1) : 0;
-    let status;
-    if (slopePct >= 0.4) status = "progressing";
-    else if (slopePct <= -0.6) status = "regressing";
-    else status = "stalled";
-    lifts.push({ name: L.display, sessions: pts.length, e1rmNow: Math.round(pts[pts.length - 1].e1rm), slopePct, status, weeks: Math.max(2, Math.round(spanDays / 7)) });
-  });
-  const compoundRe = /bench|squat|deadlift|press|row|pulldown|pull.?up|chin/i;
-  lifts.sort((a, b) => (compoundRe.test(b.name) - compoundRe.test(a.name)) || b.sessions - a.sessions || b.e1rmNow - a.e1rmNow);
-  const stalls = lifts.filter(l => l.status === "stalled" || l.status === "regressing");
-  const progressing = lifts.filter(l => l.status === "progressing");
-
-  // ── INSIGHTS ──
-  const insights = [];
-  stalls.slice(0, 2).forEach(l => insights.push({ text: `${l.name} has ${l.status === "regressing" ? "slipped" : "been flat"} ~${l.weeks} weeks (est 1RM ~${l.e1rmNow}kg). Change a variable — add a set, drop reps and add load, or take a deload week.`, priority: "important" }));
-  if (neglected.length) insights.push({ text: `Under-trained this week: ${neglected.join(", ")} (under ~6 hard sets). For balanced growth, aim ~10+ sets/week each.`, priority: "important" });
-  imbalances.slice(0, 1).forEach(t => insights.push({ text: `Volume imbalance — ${t}. Worth evening out for structural balance and joint health.`, priority: "notable" }));
-  if (goalMuscle && trained.length >= 3) {
-    const lowMaj = majors.filter(m => get(m) > 0 && get(m) < 10);
-    if (lowMaj.length >= 3) insights.push({ text: `Most muscles are under ~10 hard sets this week — below the productive hypertrophy range. If growth is the goal, add volume gradually (a set or two per muscle per week).`, priority: "notable" });
-  }
-  progressing.slice(0, 1).forEach(l => insights.push({ text: `${l.name} is progressing well (est 1RM trending +${l.slopePct}%/wk). Keep the current approach.`, priority: "notable" }));
-
-  let confidence = "Low";
-  if (ex.length >= 6 && weekEx.length >= 2) confidence = "Moderate";
-  if (ex.length >= 12 && lifts.length >= 2) confidence = "High";
-
-  return {
-    week: { perMuscle, trained, sortedVol, mostTrained: sortedVol[0] || null, leastTrained: sortedVol[sortedVol.length - 1] || null, imbalances, neglected, unmapped: [...unmapped], workingSets: Math.round(workingSets), sessions: weekEx.length },
-    progression: { lifts: lifts.slice(0, 6), stalls, progressing, tracked: lifts.length },
-    insights, confidence,
-  };
-}
 
 
 // ─── IMAGE RESIZE ────────────────────────────────────────────────────────────
@@ -1424,98 +1085,11 @@ async function fileToResizedBase64(file, maxDim = 1280, quality = 0.85) {
 // 3–5 such feedings spread out than with the same protein crammed into 1–2 big
 // meals. Counts "effective feedings", skew, the largest protein gap, and
 // pre-sleep coverage, then feeds the brain + a UI card.
-function minsOfTime(t) { if (!t) return null; const m = /^(\d{1,2}):(\d{2})/.exec(t); return m ? +m[1] * 60 + +m[2] : null; }
-
-function proteinPerMealTarget(data, goals) {
-  const bwTrend = computeWeightTrend(data);
-  const profileBw = goals?.profile?.weightKg ? parseFloat(goals.profile.weightKg) : null;
-  const bw = (bwTrend && bwTrend.current) || (profileBw && profileBw > 0 ? profileBw : null);
-  return { bw, perMeal: bw ? Math.round(0.4 * bw) : 30 };
-}
 
 // Cluster a day's diet entries into feedings: timed entries within 45 min chain
 // into one feeding (protein summed); untimed entries group by meal label so
 // itemized logging (chicken + rice at lunch) counts as ONE feeding, not two.
-function clusterFeedings(dayEntries) {
-  const timed = dayEntries.filter(e => minsOfTime(e.time) != null).map(e => ({ ...e, _m: minsOfTime(e.time) })).sort((a, b) => a._m - b._m);
-  const untimed = dayEntries.filter(e => minsOfTime(e.time) == null);
-  const feedings = [];
-  let cur = null;
-  for (const e of timed) {
-    const pro = e.protein || 0;
-    if (cur && e._m - cur.endMin <= 45) { cur.proteinG += pro; cur.endMin = e._m; }
-    else { cur = { proteinG: pro, startMin: e._m, endMin: e._m, hasTime: true }; feedings.push(cur); }
-  }
-  const byLabel = {};
-  untimed.forEach(e => { const k = e.meal || "Meal"; byLabel[k] = (byLabel[k] || 0) + (e.protein || 0); });
-  Object.values(byLabel).forEach(p => feedings.push({ proteinG: p, startMin: null, endMin: null, hasTime: false }));
-  return feedings;
-}
 
-function computeProteinDistribution(data, goals) {
-  const diet = data.diet || [];
-  if (diet.length === 0) return null;
-  const { bw, perMeal } = proteinPerMealTarget(data, goals);
-  const proteinGoal = goals?.protein || 0;
-  const today = getTodayStr();
-  const windowDays = Array.from({ length: 7 }, (_, i) => daysAgo(6 - i));
-
-  const dayStats = [];
-  windowDays.forEach(date => {
-    const entries = diet.filter(d => d.date === date);
-    if (entries.length === 0) return;
-    const feedings = clusterFeedings(entries);
-    const dayProtein = entries.reduce((a, e) => a + (e.protein || 0), 0);
-    const effective = feedings.filter(f => f.proteinG >= perMeal).length;
-    const anyTime = feedings.some(f => f.hasTime);
-    const timed = feedings.filter(f => f.hasTime).sort((a, b) => a.startMin - b.startMin);
-    let largestGap = null;
-    if (timed.length >= 2) { let g = 0; for (let i = 1; i < timed.length; i++) g = Math.max(g, (timed[i].startMin - timed[i - 1].startMin) / 60); largestGap = +g.toFixed(1); }
-    const maxFeed = feedings.reduce((m, f) => Math.max(m, f.proteinG), 0);
-    const skew = dayProtein > 0 ? maxFeed / dayProtein : null;
-    const slp = (data.sleep || []).find(s => s.date === date);
-    const bedMin = slp ? minsOfTime(slp.bedtime) : null;
-    let preSleepEligible = false, preSleepOK = false;
-    if (bedMin != null && timed.length) {
-      preSleepEligible = true;
-      const bedAdj = bedMin < 300 ? bedMin + 1440 : bedMin; // wrap past-midnight bedtimes
-      preSleepOK = timed.some(f => f.proteinG >= 20 && bedAdj - f.startMin >= 0 && bedAdj - f.startMin <= 180);
-    }
-    dayStats.push({ dayProtein, effective, anyTime, largestGap, skew, preSleepEligible, preSleepOK, hitGoal: proteinGoal ? dayProtein >= proteinGoal : false });
-  });
-  if (dayStats.length === 0) return null;
-
-  const mean = arr => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
-  const daysWithMeals = dayStats.length;
-  const daysWithTimes = dayStats.filter(d => d.anyTime).length;
-  const avgEffective = +mean(dayStats.map(d => d.effective)).toFixed(1);
-  const avgProtein = Math.round(mean(dayStats.map(d => d.dayProtein)));
-  const goalHitDays = dayStats.filter(d => d.hitGoal).length;
-  const skews = dayStats.map(d => d.skew).filter(v => v != null);
-  const avgSkew = skews.length ? +(mean(skews) * 100).toFixed(0) : null;
-  const gaps = dayStats.map(d => d.largestGap).filter(v => v != null);
-  const avgLargestGap = gaps.length ? +mean(gaps).toFixed(1) : null;
-  const preEligibleDays = dayStats.filter(d => d.preSleepEligible).length;
-  const preOKDays = dayStats.filter(d => d.preSleepOK).length;
-
-  let confidence = "Low";
-  if (daysWithMeals >= 4) confidence = "Moderate";
-  if (daysWithMeals >= 6 && daysWithTimes >= 4) confidence = "High";
-
-  const todayEntries = diet.filter(d => d.date === today);
-  const todayFeedings = clusterFeedings(todayEntries).sort((a, b) => (a.startMin ?? 99999) - (b.startMin ?? 99999));
-  const todaySnap = {
-    dayProtein: Math.round(todayEntries.reduce((a, e) => a + (e.protein || 0), 0)),
-    effective: todayFeedings.filter(f => f.proteinG >= perMeal).length,
-    feedings: todayFeedings.map(f => ({
-      proteinG: Math.round(f.proteinG),
-      effective: f.proteinG >= perMeal,
-      time: f.hasTime ? `${String(Math.floor(f.startMin / 60)).padStart(2, "0")}:${String(f.startMin % 60).padStart(2, "0")}` : null,
-    })),
-  };
-
-  return { bw, perMeal, proteinGoal, avgEffective, avgProtein, goalHitDays, daysWithMeals, daysWithTimes, avgSkew, avgLargestGap, preEligibleDays, preOKDays, confidence, today: todaySnap };
-}
 
 // ─── INSIGHT PRIORITIZATION ENGINE (F1) ─────────────────────────────────────
 // The engines (A1/B1/D1 + the pattern detectors) each push insights with a
@@ -1963,14 +1537,6 @@ function buildBrain(data, goals) {
 
 // Helpers for time math. avgTimeHHMM averages a list of "HH:MM" strings.
 // `wrapPM` handles bedtime (treating 00:00–05:00 as the same night, after midnight, by adding 24h).
-function avgTimeHHMM(times, wrapPM = false) {
-  // wrapPM kept for call-site compatibility but no longer needed — circular mean
-  // handles midnight-straddling times correctly.
-  if (!times || !times.length) return null;
-  const avg = avgTimeMins(times);
-  if (avg == null) return null;
-  return `${String(Math.floor(avg / 60)).padStart(2, "0")}:${String(avg % 60).padStart(2, "0")}`;
-}
 
 // Turns the brain object into a tight text block every AI prompt gets.
 // Pre-digested signals at the top so the model immediately knows what matters.
