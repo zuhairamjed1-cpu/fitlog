@@ -1022,15 +1022,68 @@ function computeSleep(data, goals) {
   if (rpe7 != null && rpe7 >= 8 && debt7 >= 3) {
     coupling.push({ key: "rpe", severity: "important", text: `Sessions are feeling hard (avg RPE ${rpe7}) and you're carrying ~${debt7}h of sleep debt. That's central fatigue inflating perceived effort — not lost strength. Hold your planned load; don't auto-cut volume.` });
   }
-  // 3) Appetite: your own kcal on short-sleep vs normal nights.
-  if (last14.length >= 6) {
-    const kcalByDate = {};
-    (data.diet || []).forEach(d => { if (d.date) kcalByDate[d.date] = (kcalByDate[d.date] || 0) + (d.calories || 0); });
-    const shortDays = last14.filter(r => r.tst < need.hours - 1 && kcalByDate[r.date] != null).map(r => kcalByDate[r.date]);
-    const okDays = last14.filter(r => r.tst >= need.hours - 1 && kcalByDate[r.date] != null).map(r => kcalByDate[r.date]);
-    if (shortDays.length >= 3 && okDays.length >= 3) {
-      const diff = Math.round(mean(shortDays) - mean(okDays));
-      if (diff >= 150) coupling.push({ key: "appetite", severity: "notable", text: `On your short-sleep days you eat ~${diff} kcal more than on well-slept days — sleep loss drives reward-seeking eating. Worth pre-planning meals after a bad night.` });
+  // 3) APPETITE TAX — sleep → eating (Tasali 2022: sleep loss drives reward-seeking
+  // intake; mechanism is hedonic/endocannabinoid + more waking hours, NOT leptin/ghrelin
+  // which the evidence downgrades). We never estimate hormones — we measure the four
+  // behavioural fingerprints in the user's OWN logs: total kcal, eating occasions
+  // (snacking), late-night calories, and protein share (a proxy for drifting toward
+  // calorie-dense food). Same-day alignment: a night's short sleep shapes THAT day's eating.
+  let appetite = null;
+  {
+    const dietByDate = {};
+    (data.diet || []).forEach(d => { if (!d.date) return; (dietByDate[d.date] = dietByDate[d.date] || []).push(d); });
+    const win = sorted.filter(s => s.date >= daysAgo(29)).map(enrich);
+    const lateMin = 21 * 60; // 9pm
+    const dayMetrics = r => {
+      const ents = dietByDate[r.date];
+      if (!ents || !ents.length) return null;
+      const kcal = ents.reduce((a, e) => a + (e.calories || 0), 0);
+      if (kcal <= 0) return null;
+      const protein = ents.reduce((a, e) => a + (e.protein || 0), 0);
+      const occasions = clusterFeedings(ents).length;
+      const lateKcal = ents.filter(e => { const m = mins(e.time); return m != null && m >= lateMin; }).reduce((a, e) => a + (e.calories || 0), 0);
+      return { kcal, occasions, lateKcal, pShare: (protein * 4 / kcal) * 100 };
+    };
+    const shortM = win.filter(r => r.tst < need.hours - 1).map(dayMetrics).filter(Boolean);
+    const okM = win.filter(r => r.tst >= need.hours - 0.5).map(dayMetrics).filter(Boolean);
+    if (shortM.length >= 3 && okM.length >= 3) {
+      const avg = (arr, k) => mean(arr.map(x => x[k]).filter(v => v != null));
+      const kcalDelta = Math.round(avg(shortM, "kcal") - avg(okM, "kcal"));
+      const occDelta = +(avg(shortM, "occasions") - avg(okM, "occasions")).toFixed(1);
+      const lateDelta = Math.round(avg(shortM, "lateKcal") - avg(okM, "lateKcal"));
+      const ps = avg(shortM, "pShare"), po = avg(okM, "pShare");
+      const pShareDrop = (ps != null && po != null) ? +(po - ps).toFixed(1) : null;
+      const n = Math.min(shortM.length, okM.length);
+      const confidence = n >= 6 ? "High" : n >= 4 ? "Moderate" : "Low";
+      // Population expectation says intake rises — but defer to THEIR reality.
+      const responder = kcalDelta >= 120 || lateDelta >= 100 || (pShareDrop != null && pShareDrop >= 4);
+      const ph = (/cut|deficit|fat/.test(phase) || goal.includes("fat") || goal.includes("lose")) ? "cut"
+               : (/bulk|surplus|gain/.test(phase) || goal.includes("muscle")) ? "bulk" : "maintain";
+      appetite = { shortDays: shortM.length, okDays: okM.length, kcalDelta, occDelta, lateDelta, pShareDrop, responder, phase: ph, confidence };
+
+      // Surface it only when the user's OWN data shows the pattern (responder).
+      // Behavioural readout, externalised, never a restriction instruction.
+      if (responder) {
+        const bits = [];
+        if (kcalDelta >= 120) bits.push(`+${kcalDelta} kcal`);
+        if (occDelta >= 0.7) bits.push(`~${occDelta} more eating occasion${occDelta >= 1.5 ? "s" : ""}`);
+        if (lateDelta >= 100) bits.push(`+${lateDelta} kcal after 9pm`);
+        if (pShareDrop != null && pShareDrop >= 3) bits.push(`protein share down ~${pShareDrop}pts`);
+        const hasPart = coupling.some(c => c.key === "partitioning");
+        let tail, sev;
+        if (ph === "cut") {
+          tail = ` On a cut this is where the deficit quietly leaks${hasPart ? ", same root cause as the muscle-loss risk above" : ""} — the lever is upstream: protect sleep, and pre-plan tomorrow's food after a bad night rather than fighting it in the moment.`;
+          sev = "important";
+        } else if (ph === "bulk") {
+          tail = ` In a surplus that's a mild tailwind for hitting calories — just steer the extra toward protein and whole food, not late snacks.`;
+          sev = "notable";
+        } else {
+          tail = ` Pre-planning meals after a short night beats white-knuckling it in the moment.`;
+          sev = "notable";
+        }
+        const caveat = confidence === "Low" ? " (early read — only a few matched days so far)" : "";
+        coupling.push({ key: "appetite", severity: sev, text: `On your short-sleep days your eating shifts — ${bits.join(", ")} vs well-slept days${caveat}. That's the sleep→appetite drive (reward-seeking, not willpower).${tail}` });
+      }
     }
   }
   // 4) Mood: poor sleep preceding low journal sentiment.
@@ -1077,7 +1130,7 @@ function computeSleep(data, goals) {
     quantity: { avgTST7, avgTST14, need: need.hours, debt7, status: qStatus, label: qLabel, loggedNights7: last7.length },
     regularity: { midSD, wakeSD, socialJetlag, status: rStatus, label: rLabel, anchorWake: fmtClock(anchorWakeMin), bedTarget: fmtClock(bedTargetMin) },
     continuity: { avgEff, avgLatency, avgWaso, qualityTrend, unrefreshing, unrefreshCount: unrefreshNights.length, recentNights: last14.length, status: cStatus, label: cLabel, hasEffData: effNights.length > 0 },
-    coupling, insights, topLever,
+    coupling, insights, topLever, appetite,
     today: todayRec ? { tst: +todayRec.tst.toFixed(1), eff: todayRec.eff, quality: todayRec.quality } : null,
     series: { tst: tstSeries, quality: qSeries },
   };
