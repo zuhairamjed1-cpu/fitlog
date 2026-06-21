@@ -3073,6 +3073,7 @@ function PlanTab({ data, goals, onSaveGoals }) {
 // ─── SLEEP FORM ──
 function SleepForm({ onAdd, recent }) {
   const [form, setForm] = useState({ date: getTodayStr(), bedtime: "22:30", wakeTime: "06:30", quality: "Good", latencyMin: "", wakeMin: "", notes: "" });
+  const [showDetail, setShowDetail] = useState(false);
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const tibH = (() => {
     const [bh, bm] = form.bedtime.split(":").map(Number), [wh, wm] = form.wakeTime.split(":").map(Number);
@@ -3083,6 +3084,8 @@ function SleepForm({ onAdd, recent }) {
   const tstH = Math.max(0, tibH - lat / 60 - waso / 60);
   const hasDetail = lat > 0 || waso > 0;
   const eff = tibH > 0 ? Math.round((tstH / tibH) * 100) : 0;
+  const fmt12 = t => { const [h, m] = t.split(":").map(Number); const ap = h < 12 ? "AM" : "PM"; return `${((h + 11) % 12) + 1}:${String(m).padStart(2, "0")} ${ap}`; };
+  const isToday = form.date === getTodayStr();
   function save() {
     const entry = { date: form.date, bedtime: form.bedtime, wakeTime: form.wakeTime, quality: form.quality, notes: form.notes, duration: +tibH.toFixed(1), id: Date.now() };
     if (form.latencyMin !== "") entry.latencyMin = Math.max(0, Math.round(parseFloat(form.latencyMin)) || 0);
@@ -3090,23 +3093,53 @@ function SleepForm({ onAdd, recent }) {
     onAdd(entry);
     toast("◐ Sleep logged");
     setForm(f => ({ ...f, latencyMin: "", wakeMin: "", notes: "" }));
+    setShowDetail(false);
   }
   return (
     <>
-      <Card title="Log sleep">
-        <div className="field-grid">
-          <label>Date<input type="date" value={form.date} onChange={e => set("date", e.target.value)} /></label>
-          <label>Quality<select value={form.quality} onChange={e => set("quality", e.target.value)}>{sleepQuality.map(q => <option key={q}>{q}</option>)}</select></label>
+      <Card title="Log sleep" action={
+        <input type="date" className="sleep-date" value={form.date} onChange={e => set("date", e.target.value)} />
+      }>
+        {/* Hero — live duration readout */}
+        <div className="sleep-hero">
+          <div className="sleep-hero-moon">☾</div>
+          <div className="sleep-hero-dur">{tibH.toFixed(1)}<span>h{hasDetail ? " in bed" : ""}</span></div>
+          <div className="sleep-hero-range">
+            {fmt12(form.bedtime)} → {fmt12(form.wakeTime)}
+            {hasDetail && <> · <strong>{tstH.toFixed(1)}h asleep</strong> · {eff}%</>}
+          </div>
+        </div>
+
+        {/* Times */}
+        <div className="field-grid" style={{ marginTop: 4 }}>
           <label>Got in bed<input type="time" value={form.bedtime} onChange={e => set("bedtime", e.target.value)} /></label>
           <label>Got up<input type="time" value={form.wakeTime} onChange={e => set("wakeTime", e.target.value)} /></label>
-          <label>Mins to fall asleep <span className="muted small" style={{ fontWeight: 400 }}>(optional)</span><input type="number" inputMode="numeric" value={form.latencyMin} onChange={e => set("latencyMin", e.target.value)} placeholder="e.g. 15" /></label>
-          <label>Mins awake in night <span className="muted small" style={{ fontWeight: 400 }}>(optional)</span><input type="number" inputMode="numeric" value={form.wakeMin} onChange={e => set("wakeMin", e.target.value)} placeholder="e.g. 0" /></label>
         </div>
-        <div className="duration-pill">
-          <span>{tibH.toFixed(1)}h</span> in bed{hasDetail ? <> · <span>{tstH.toFixed(1)}h</span> asleep · {eff}% efficient</> : ""}
+
+        {/* Quality — tappable */}
+        <div className="sleep-field-label">How did you sleep?</div>
+        <div className="sleep-q-chips">
+          {sleepQuality.map(q => (
+            <button key={q} className={`sleep-q-chip ${form.quality === q ? "on" : ""}`} onClick={() => { set("quality", q); haptic(8); }}>{q}</button>
+          ))}
         </div>
-        <label>Notes<textarea value={form.notes} onChange={e => set("notes", e.target.value)} placeholder="How did you sleep?" rows={2} /></label>
-        <button className="btn full" onClick={save}>Save sleep</button>
+
+        {/* Optional depth — tucked away */}
+        <button className="sleep-detail-toggle" onClick={() => setShowDetail(s => !s)}>
+          {showDetail ? "− Hide detail" : "+ Add fall-asleep time, wake-ups & notes"}
+        </button>
+        {showDetail && (
+          <div className="sleep-detail">
+            <div className="field-grid">
+              <label>Mins to fall asleep<input type="number" inputMode="numeric" value={form.latencyMin} onChange={e => set("latencyMin", e.target.value)} placeholder="e.g. 15" /></label>
+              <label>Mins awake in night<input type="number" inputMode="numeric" value={form.wakeMin} onChange={e => set("wakeMin", e.target.value)} placeholder="e.g. 0" /></label>
+            </div>
+            <label>Notes<textarea value={form.notes} onChange={e => set("notes", e.target.value)} placeholder="Anything worth remembering about last night?" rows={2} /></label>
+            <p className="muted small" style={{ lineHeight: 1.45 }}>These two numbers unlock your sleep-efficiency reading — add them when you have them, skip when you don't.</p>
+          </div>
+        )}
+
+        <button className="btn full" style={{ marginTop: 14 }} onClick={save}>Save {isToday ? "last night" : "sleep"}</button>
       </Card>
       <RecentList entries={recent} render={s => <><span className="ra-main">{s.duration}h · {s.quality}</span><span className="ra-date">{formatShortDate(s.date)}</span></>} />
     </>
@@ -7198,4 +7231,21 @@ input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
 .sbg-v .good { color: var(--good); font-size: .85rem; }
 .sbg-v .bad { color: var(--bad); font-size: .85rem; }
 .sbg-v .muted { font-size: .8rem; }
+
+/* ─── SLEEP LOG FORM (simplified) ──────────────────────────────────────────── */
+.sleep-date { width: auto; min-height: 34px; padding: 5px 8px; font-size: .8rem; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; color: var(--text-2); }
+.sleep-hero { text-align: center; padding: 6px 0 10px; }
+.sleep-hero-moon { font-size: 1.5rem; color: var(--accent); line-height: 1; }
+.sleep-hero-dur { font-size: 2.7rem; font-weight: 700; line-height: 1.05; letter-spacing: -.01em; }
+.sleep-hero-dur span { font-size: 1rem; color: var(--muted); margin-left: 4px; font-weight: 600; }
+.sleep-hero-range { color: var(--text-2); font-size: .85rem; margin-top: 3px; }
+.sleep-hero-range strong { color: var(--accent); font-weight: 600; }
+.sleep-field-label { font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 700; margin: 16px 2px 8px; }
+.sleep-q-chips { display: flex; gap: 7px; }
+.sleep-q-chip { flex: 1; padding: 11px 4px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--border); color: var(--text-2); font-size: .82rem; font-weight: 600; cursor: pointer; transition: background .15s, border-color .15s, color .15s, transform .1s; }
+.sleep-q-chip:active { transform: scale(.95); }
+.sleep-q-chip.on { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+.sleep-detail-toggle { display: block; width: 100%; text-align: center; background: none; border: none; color: var(--accent); font-size: .85rem; font-weight: 600; cursor: pointer; padding: 16px 2px 4px; }
+.sleep-detail { animation: log-rise .2s ease; }
+.sleep-detail > .field-grid { margin-bottom: 4px; }
 `;
