@@ -18,6 +18,8 @@ const defaultProfile = {
   // Preferences and short-term life context
   preferences: "", // free text
   lifeContext: "", // free text - "stressful work month", "sister's wedding in 8wks", etc
+  // Sleep
+  sleepNeedH: "", // optional override of learned individual sleep need (hours)
 };
 
 const defaultStrategy = {
@@ -28,7 +30,7 @@ const defaultStrategy = {
   notes: "", // free text — anything else the AI should know about strategy right now
 };
 
-const defaultGoals = { calories: 2500, protein: 180, carbs: 250, fat: 80, goal: "Build Muscle", waterGoalMl: 2500, profile: defaultProfile, strategy: defaultStrategy };
+const defaultGoals = { calories: 2500, protein: 180, carbs: 250, fat: 80, goal: "Build Muscle", waterGoalMl: 2500, profile: defaultProfile, strategy: defaultStrategy, sleepScreen: null, sleepExperiment: null };
 const fitnessGoals = ["Build Muscle", "Lose Fat", "Improve Endurance", "Maintain Weight", "Athletic Performance"];
 const mealTypes = ["Breakfast", "Lunch", "Dinner", "Snack"];
 const sportsOptions = ["Running","Football","Basketball","Tennis","Swimming","Cycling","Yoga","Boxing","Soccer","Volleyball","Badminton","Table Tennis","Golf","Martial Arts","Hiking","Walking","Rowing","Climbing","Other"];
@@ -764,12 +766,13 @@ function computeRecovery(data, goals) {
 
   const sleepTiming = { hoursAwake, hoursToBed, nextBedLabel, lastWake: lastSleep?.wakeTime || null, lastBed: lastSleep?.bedtime || null };
 
-  // ── 7-day sleep debt ──
+  // ── 7-day sleep debt (vs the user's personal need, not a hardcoded 8h) ──
   const last7Sleep = (data.sleep || []).filter(s => s.date >= daysAgo(6));
   if (last7Sleep.length >= 3) {
-    const debt = last7Sleep.reduce((d, s) => d + (8 - s.duration), 0);
-    if (debt > 8) add(`Sleep debt is high (~${debt.toFixed(0)}h short this week)`, "neg", 2, "sleep");
-    else if (debt > 4) add(`Some sleep debt building this week (~${debt.toFixed(0)}h)`, "neg", 1, "sleep");
+    const need = estimateSleepNeed(data, goals).hours;
+    const debt = last7Sleep.reduce((d, s) => d + (need - sleepTST(s)), 0);
+    if (debt > 8) add(`Sleep debt is high (~${debt.toFixed(0)}h short of your ${need}h need this week)`, "neg", 2, "sleep");
+    else if (debt > 4) add(`Some sleep debt building this week (~${debt.toFixed(0)}h short of your ${need}h need)`, "neg", 1, "sleep");
   }
 
   // ── Consecutive training days / days since rest ──
@@ -868,7 +871,224 @@ function computeRecovery(data, goals) {
   return { verdict, reasons, unknown, lowData, plannedToday, todayLabel, reconcile, negScore, sleepTiming, limiter, readiness, negByCat };
 }
 
+// ─── SLEEP INTELLIGENCE ENGINE ──────────────────────────────────────────────
+// The smartest section in the tracker. Models sleep as THREE loosely-coupled
+// problems (Borbély / sleep-medicine consensus): quantity (vs the user's OWN
+// learned need, never an 8h dogma), timing/regularity (circadian), and
+// continuity/quality. Then — the part no standalone sleep tracker can do — it
+// couples sleep to the rest of the user's physiology (weight partitioning, RPE
+// inflation, appetite, mood) using their own logged data. Deterministic.
+//
+// Guardrails baked in: NO fabricated sleep-stage / deep-sleep data (consumer
+// estimates are unreliable; chasing them causes orthosomnia); need is
+// individualised; three axis reads, never one gamified score; disorder
+// screening language stays non-diagnostic; coupling = correlation, not proof.
 
+// True sleep time = time-in-bed − latency − wake-after-sleep-onset (when logged).
+function sleepTST(s) {
+  const tib = s.duration || 0;
+  return Math.max(0.5, tib - (s.latencyMin || 0) / 60 - (s.wakeMin || 0) / 60);
+}
+
+// Individual sleep need. Override wins; otherwise learn from the user's own
+// well-rated, unrestricted nights (median TST). Never assumes 8h as fact.
+function estimateSleepNeed(data, goals) {
+  const override = parseFloat(goals?.profile?.sleepNeedH);
+  if (override > 0) return { hours: Math.max(4, Math.min(12, override)), source: "override", confidence: "set", nGood: 0 };
+  const good = (data.sleep || []).filter(s => s && s.date >= daysAgo(59) && /^(Good|Great|Excellent)$/.test(s.quality || ""));
+  const tsts = good.map(sleepTST).sort((a, b) => a - b);
+  if (tsts.length >= 5) {
+    const m = tsts.length >> 1;
+    let need = tsts.length % 2 ? tsts[m] : (tsts[m - 1] + tsts[m]) / 2;
+    need = Math.max(6, Math.min(9.5, +need.toFixed(1)));
+    return { hours: need, source: "learned", confidence: tsts.length >= 10 ? "high" : "moderate", nGood: tsts.length };
+  }
+  return { hours: 8, source: "default", confidence: "low", nGood: tsts.length };
+}
+
+function computeSleep(data, goals) {
+  const sleep = (data.sleep || []).filter(s => s && s.date && s.duration != null);
+  if (sleep.length === 0) return null;
+  const today = getTodayStr();
+  const mins = t => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ""); return m ? +m[1] * 60 + +m[2] : null; };
+  const qScore = { Poor: 1, Fair: 2, Good: 3, Great: 4, Excellent: 5 };
+  const mean = a => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
+  const median = a => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+  const fmtClock = m => m == null ? null : `${String(Math.floor((m % 1440) / 60)).padStart(2, "0")}:${String(Math.round(m) % 60).padStart(2, "0")}`;
+
+  const need = estimateSleepNeed(data, goals);
+
+  const enrich = s => {
+    const bed = mins(s.bedtime), wake = mins(s.wakeTime);
+    const tib = s.duration || 0;
+    const tst = sleepTST(s);
+    const eff = tib > 0 ? Math.round((tst / tib) * 100) : null;
+    const mid = bed != null ? (bed + tib * 30) % 1440 : null; // mid-sleep clock minute
+    return { date: s.date, tib, tst, eff, latency: s.latencyMin ?? null, waso: s.wakeMin ?? null, quality: s.quality, q: qScore[s.quality] ?? null, bed, wake, mid, hasEff: (s.latencyMin != null || s.wakeMin != null) };
+  };
+  const sorted = [...sleep].sort((a, b) => a.date.localeCompare(b.date));
+  const inWin = n => sorted.filter(s => s.date >= daysAgo(n - 1)).map(enrich);
+  const last7 = inWin(7), last14 = inWin(14), last21 = inWin(21);
+
+  // Circular-stats helpers (clock times wrap at midnight)
+  const circMean = arr => {
+    if (!arr.length) return null;
+    let sx = 0, sy = 0; arr.forEach(v => { const a = (v / 1440) * 2 * Math.PI; sx += Math.cos(a); sy += Math.sin(a); });
+    if (Math.abs(sx) < 1e-9 && Math.abs(sy) < 1e-9) return Math.round(arr.reduce((x, y) => x + y, 0) / arr.length);
+    let a = Math.atan2(sy, sx); if (a < 0) a += 2 * Math.PI; return Math.round(a / (2 * Math.PI) * 1440) % 1440;
+  };
+  const circSD = arr => {
+    if (arr.length < 2) return null;
+    let sx = 0, sy = 0; arr.forEach(v => { const a = (v / 1440) * 2 * Math.PI; sx += Math.cos(a); sy += Math.sin(a); });
+    const R = Math.sqrt(sx * sx + sy * sy) / arr.length;
+    if (R <= 0.0001) return 720;
+    return Math.round(Math.sqrt(-2 * Math.log(Math.min(1, R))) * 1440 / (2 * Math.PI));
+  };
+  const circDiff = (a, b) => { if (a == null || b == null) return null; let d = Math.abs(a - b) % 1440; return d > 720 ? 1440 - d : d; };
+
+  // ── AXIS 1 — QUANTITY (vs personal need) ──
+  const avgTST7 = last7.length ? +mean(last7.map(r => r.tst)).toFixed(1) : null;
+  const avgTST14 = last14.length ? +mean(last14.map(r => r.tst)).toFixed(1) : null;
+  const debt7 = +last7.reduce((d, r) => d + (need.hours - r.tst), 0).toFixed(1); // net vs need
+  let qStatus = "good", qLabel = "On target";
+  if (avgTST7 != null) {
+    const gap = avgTST7 - need.hours;
+    if (gap <= -1.5) { qStatus = "bad"; qLabel = "Significantly short"; }
+    else if (gap <= -0.5) { qStatus = "warn"; qLabel = "Running short"; }
+    else if (gap >= 1.2) { qStatus = "warn"; qLabel = "Oversleeping"; }
+  }
+
+  // ── AXIS 2 — TIMING / REGULARITY ──
+  const midVals = last14.map(r => r.mid).filter(v => v != null);
+  const wakeVals = last14.map(r => r.wake).filter(v => v != null);
+  const midSD = circSD(midVals);
+  const wakeSD = circSD(wakeVals);
+  let rStatus = null, rLabel = null;
+  if (midSD != null) {
+    if (midSD <= 30) { rStatus = "good"; rLabel = "Very regular"; }
+    else if (midSD <= 60) { rStatus = "good"; rLabel = "Fairly regular"; }
+    else if (midSD <= 90) { rStatus = "warn"; rLabel = "Irregular"; }
+    else { rStatus = "bad"; rLabel = "Highly irregular"; }
+  }
+  const isWknd = ds => { const wd = new Date(ds + "T00:00:00").getDay(); return wd === 0 || wd === 6; };
+  const wkdayMid = last21.filter(r => r.mid != null && !isWknd(r.date)).map(r => r.mid);
+  const wkendMid = last21.filter(r => r.mid != null && isWknd(r.date)).map(r => r.mid);
+  let socialJetlag = null;
+  if (wkdayMid.length >= 2 && wkendMid.length >= 1) socialJetlag = +(circDiff(circMean(wkendMid), circMean(wkdayMid)) / 60).toFixed(1);
+  const anchorWakeMin = wakeVals.length ? circMean(wakeVals) : null;
+  const typLatency = (() => { const ls = last14.map(r => r.latency).filter(v => v != null); return ls.length ? median(ls) : 15; })();
+  const bedTargetMin = anchorWakeMin != null ? ((anchorWakeMin - Math.round(need.hours * 60) - typLatency) % 1440 + 1440) % 1440 : null;
+
+  // ── AXIS 3 — CONTINUITY / QUALITY ──
+  const effNights = last14.filter(r => r.hasEff);
+  const avgEff = effNights.length ? Math.round(mean(effNights.map(r => r.eff))) : null;
+  const avgLatency = (() => { const v = last14.map(r => r.latency).filter(x => x != null); return v.length ? Math.round(mean(v)) : null; })();
+  const avgWaso = (() => { const v = last14.map(r => r.waso).filter(x => x != null); return v.length ? Math.round(mean(v)) : null; })();
+  const q7 = last7.map(r => r.q).filter(v => v != null);
+  const qOlder = last14.filter(r => r.date < daysAgo(6)).map(r => r.q).filter(v => v != null);
+  const avgQ7 = q7.length ? +mean(q7).toFixed(1) : null;
+  const qualityTrend = (avgQ7 != null && qOlder.length) ? +(avgQ7 - mean(qOlder)).toFixed(1) : null;
+  // Unrefreshing sleep: adequate duration but consistently poor quality — the
+  // single highest-leverage screening signal (possible OSA / fragmentation).
+  const unrefreshNights = last14.filter(r => r.q != null && r.q <= 2 && r.tst >= need.hours - 0.5);
+  const unrefreshing = last14.length >= 5 && unrefreshNights.length >= 3 && (unrefreshNights.length / last14.length) >= 0.4;
+  let cStatus = null, cLabel = null;
+  if (avgEff != null) {
+    if (avgEff >= 90) { cStatus = "good"; cLabel = "Solid & consolidated"; }
+    else if (avgEff >= 85) { cStatus = "warn"; cLabel = "Slightly fragmented"; }
+    else { cStatus = "bad"; cLabel = "Fragmented / inefficient"; }
+  } else if (avgQ7 != null) {
+    if (avgQ7 >= 3.5) { cStatus = "good"; cLabel = "Feels restful"; }
+    else if (avgQ7 >= 2.5) { cStatus = "warn"; cLabel = "Mediocre quality"; }
+    else { cStatus = "bad"; cLabel = "Poor quality"; }
+  }
+  if (unrefreshing && cStatus !== "bad") { cStatus = "warn"; cLabel = "Unrefreshing"; }
+
+  // ── COUPLING — sleep × the rest of the body (their own data only) ──
+  const coupling = [];
+  // 1) Partitioning: short sleep in a deficit burns muscle, not fat.
+  const wt = computeWeightTrend(data);
+  const phase = (goals?.strategy?.phase || "").toLowerCase();
+  const goal = (goals?.goal || "").toLowerCase();
+  const cutting = /cut|deficit|fat/.test(phase) || goal.includes("fat") || goal.includes("lose") || (wt && wt.confidence !== "Low" && wt.pctBWPerWeek != null && wt.pctBWPerWeek <= -0.3);
+  if (cutting && avgTST7 != null && avgTST7 < need.hours - 0.8) {
+    coupling.push({ key: "partitioning", severity: "critical", text: `You're in a deficit and averaging ${avgTST7}h (need ~${need.hours}h). At matched calories, short sleep makes more of your loss come from muscle, not fat — the scale moves the same, the mirror doesn't. Protecting sleep is your strongest muscle-retention lever while cutting.` });
+  }
+  // 2) RPE inflation: under-slept loads feel harder; you quietly cut volume.
+  const rpe7 = last7.length ? (() => {
+    const v = (data.exercise || []).filter(e => e.date >= daysAgo(6)).map(e => (e._parsed || parseWorkout(e.text || "")).avgRPE).filter(x => x != null);
+    return v.length ? +mean(v).toFixed(1) : null;
+  })() : null;
+  if (rpe7 != null && rpe7 >= 8 && debt7 >= 3) {
+    coupling.push({ key: "rpe", severity: "important", text: `Sessions are feeling hard (avg RPE ${rpe7}) and you're carrying ~${debt7}h of sleep debt. That's central fatigue inflating perceived effort — not lost strength. Hold your planned load; don't auto-cut volume.` });
+  }
+  // 3) Appetite: your own kcal on short-sleep vs normal nights.
+  if (last14.length >= 6) {
+    const kcalByDate = {};
+    (data.diet || []).forEach(d => { if (d.date) kcalByDate[d.date] = (kcalByDate[d.date] || 0) + (d.calories || 0); });
+    const shortDays = last14.filter(r => r.tst < need.hours - 1 && kcalByDate[r.date] != null).map(r => kcalByDate[r.date]);
+    const okDays = last14.filter(r => r.tst >= need.hours - 1 && kcalByDate[r.date] != null).map(r => kcalByDate[r.date]);
+    if (shortDays.length >= 3 && okDays.length >= 3) {
+      const diff = Math.round(mean(shortDays) - mean(okDays));
+      if (diff >= 150) coupling.push({ key: "appetite", severity: "notable", text: `On your short-sleep days you eat ~${diff} kcal more than on well-slept days — sleep loss drives reward-seeking eating. Worth pre-planning meals after a bad night.` });
+    }
+  }
+  // 4) Mood: poor sleep preceding low journal sentiment.
+  const fatigueRe = /\b(exhausted|drained|run down|rundown|burnt out|burned out|wrecked|tired|no energy|low|down|stressed|anxious|irritable|foggy)\b/i;
+  const poorThenLow = last14.filter(r => (r.q != null && r.q <= 2) || r.tst < need.hours - 1.5).filter(r => {
+    const next = daysAgoFrom(r.date, -1);
+    return (data.journal || []).some(j => (j.date === r.date || j.date === next) && fatigueRe.test(j.text || ""));
+  });
+  if (poorThenLow.length >= 2) {
+    coupling.push({ key: "mood", severity: "notable", text: `Your rougher nights tend to line up with lower-mood journal entries the next day. Sleep is upstream of mood as often as the reverse — protecting it may lift how you feel, not just how you train.` });
+  }
+
+  // ── INSIGHTS + biggest lever ──
+  const insights = [];
+  const push = (text, priority, axis) => insights.push({ text, priority, axis });
+  if (qStatus === "bad") push(`Averaging ${avgTST7}h vs your ~${need.hours}h need — a real shortfall that drags recovery, partitioning and mood.`, "critical", "quantity");
+  else if (qStatus === "warn" && qLabel === "Running short") push(`Running ~${(need.hours - avgTST7).toFixed(1)}h short of your ${need.hours}h need most nights — close the gap before adding training load.`, "important", "quantity");
+  if (rStatus === "bad" || (wakeSD != null && wakeSD > 75)) push(`Your wake time swings ~${Math.round((wakeSD ?? midSD) / 60 * 10) / 10}h night to night. Anchoring a fixed wake time (even weekends) is higher-leverage than adding hours.`, "important", "regularity");
+  else if (rStatus === "warn") push(`Sleep timing is a bit irregular (mid-sleep varies ~${midSD}min). Tightening it stabilises your whole circadian system.`, "notable", "regularity");
+  if (socialJetlag != null && socialJetlag >= 1.5) push(`Social jetlag ~${socialJetlag}h (weekend vs weekday) — like a mild self-inflicted timezone shift every week. Pull weekend timing closer to weekdays.`, "notable", "regularity");
+  if (unrefreshing) push(`You're logging enough hours but rating sleep poor on ${unrefreshNights.length} of ${last14.length} recent nights. Persistent unrefreshing sleep is the top signal worth raising with a clinician (e.g. screening for sleep apnea) — it can't be fixed by hygiene alone.`, "important", "continuity");
+  if (avgEff != null && avgEff < 85) push(`Sleep efficiency ~${avgEff}% (asleep ÷ in bed). Below ~85% usually means too much time in bed or fragmentation — spending less time in bed often consolidates it.`, "important", "continuity");
+  else if (avgLatency != null && avgLatency > 30) push(`Taking ~${avgLatency}min to fall asleep on average — long onset points to going to bed before you're sleepy or evening arousal.`, "notable", "continuity");
+  coupling.forEach(c => push(c.text, c.severity === "critical" ? "critical" : c.severity === "important" ? "important" : "notable", "coupling"));
+  if (qLabel === "Oversleeping" && qStatus === "warn") push(`Averaging ${avgTST7}h, above your ~${need.hours}h need. Long sleep is often a symptom (illness, low mood, debt repayment) rather than a goal — worth noting if it's new.`, "notable", "quantity");
+
+  const order = { critical: 0, important: 1, notable: 2 };
+  const ranked = [...insights].sort((a, b) => order[a.priority] - order[b.priority]);
+  const topLever = ranked[0] || null;
+
+  // ── Tonight read + sparkline series ──
+  const todayRec = last7.find(r => r.date === today) || null;
+  const series14 = sorted.filter(s => s.date >= daysAgo(13)).map(s => { const e = enrich(s); return e; });
+  const tstSeries = Array.from({ length: 14 }, (_, i) => { const d = daysAgo(13 - i); const r = series14.find(x => x.date === d); return { value: r ? +r.tst.toFixed(1) : null, label: d }; });
+  const qSeries = Array.from({ length: 14 }, (_, i) => { const d = daysAgo(13 - i); const r = series14.find(x => x.date === d); return { value: r ? r.q : null, label: d }; });
+
+  // Overall confidence from how much is logged
+  let confidence = "Low";
+  if (sleep.length >= 7) confidence = "Moderate";
+  if (sleep.length >= 14 && midVals.length >= 7) confidence = "High";
+
+  return {
+    need, nightsLogged: sleep.length, confidence,
+    quantity: { avgTST7, avgTST14, need: need.hours, debt7, status: qStatus, label: qLabel, loggedNights7: last7.length },
+    regularity: { midSD, wakeSD, socialJetlag, status: rStatus, label: rLabel, anchorWake: fmtClock(anchorWakeMin), bedTarget: fmtClock(bedTargetMin) },
+    continuity: { avgEff, avgLatency, avgWaso, qualityTrend, unrefreshing, unrefreshCount: unrefreshNights.length, recentNights: last14.length, status: cStatus, label: cLabel, hasEffData: effNights.length > 0 },
+    coupling, insights, topLever,
+    today: todayRec ? { tst: +todayRec.tst.toFixed(1), eff: todayRec.eff, quality: todayRec.quality } : null,
+    series: { tst: tstSeries, quality: qSeries },
+  };
+}
+
+// Add/subtract days from a YYYY-MM-DD string (delta in days; negative = future).
+function daysAgoFrom(dateStr, delta) {
+  const d = new Date(dateStr + "T00:00:00");
+  d.setDate(d.getDate() - delta);
+  return localDateStr(d);
+}
 
 
 // ─── IMAGE RESIZE ────────────────────────────────────────────────────────────
@@ -1258,10 +1478,12 @@ function buildBrain(data, goals) {
   const calorieTrend = (recentHalf && olderHalf) ? (recentHalf - olderHalf) : null;
 
   // ── SLEEP
+  const sleepIntel = computeSleep(data, goals);
+  const sleepNeed = (sleepIntel?.need?.hours) ?? estimateSleepNeed(data, goals).hours;
   const last7Sleep = last7(data.sleep);
   const avgSleep7 = last7Sleep.length ? +(last7Sleep.reduce((a, s) => a + s.duration, 0) / last7Sleep.length).toFixed(1) : null;
-  const sleepDebt7 = last7Sleep.reduce((d, s) => d + (8 - s.duration), 0);
-  const sleepPatternIssue = last7Sleep.length >= 3 && avgSleep7 != null && avgSleep7 < 7;
+  const sleepDebt7 = last7Sleep.reduce((d, s) => d + (sleepNeed - sleepTST(s)), 0);
+  const sleepPatternIssue = last7Sleep.length >= 3 && avgSleep7 != null && avgSleep7 < sleepNeed - 0.5;
   // Average bedtime / wake time across the week
   const bedtimes = last7Sleep.map(s => s.bedtime).filter(Boolean);
   const wakeTimes = last7Sleep.map(s => s.wakeTime).filter(Boolean);
@@ -1355,7 +1577,13 @@ function buildBrain(data, goals) {
   else if (consecutiveTrained >= 4) insights.push({ text: `Trained ${consecutiveTrained} days in a row with no rest — deload signal`, priority: "important" });
   if (sleepDebt7 > 8) insights.push({ text: `Sleep debt accumulating fast: ${sleepDebt7.toFixed(1)}h short over last week — recovery compromised`, priority: "critical" });
   else if (sleepDebt7 > 5) insights.push({ text: `Sleep debt: ${sleepDebt7.toFixed(1)}h short over last week`, priority: "important" });
-  if (sleepPatternIssue) insights.push({ text: `Avg sleep ${avgSleep7}h is below 7h — recovery limiter`, priority: avgSleep7 < 6 ? "critical" : "important" });
+  if (sleepPatternIssue) insights.push({ text: `Avg sleep ${avgSleep7}h is below your ~${sleepNeed}h need — recovery limiter`, priority: avgSleep7 < sleepNeed - 1.5 ? "critical" : "important" });
+  // Sleep Intelligence Engine — fold in the NEW dimensions (regularity, continuity,
+  // disorder screening, cross-domain coupling) that the legacy sleep insights above
+  // don't cover. Quantity is already handled above, so skip those to avoid dupes.
+  if (sleepIntel) {
+    sleepIntel.insights.filter(i => i.axis !== "quantity").forEach(i => insights.push({ text: i.text, priority: i.priority }));
+  }
 
   // --- IMPORTANT: nutrition and trend issues ---
   if (calDeficit7 != null && Math.abs(calDeficit7) > 400) {
@@ -1471,6 +1699,8 @@ function buildBrain(data, goals) {
     wins,
     weight: weightTrend,
     proteinDist,
+    sleepIntel,
+    sleepScreen: goals.sleepScreen || null,
     recovery: {
       verdict: recovery.verdict,
       readiness: recovery.readiness,
@@ -1685,6 +1915,28 @@ function formatBrainText(brain) {
     } else {
       lines.push(`Nothing is meaningfully limiting recovery right now — fine to train as planned.`);
     }
+  }
+
+  // ─── SLEEP (the intelligence engine — three axes + cross-domain coupling) ──
+  if (brain.sleepIntel) {
+    const sl = brain.sleepIntel;
+    const q = sl.quantity, r = sl.regularity, c = sl.continuity;
+    lines.push("");
+    lines.push("== SLEEP (modelled as 3 separate problems: quantity vs the user's OWN need, regularity/timing, and continuity/quality — never assume 8h is their target) ==");
+    lines.push(`Personal sleep need: ${sl.need.hours}h (${sl.need.source}${sl.need.source === "learned" ? `, from ${sl.need.nGood} best nights` : ""}) | overall confidence: ${sl.confidence}`);
+    lines.push(`Quantity: avg ${q.avgTST7 ?? "—"}h asleep/night (7d) vs ${q.need}h need — ${q.label}${q.debt7 > 0.5 ? `, ~${q.debt7}h debt this week` : ""}`);
+    if (r.status) lines.push(`Regularity: ${r.label} (mid-sleep varies ±${r.midSD}min${r.socialJetlag != null ? `, social jetlag ${r.socialJetlag}h` : ""})${r.anchorWake ? ` | their anchor wake time ≈ ${r.anchorWake}` : ""}`);
+    if (c.status) lines.push(`Continuity/quality: ${c.label}${c.avgEff != null ? ` (efficiency ${c.avgEff}%)` : ""}${c.avgLatency != null ? `, ~${c.avgLatency}min to fall asleep` : ""}${c.unrefreshing ? " — UNREFRESHING-SLEEP flag (enough hours, poor quality; possible disorder — encourage a clinician check, do NOT diagnose)" : ""}`);
+    if (sl.coupling.length) {
+      lines.push(`How sleep is shaping the rest of their body (correlations from their own data — never state as proven causation):`);
+      sl.coupling.forEach(co => lines.push(`  • ${co.text}`));
+    }
+    if (sl.topLever) lines.push(`Biggest sleep lever right now: ${sl.topLever.text}`);
+    if (brain.sleepScreen?.risk && brain.sleepScreen.risk.band !== "low") {
+      const sk = brain.sleepScreen.risk;
+      lines.push(`Sleep screen flagged: ${sk.osaCluster ? "possible OSA cluster; " : ""}${sk.insomniaCluster ? "insomnia pattern (CBT-I-treatable); " : ""}${sk.rls ? "restless-legs symptoms; " : ""}worth a clinician conversation. Reference supportively if sleep comes up; never diagnose.`);
+    }
+    lines.push(`SLEEP COACHING RULES: Treat the three axes as separate levers. If total sleep is fine but timing is irregular, the fix is regularity, not "sleep more". Anchor a fixed wake time as the #1 move. Do not chase sleep-stage/deep-sleep numbers (unreliable). Under a deficit, frame sleep as a muscle-retention tool.`);
   }
 
   // ─── PERSONAL METRIC (EJAC) — neutral data only, with guardrails ──────────
@@ -2820,16 +3072,24 @@ function PlanTab({ data, goals, onSaveGoals }) {
 
 // ─── SLEEP FORM ──
 function SleepForm({ onAdd, recent }) {
-  const [form, setForm] = useState({ date: getTodayStr(), bedtime: "22:30", wakeTime: "06:30", quality: "Good", notes: "" });
+  const [form, setForm] = useState({ date: getTodayStr(), bedtime: "22:30", wakeTime: "06:30", quality: "Good", latencyMin: "", wakeMin: "", notes: "" });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
-  const dur = (() => {
+  const tibH = (() => {
     const [bh, bm] = form.bedtime.split(":").map(Number), [wh, wm] = form.wakeTime.split(":").map(Number);
-    let m = (wh * 60 + wm) - (bh * 60 + bm); if (m < 0) m += 1440; return (m / 60).toFixed(1);
+    let m = (wh * 60 + wm) - (bh * 60 + bm); if (m < 0) m += 1440; return m / 60;
   })();
+  const lat = parseFloat(form.latencyMin) || 0;
+  const waso = parseFloat(form.wakeMin) || 0;
+  const tstH = Math.max(0, tibH - lat / 60 - waso / 60);
+  const hasDetail = lat > 0 || waso > 0;
+  const eff = tibH > 0 ? Math.round((tstH / tibH) * 100) : 0;
   function save() {
-    onAdd({ ...form, duration: parseFloat(dur), id: Date.now() });
+    const entry = { date: form.date, bedtime: form.bedtime, wakeTime: form.wakeTime, quality: form.quality, notes: form.notes, duration: +tibH.toFixed(1), id: Date.now() };
+    if (form.latencyMin !== "") entry.latencyMin = Math.max(0, Math.round(parseFloat(form.latencyMin)) || 0);
+    if (form.wakeMin !== "") entry.wakeMin = Math.max(0, Math.round(parseFloat(form.wakeMin)) || 0);
+    onAdd(entry);
     toast("◐ Sleep logged");
-    setForm(f => ({ ...f, notes: "" }));
+    setForm(f => ({ ...f, latencyMin: "", wakeMin: "", notes: "" }));
   }
   return (
     <>
@@ -2837,15 +3097,320 @@ function SleepForm({ onAdd, recent }) {
         <div className="field-grid">
           <label>Date<input type="date" value={form.date} onChange={e => set("date", e.target.value)} /></label>
           <label>Quality<select value={form.quality} onChange={e => set("quality", e.target.value)}>{sleepQuality.map(q => <option key={q}>{q}</option>)}</select></label>
-          <label>Bedtime<input type="time" value={form.bedtime} onChange={e => set("bedtime", e.target.value)} /></label>
-          <label>Wake time<input type="time" value={form.wakeTime} onChange={e => set("wakeTime", e.target.value)} /></label>
+          <label>Got in bed<input type="time" value={form.bedtime} onChange={e => set("bedtime", e.target.value)} /></label>
+          <label>Got up<input type="time" value={form.wakeTime} onChange={e => set("wakeTime", e.target.value)} /></label>
+          <label>Mins to fall asleep <span className="muted small" style={{ fontWeight: 400 }}>(optional)</span><input type="number" inputMode="numeric" value={form.latencyMin} onChange={e => set("latencyMin", e.target.value)} placeholder="e.g. 15" /></label>
+          <label>Mins awake in night <span className="muted small" style={{ fontWeight: 400 }}>(optional)</span><input type="number" inputMode="numeric" value={form.wakeMin} onChange={e => set("wakeMin", e.target.value)} placeholder="e.g. 0" /></label>
         </div>
-        <div className="duration-pill"><span>{dur}h</span> sleep</div>
+        <div className="duration-pill">
+          <span>{tibH.toFixed(1)}h</span> in bed{hasDetail ? <> · <span>{tstH.toFixed(1)}h</span> asleep · {eff}% efficient</> : ""}
+        </div>
         <label>Notes<textarea value={form.notes} onChange={e => set("notes", e.target.value)} placeholder="How did you sleep?" rows={2} /></label>
         <button className="btn full" onClick={save}>Save sleep</button>
       </Card>
       <RecentList entries={recent} render={s => <><span className="ra-main">{s.duration}h · {s.quality}</span><span className="ra-date">{formatShortDate(s.date)}</span></>} />
     </>
+  );
+}
+
+// ─── SLEEP SECTION (the smartest section: log + full intelligence dashboard) ──
+const SLEEP_STATUS = { good: { c: "var(--good)", w: "Good" }, warn: { c: "#f9c97e", w: "Watch" }, bad: { c: "var(--bad)", w: "Fix" } };
+
+function StatusPill({ status, label }) {
+  if (!status) return <span className="sleep-pill" style={{ color: "var(--muted)", borderColor: "var(--border)" }}>Need data</span>;
+  const m = SLEEP_STATUS[status];
+  return <span className="sleep-pill" style={{ color: m.c, borderColor: m.c }}>{label || m.w}</span>;
+}
+
+// Disorder-screening risk from the occasional check-in (non-diagnostic).
+function computeScreenRisk(items, profile) {
+  const it = items || {};
+  let positives = 0;
+  Object.values(it).forEach(v => { if (v) positives++; });
+  const bmi = (() => { const h = parseFloat(profile?.heightCm), w = parseFloat(profile?.weightKg); return (h > 0 && w > 0) ? w / ((h / 100) ** 2) : null; })();
+  const osaCluster = it.gasp || (it.snore && it.sleepy) || (it.snore && bmi != null && bmi >= 30);
+  const insomniaCluster = it.onset && it.maintain;
+  if (osaCluster || positives >= 4) return { band: "elevated", osaCluster: !!osaCluster, insomniaCluster: !!insomniaCluster, rls: !!it.legs };
+  if (positives >= 2) return { band: "some", osaCluster: false, insomniaCluster: !!insomniaCluster, rls: !!it.legs };
+  return { band: "low", osaCluster: false, insomniaCluster: false, rls: false };
+}
+
+const SCREEN_ITEMS = [
+  { key: "snore", label: "I snore loudly (or I've been told I do)" },
+  { key: "gasp", label: "I've been seen gasping / stopping breathing in sleep" },
+  { key: "sleepy", label: "I'm very sleepy in the day even after enough hours" },
+  { key: "headache", label: "I often wake with a headache or dry mouth" },
+  { key: "onset", label: "I regularly take >30 min to fall asleep" },
+  { key: "maintain", label: "I wake in the night and struggle to get back to sleep" },
+  { key: "legs", label: "I get an urge to move my legs that delays sleep" },
+];
+
+function SleepScreenModal({ goals, onSave, onClose }) {
+  const prev = goals.sleepScreen?.items || {};
+  const [items, setItems] = useState(() => SCREEN_ITEMS.reduce((a, x) => ({ ...a, [x.key]: !!prev[x.key] }), {}));
+  const toggle = k => { setItems(i => ({ ...i, [k]: !i[k] })); haptic(8); };
+  const p = goals.profile || {};
+  const bmi = (() => { const h = parseFloat(p.heightCm), w = parseFloat(p.weightKg); return (h > 0 && w > 0) ? +(w / ((h / 100) ** 2)).toFixed(1) : null; })();
+  function save() {
+    const risk = computeScreenRisk(items, p);
+    onSave({ ts: Date.now(), items, risk });
+  }
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxHeight: "82vh", overflowY: "auto" }}>
+        <h3 className="modal-title">Quick sleep check</h3>
+        <p className="muted small" style={{ lineHeight: 1.5, marginTop: -4 }}>
+          Tick anything that's been true lately. This is a screen, not a diagnosis — it just tells you whether it's worth raising with a clinician.
+        </p>
+        {(p.age || p.sex || bmi) && (
+          <p className="muted small" style={{ marginTop: 6 }}>Using from your profile: {[p.sex, p.age && `${p.age}y`, bmi && `BMI ${bmi}`].filter(Boolean).join(" · ") || "—"}</p>
+        )}
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, margin: "12px 0" }}>
+          {SCREEN_ITEMS.map(x => (
+            <button key={x.key} className={`screen-item ${items[x.key] ? "on" : ""}`} onClick={() => toggle(x.key)}>
+              <span className="screen-check">{items[x.key] ? "✓" : ""}</span>
+              <span>{x.label}</span>
+            </button>
+          ))}
+        </div>
+        <div className="modal-actions">
+          <button className="btn-ghost flex" onClick={onClose}>Cancel</button>
+          <button className="btn flex" onClick={save}>Save check</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SleepBlockCard({ data, goals, onSaveGoals, sleep }) {
+  const exp = goals.sleepExperiment;
+  const [open, setOpen] = useState(false);
+
+  // Snapshot of the trailing 14 days, used as baseline and for live comparison.
+  function snapshot() {
+    const s = computeSleep(data, goals);
+    const wt = computeWeightTrend(data);
+    const rpeVals = (data.exercise || []).filter(e => e.date >= daysAgo(13)).map(e => (e._parsed || parseWorkout(e.text || "")).avgRPE).filter(v => v != null);
+    const prCount = (data.exercise || []).filter(e => e.date >= daysAgo(13)).reduce((n, e) => n + (e.prs?.length || 0), 0);
+    return {
+      avgTST: s?.quantity.avgTST14 ?? null,
+      avgRPE: rpeVals.length ? +(rpeVals.reduce((a, b) => a + b, 0) / rpeVals.length).toFixed(1) : null,
+      weightRate: wt?.pctBWPerWeek ?? null,
+      prCount,
+    };
+  }
+
+  function start() {
+    const need = estimateSleepNeed(data, goals);
+    const target = Math.min(9.5, +(need.hours + 0.75).toFixed(1));
+    onSaveGoals({ ...goals, sleepExperiment: { startDate: getTodayStr(), targetH: target, baseline: snapshot(), status: "active" } });
+    toast("🌙 Sleep block started");
+  }
+  function end() {
+    onSaveGoals({ ...goals, sleepExperiment: null });
+    toast("Sleep block ended");
+  }
+
+  if (!exp || exp.status !== "active") {
+    return (
+      <Card title="🌙 Run a Sleep Block" sub="A 2-week experiment — extend sleep, measure what changes in your own data">
+        <button className="link-btn" onClick={() => setOpen(o => !o)}>{open ? "Hide" : "What is this?"}</button>
+        {open && (
+          <p className="muted small" style={{ lineHeight: 1.55, marginTop: 8 }}>
+            FitLog snapshots your last 14 days (sleep, training RPE, weight-trend rate, PRs), then sets a nightly sleep target a bit above your need. After two weeks you'll see whether extending sleep actually moved your numbers — partitioning, perceived effort, performance. Evidence says banking sleep helps most if you're carrying debt.
+          </p>
+        )}
+        <button className="btn full" style={{ marginTop: 10 }} onClick={start}>Start a 2-week sleep block</button>
+      </Card>
+    );
+  }
+
+  const daysIn = Math.max(0, Math.round((Date.now() - new Date(exp.startDate + "T00:00:00").getTime()) / 86400000));
+  const now = snapshot();
+  const b = exp.baseline || {};
+  const delta = (cur, base, dp = 1) => (cur != null && base != null) ? +(cur - base).toFixed(dp) : null;
+  const dTST = delta(now.avgTST, b.avgTST);
+  const dRPE = delta(now.avgRPE, b.avgRPE);
+  const dRate = delta(now.weightRate, b.weightRate, 2);
+
+  return (
+    <Card title="🌙 Sleep Block — active" sub={`Day ${daysIn} of ~14 · target ${exp.targetH}h/night`}>
+      <div className="rt-bar" style={{ margin: "4px 0 14px" }}>
+        <div className="rt-bar-fill" style={{ width: `${Math.min(100, (daysIn / 14) * 100)}%` }} />
+      </div>
+      <div className="sleep-block-grid">
+        <div className="sbg-item"><span className="sbg-l">Sleep</span><span className="sbg-v">{now.avgTST ?? "—"}h{dTST != null ? <span className={dTST >= 0 ? "good" : "bad"}> {dTST >= 0 ? "+" : ""}{dTST}</span> : ""}</span></div>
+        <div className="sbg-item"><span className="sbg-l">Avg RPE</span><span className="sbg-v">{now.avgRPE ?? "—"}{dRPE != null ? <span className={dRPE <= 0 ? "good" : "bad"}> {dRPE >= 0 ? "+" : ""}{dRPE}</span> : ""}</span></div>
+        <div className="sbg-item"><span className="sbg-l">Wt trend</span><span className="sbg-v">{now.weightRate != null ? `${now.weightRate > 0 ? "+" : ""}${now.weightRate}%` : "—"}{dRate != null ? <span className="muted"> ({dRate >= 0 ? "+" : ""}{dRate})</span> : ""}</span></div>
+        <div className="sbg-item"><span className="sbg-l">PRs</span><span className="sbg-v">{now.prCount}{b.prCount != null ? <span className="muted"> vs {b.prCount}</span> : ""}</span></div>
+      </div>
+      <p className="muted small" style={{ marginTop: 10, lineHeight: 1.5 }}>
+        Deltas compare the block so far against your 14 days before it. {daysIn >= 12 ? "You've got enough data to judge it." : "Give it the full two weeks before drawing conclusions."}
+      </p>
+      <button className="btn-ghost full" style={{ marginTop: 10 }} onClick={end}>End block</button>
+    </Card>
+  );
+}
+
+function SleepSection({ data, goals, addEntry, onSaveGoals }) {
+  const sleep = useMemo(() => computeSleep(data, goals), [data, goals]);
+  const [screenOpen, setScreenOpen] = useState(false);
+  const [editNeed, setEditNeed] = useState(false);
+  const [needVal, setNeedVal] = useState(goals.profile?.sleepNeedH || "");
+
+  function saveNeed() {
+    const v = parseFloat(needVal);
+    onSaveGoals({ ...goals, profile: { ...goals.profile, sleepNeedH: v > 0 ? v : "" } });
+    setEditNeed(false);
+    toast(v > 0 ? `Sleep need set to ${v}h` : "Back to auto-learned need");
+  }
+  function saveScreen(payload) {
+    onSaveGoals({ ...goals, sleepScreen: payload });
+    setScreenOpen(false);
+    haptic([12, 30, 12]);
+    toast("✓ Sleep check saved");
+  }
+
+  const log = <SleepForm onAdd={addEntry("sleep")} recent={data.sleep} />;
+
+  if (!sleep) {
+    return (
+      <div className="stack">
+        {log}
+        <Card title="Sleep intelligence">
+          <Empty icon="◐" title="Log a few nights to wake this up" hint="Once you've logged sleep for several nights, this section learns your personal sleep need and starts reading how sleep is shaping your training, weight, and mood." />
+        </Card>
+      </div>
+    );
+  }
+
+  const q = sleep.quantity, r = sleep.regularity, c = sleep.continuity;
+  const needSrc = sleep.need.source === "override" ? "you set this" : sleep.need.source === "learned" ? `learned from ${sleep.need.nGood} of your best nights` : "provisional default — log more good nights to personalize";
+  const screen = goals.sleepScreen;
+  const screenStale = !screen || (Date.now() - screen.ts) > 90 * 86400000;
+
+  return (
+    <div className="stack">
+      {log}
+
+      {/* NEED + CONFIDENCE */}
+      <Card>
+        <div className="sleep-need-row">
+          <div>
+            <div className="muted small">Your sleep need</div>
+            <div className="sleep-need-v">{sleep.need.hours}<span>h</span></div>
+            <div className="muted small" style={{ marginTop: 2 }}>{needSrc}</div>
+          </div>
+          <div style={{ textAlign: "right" }}>
+            <div className="muted small">Confidence</div>
+            <div style={{ fontWeight: 600 }}>{sleep.confidence}</div>
+            <button className="link-btn" style={{ marginTop: 4 }} onClick={() => { setNeedVal(goals.profile?.sleepNeedH || ""); setEditNeed(e => !e); }}>{editNeed ? "Cancel" : "Set manually"}</button>
+          </div>
+        </div>
+        {editNeed && (
+          <div className="row" style={{ marginTop: 10 }}>
+            <input type="number" step="0.5" inputMode="decimal" value={needVal} onChange={e => setNeedVal(e.target.value)} placeholder="e.g. 8" />
+            <span className="muted">h</span>
+            <button className="btn" onClick={saveNeed}>Save</button>
+          </div>
+        )}
+      </Card>
+
+      {/* BIGGEST LEVER */}
+      {sleep.topLever && (
+        <Card title="Your biggest sleep lever" className="sleep-lever-card">
+          <p className="sleep-lever-text">{sleep.topLever.text}</p>
+        </Card>
+      )}
+
+      {/* CIRCADIAN ANCHOR */}
+      {r.anchorWake && (
+        <Card title="Circadian anchor" sub="The single most stabilizing habit is a fixed wake time">
+          <div className="sleep-anchor">
+            <div className="sleep-anchor-item"><span className="muted small">Anchor wake</span><span className="sleep-anchor-v">{r.anchorWake}</span></div>
+            <div className="sleep-anchor-arrow">←</div>
+            <div className="sleep-anchor-item"><span className="muted small">Target in bed by</span><span className="sleep-anchor-v">{r.bedTarget || "—"}</span></div>
+          </div>
+          <p className="muted small" style={{ marginTop: 4, lineHeight: 1.5 }}>Holding wake time within ~30 min every day — weekends included — anchors your body clock, which then pulls bedtime and sleep quality into line.</p>
+        </Card>
+      )}
+
+      {/* THREE AXES */}
+      <Card title="Duration" sub="vs your personal need" action={<StatusPill status={q.status} label={q.label} />}>
+        <div className="center-stack" style={{ marginBottom: 6 }}>
+          <div style={{ fontSize: 30, fontWeight: 700, lineHeight: 1 }}>{q.avgTST7 ?? "—"}<span className="muted" style={{ fontSize: 15, marginLeft: 4 }}>h avg asleep (7d)</span></div>
+          <div className="muted small">{q.debt7 > 0.5 ? `~${q.debt7}h short of your need this week` : q.debt7 < -0.5 ? `~${Math.abs(q.debt7)}h above need this week` : "On target this week"}</div>
+        </div>
+        <MiniChart points={sleep.series.tst} showGoal={q.need} rollingAvg unit="h" />
+      </Card>
+
+      <Card title="Regularity" sub="timing consistency & social jetlag" action={<StatusPill status={r.status} label={r.label} />}>
+        <div className="sleep-axis-stats">
+          <div className="ts"><span className="ts-l">Mid-sleep swing</span><span className="ts-v">{r.midSD != null ? `±${Math.round(r.midSD)}min` : "—"}</span></div>
+          <div className="ts"><span className="ts-l">Social jetlag</span><span className={`ts-v ${r.socialJetlag != null && r.socialJetlag >= 1.5 ? "warn" : ""}`}>{r.socialJetlag != null ? `${r.socialJetlag}h` : "—"}</span></div>
+        </div>
+        <p className="muted small" style={{ marginTop: 8, lineHeight: 1.5 }}>{r.status === "good" ? "Your timing is consistent — keep it." : "Variable timing is one of the highest-leverage things to tighten; the research ranks it alongside total hours."}</p>
+      </Card>
+
+      <Card title="Continuity & quality" sub="how consolidated your sleep is" action={<StatusPill status={c.status} label={c.label} />}>
+        <div className="sleep-axis-stats">
+          {c.hasEffData && <div className="ts"><span className="ts-l">Efficiency</span><span className={`ts-v ${c.avgEff != null && c.avgEff < 85 ? "warn" : ""}`}>{c.avgEff != null ? `${c.avgEff}%` : "—"}</span></div>}
+          {c.avgLatency != null && <div className="ts"><span className="ts-l">Fall-asleep</span><span className="ts-v">{c.avgLatency}min</span></div>}
+          {c.avgWaso != null && <div className="ts"><span className="ts-l">Awake/night</span><span className="ts-v">{c.avgWaso}min</span></div>}
+          {!c.hasEffData && c.avgLatency == null && <div className="ts"><span className="ts-l">Quality trend</span><span className="ts-v">{c.qualityTrend != null ? (c.qualityTrend > 0 ? "↑ improving" : c.qualityTrend < 0 ? "↓ slipping" : "→ flat") : "—"}</span></div>}
+        </div>
+        {c.unrefreshing && (
+          <div className="sleep-flag">
+            ⚠ Unrefreshing sleep: enough hours but poor quality on {c.unrefreshCount} of {c.recentNights} recent nights. This is the top pattern worth raising with a clinician — it can't be fixed by routine alone.
+          </div>
+        )}
+        {!c.hasEffData && <p className="muted small" style={{ marginTop: 8, lineHeight: 1.5 }}>Add "mins to fall asleep" and "mins awake" when logging to unlock efficiency — the real continuity metric.</p>}
+      </Card>
+
+      {/* COUPLING */}
+      {sleep.coupling.length > 0 && (
+        <Card title="How sleep is affecting you" sub="patterns from your own data — correlation, not proof">
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {sleep.coupling.map((co, i) => (
+              <div key={i} className="sleep-couple-row">
+                <span className="sleep-couple-dot" style={{ background: co.severity === "critical" ? "var(--bad)" : co.severity === "important" ? "#f9c97e" : "var(--accent)" }} />
+                <span className="small" style={{ lineHeight: 1.5 }}>{co.text}</span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {/* DISORDER SCREEN */}
+      <Card title="Sleep health check" sub="a quick, non-diagnostic screen">
+        {screen && screen.risk ? (
+          <>
+            <div className={`sleep-screen-band ${screen.risk.band}`}>
+              {screen.risk.band === "elevated" ? "Some answers are worth following up" : screen.risk.band === "some" ? "A couple of things to keep an eye on" : "Nothing flagged"}
+            </div>
+            {screen.risk.band !== "low" && (
+              <p className="muted small" style={{ marginTop: 8, lineHeight: 1.5 }}>
+                {screen.risk.osaCluster && "Your answers point toward possible obstructive sleep apnea — the highest-leverage treatable sleep disorder. "}
+                {screen.risk.insomniaCluster && "There's an insomnia pattern (onset + maintenance) that CBT-I treats well. "}
+                {screen.risk.rls && "Leg-urge symptoms can point to restless legs. "}
+                This isn't a diagnosis — it means it's worth a conversation with a doctor.
+              </p>
+            )}
+            <button className="btn-ghost full" style={{ marginTop: 10 }} onClick={() => setScreenOpen(true)}>Retake check</button>
+          </>
+        ) : (
+          <>
+            <p className="muted small" style={{ lineHeight: 1.5 }}>{screenStale && screen ? "It's been a while — worth retaking." : "Diagnosis, not optimization, is the biggest population-level sleep win. Two minutes here screens for the disorders routine can't fix."}</p>
+            <button className="btn full" style={{ marginTop: 10 }} onClick={() => setScreenOpen(true)}>Take the 2-min check</button>
+          </>
+        )}
+      </Card>
+
+      {/* EXPERIMENT */}
+      <SleepBlockCard data={data} goals={goals} onSaveGoals={onSaveGoals} sleep={sleep} />
+
+      {screenOpen && <SleepScreenModal goals={goals} onSave={saveScreen} onClose={() => setScreenOpen(false)} />}
+    </div>
   );
 }
 
@@ -3989,7 +4554,8 @@ function TrendsView({ data, goals }) {
 
   const sleepVals = sleepPts.map(p => p.value).filter(v => v != null);
   const avgSleep = sleepVals.length ? +(sleepVals.reduce((a, b) => a + b, 0) / sleepVals.length).toFixed(1) : null;
-  const sleepDebt = sleepVals.reduce((debt, v) => debt + (8 - v), 0);
+  const sleepNeed = estimateSleepNeed(data, goals).hours;
+  const sleepDebt = sleepVals.reduce((debt, v) => debt + (sleepNeed - v), 0);
 
   const calVals = calPts.map(p => p.value).filter(v => v != null);
   const avgCal = calVals.length ? Math.round(calVals.reduce((a, b) => a + b, 0) / calVals.length) : null;
@@ -4032,7 +4598,7 @@ function TrendsView({ data, goals }) {
           <div className="ts"><span className="ts-l">Average</span><span className="ts-v">{avgSleep ?? "—"}h</span></div>
           <div className="ts"><span className="ts-l">Sleep debt</span><span className={`ts-v ${sleepDebt > 5 ? "warn" : sleepDebt > 0 ? "neutral" : "good"}`}>{sleepDebt > 0 ? "+" : ""}{Math.round(sleepDebt*10)/10}h</span></div>
         </div>
-        <MiniChart points={sleepPts} showGoal={8} rollingAvg unit="h" />
+        <MiniChart points={sleepPts} showGoal={sleepNeed} rollingAvg unit="h" />
       </Card>
 
       <Card title="🍎 Calories">
@@ -5204,7 +5770,7 @@ function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, setData, 
       case "exercise": return <ExerciseForm onAdd={addEntry("exercise")} recent={data.exercise} />;
       case "sports": return <SportsForm onAdd={addEntry("sports")} recent={data.sports} />;
       case "plan": return <PlanTab data={data} goals={goals} onSaveGoals={onSaveGoals} />;
-      case "sleep": return <SleepForm onAdd={addEntry("sleep")} recent={data.sleep} />;
+      case "sleep": return <SleepSection data={data} goals={goals} addEntry={addEntry} onSaveGoals={onSaveGoals} />;
       case "nicotine": return <NicotineTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />;
       case "journal": return <JournalTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} setData={setData} />;
       default: return null;
@@ -6600,4 +7166,36 @@ input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
 .me-row-icon { font-size: 1.1rem; width: 24px; text-align: center; color: var(--accent); flex: 0 0 auto; }
 .me-row-label { flex: 1; }
 .me-row-chev { color: var(--muted); font-size: 1.2rem; }
+
+/* ─── SLEEP INTELLIGENCE SECTION ───────────────────────────────────────────── */
+.sleep-pill { font-size: .72rem; font-weight: 700; padding: 3px 10px; border-radius: 999px; border: 1px solid; white-space: nowrap; }
+.sleep-need-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.sleep-need-v { font-size: 2rem; font-weight: 700; line-height: 1; }
+.sleep-need-v span { font-size: 1rem; color: var(--muted); margin-left: 3px; }
+.sleep-lever-card { border-color: var(--accent); background: linear-gradient(180deg, var(--accent-dim), transparent); }
+.sleep-lever-text { font-size: .95rem; line-height: 1.55; color: var(--text); margin: 2px 0 0; }
+.sleep-anchor { display: flex; align-items: center; justify-content: center; gap: 16px; padding: 6px 0 2px; }
+.sleep-anchor-item { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.sleep-anchor-v { font-size: 1.5rem; font-weight: 700; color: var(--accent); }
+.sleep-anchor-arrow { color: var(--muted); font-size: 1.2rem; }
+.sleep-axis-stats { display: flex; gap: 10px; flex-wrap: wrap; }
+.sleep-axis-stats .ts { flex: 1; min-width: 90px; }
+.sleep-flag { margin-top: 10px; padding: 10px 12px; border-radius: 10px; background: rgba(249,201,126,.1); border: 1px solid rgba(249,201,126,.3); font-size: .82rem; line-height: 1.5; color: var(--text-2); }
+.sleep-couple-row { display: flex; gap: 10px; align-items: flex-start; }
+.sleep-couple-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; flex: 0 0 auto; }
+.sleep-screen-band { font-weight: 600; font-size: .9rem; padding: 10px 12px; border-radius: 10px; }
+.sleep-screen-band.elevated { background: rgba(244,126,110,.12); border: 1px solid rgba(244,126,110,.35); color: var(--bad); }
+.sleep-screen-band.some { background: rgba(249,201,126,.1); border: 1px solid rgba(249,201,126,.3); color: #f9c97e; }
+.sleep-screen-band.low { background: rgba(143,217,137,.1); border: 1px solid rgba(143,217,137,.3); color: var(--good); }
+.screen-item { display: flex; align-items: center; gap: 10px; text-align: left; padding: 11px 12px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--border); color: var(--text); font-size: .86rem; line-height: 1.4; cursor: pointer; }
+.screen-item.on { border-color: var(--accent); background: var(--accent-dim); }
+.screen-check { width: 20px; height: 20px; flex: 0 0 auto; border-radius: 6px; border: 1.5px solid var(--border-strong); display: flex; align-items: center; justify-content: center; color: var(--accent); font-size: .8rem; }
+.screen-item.on .screen-check { border-color: var(--accent); }
+.sleep-block-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.sbg-item { display: flex; flex-direction: column; gap: 2px; background: var(--surface-2); border-radius: 10px; padding: 10px 12px; }
+.sbg-l { font-size: .72rem; color: var(--muted); }
+.sbg-v { font-size: 1.05rem; font-weight: 600; }
+.sbg-v .good { color: var(--good); font-size: .85rem; }
+.sbg-v .bad { color: var(--bad); font-size: .85rem; }
+.sbg-v .muted { font-size: .8rem; }
 `;
