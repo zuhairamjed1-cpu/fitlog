@@ -1143,6 +1143,114 @@ function daysAgoFrom(dateStr, delta) {
   return localDateStr(d);
 }
 
+// ─── ADAPTIVE TDEE / ENERGY-BALANCE + PLATEAU ENGINE ────────────────────────
+// Back-calculates the user's REAL maintenance from logged intake + the A1 weight
+// trend — no Mifflin guesswork: TDEE = mean daily intake − (Δtrend-weight × ~7700
+// ÷ days). Because it measures actual energy flux, it captures adaptive
+// thermogenesis automatically. Honesty gates are the whole game: it refuses a
+// confident number when food logging is sparse, and flags the under-logging
+// signature (an implausibly low measured maintenance) instead of trusting it.
+const KCAL_PER_KG = 7700; // energy density of weight change (fat-dominant; rough for lean-mass gain)
+
+function mifflinBMR(profile, weightKg) {
+  const sex = (profile?.sex || "").toLowerCase();
+  const w = weightKg || parseFloat(profile?.weightKg);
+  const h = parseFloat(profile?.heightCm);
+  const a = parseFloat(profile?.age);
+  if (!(w > 0 && h > 0 && a > 0)) return null;
+  const base = 10 * w + 6.25 * h - 5 * a;
+  if (sex.startsWith("m")) return Math.round(base + 5);
+  if (sex.startsWith("f")) return Math.round(base - 161);
+  return Math.round(base - 78); // unknown sex → midpoint of the ±83 constant
+}
+
+function computeEnergyBalance(data, goals) {
+  const WINDOW = 21;
+  const today = getTodayStr();
+
+  // Daily intake over the window — only days with real food logged (≥800 kcal,
+  // to exclude days where a single snack was logged and the rest forgotten).
+  const kcalByDay = {};
+  (data.diet || []).forEach(d => { if (d.date && d.date >= daysAgo(WINDOW - 1)) kcalByDay[d.date] = (kcalByDay[d.date] || 0) + (d.calories || 0); });
+  const datesLogged = Object.keys(kcalByDay).filter(d => kcalByDay[d] >= 800).sort();
+  const loggedDays = datesLogged.length;
+  const earliest = datesLogged[0];
+  const spanDays = earliest ? Math.min(WINDOW, Math.round((new Date(today + "T00:00:00") - new Date(earliest + "T00:00:00")) / 86400000) + 1) : 0;
+  const completeness = spanDays > 0 ? +(loggedDays / spanDays).toFixed(2) : 0;
+  const meanIntake = loggedDays ? Math.round(datesLogged.reduce((a, d) => a + kcalByDay[d], 0) / loggedDays) : null;
+
+  const wt = computeWeightTrend(data);
+  const haveWeight = wt && wt.ratePerWeekKg != null && wt.confidence !== "Low";
+
+  // ── Insufficient-data state — be honest, never fabricate a maintenance number ──
+  if (loggedDays < 10 || spanDays < 14 || !haveWeight || meanIntake == null) {
+    return {
+      ready: false, loggedDays, spanDays, completeness, haveWeight: !!haveWeight,
+      reason: !haveWeight
+        ? "Log your weight a few more mornings — I need a stable 2-week trend before I can measure your real maintenance."
+        : `Keep logging food daily — ${loggedDays}/14 days so far. TDEE is only as honest as your intake logging, so I won't guess until there's enough.`,
+    };
+  }
+
+  const weightChangeKg = +(wt.ratePerWeekKg * (spanDays / 7)).toFixed(2);
+  const tdee = Math.round((meanIntake - (weightChangeKg * KCAL_PER_KG / spanDays)) / 10) * 10;
+  const realDelta = meanIntake - tdee; // <0 = real deficit, >0 = real surplus
+  const absD = Math.abs(realDelta);
+
+  // Sanity floor: a measured maintenance below BMR×1.1 for someone training is
+  // physiologically implausible → the food logs are almost certainly short. When
+  // weight is flat the back-calc makes TDEE≈intake, so the implausibly-low number
+  // itself is the under-logging tell (realDelta will be ~0, not a measured deficit).
+  const curWeight = wt.current || parseFloat(goals?.profile?.weightKg) || null;
+  const bmr = mifflinBMR(goals?.profile, curWeight);
+  const underLogging = bmr != null && tdee < bmr * 1.1 && realDelta < 50;
+
+  let confidence = "Low";
+  if (completeness >= 0.7 && loggedDays >= 12) confidence = "Moderate";
+  if (completeness >= 0.85 && loggedDays >= 18 && wt.confidence === "High") confidence = "High";
+
+  // Goal intent + a sensible recommended intake
+  const phase = (goals?.strategy?.phase || "").toLowerCase();
+  const goal = (goals?.goal || "").toLowerCase();
+  const intent = (/cut|deficit|fat/.test(phase) || goal.includes("fat") || goal.includes("lose")) ? "cut"
+    : (/bulk|surplus|gain/.test(phase) || goal.includes("muscle")) ? "bulk" : "maintain";
+  let recommendedIntake = tdee;
+  if (intent === "cut") recommendedIntake = Math.round((tdee * 0.82) / 10) * 10;   // ~18% deficit
+  else if (intent === "bulk") recommendedIntake = Math.round((tdee * 1.10) / 10) * 10; // ~10% surplus
+
+  // Plateau: fat-loss intent, trend weight ~flat, intake implies a deficit.
+  const flat = Math.abs(wt.ratePerWeekKg) < 0.1; // <100 g/wk
+  const plateau = intent === "cut" && flat && realDelta < -150 && completeness >= 0.7;
+
+  // ── Insights ──
+  const insights = [];
+  if (underLogging) {
+    insights.push({ text: `Your measured maintenance (~${tdee} kcal) is implausibly low for your size — that almost always means food is going unlogged, not a slow metabolism. Tighten logging before trusting any deficit number.`, priority: "important" });
+  } else {
+    const tgt = goals?.calories ?? null;
+    if (tgt && Math.abs(tgt - tdee) >= 150) {
+      insights.push({ text: `Your real maintenance measures ~${tdee} kcal — ${tdee > tgt ? `higher than the ${tgt} your targets assume, so you have more room than you think` : `lower than the ${tgt} your targets assume`}.`, priority: "notable" });
+    }
+    if (intent === "cut" && realDelta >= 0) {
+      insights.push({ text: `You're aiming to lose fat but eating ~${meanIntake}/day — at or above your measured maintenance of ${tdee}. That's why the scale isn't moving; drop below ${tdee} for a real deficit.`, priority: "important" });
+    } else if (intent === "bulk" && realDelta < -100) {
+      insights.push({ text: `You're aiming to gain but eating ~${absD} kcal below your measured maintenance (${tdee}) — you're actually in a deficit, which is why the gain stalled. Eat above ${tdee}.`, priority: "important" });
+    } else if (plateau) {
+      insights.push({ text: `Fat loss has stalled — trend weight is flat while your intake implies a ~${absD} kcal deficit. ${completeness >= 0.8 ? "Adaptation has likely pulled your maintenance down to meet your intake — a short diet break or a further ~150–200 kcal cut will restart it." : "Some intake may be unlogged — tighten logging for a week to tell adaptation from under-recording."}`, priority: "important" });
+    } else if (realDelta < -50) {
+      insights.push({ text: `Eating ~${meanIntake}/day against a measured maintenance of ${tdee} — a real deficit of ~${absD}/day (≈${(absD * 7 / KCAL_PER_KG).toFixed(2)} kg/wk of tissue if held).`, priority: "notable" });
+    } else if (realDelta > 50) {
+      insights.push({ text: `Eating ~${meanIntake}/day against a measured maintenance of ${tdee} — a real surplus of ~${absD}/day.`, priority: "notable" });
+    }
+  }
+
+  return {
+    ready: true, tdee, meanIntake, realDelta, intent, recommendedIntake, currentTarget: goals?.calories ?? null,
+    weightChangeKg, weightRateKgWk: wt.ratePerWeekKg, spanDays, loggedDays, completeness,
+    confidence, bmr, underLogging, plateau, insights,
+  };
+}
+
 
 // ─── IMAGE RESIZE ────────────────────────────────────────────────────────────
 // Phone cameras produce huge images. Resize before sending to API for speed + reliability.
@@ -1607,6 +1715,9 @@ function buildBrain(data, goals) {
   // ── RECOVERY (D1 engine — now fed to the Coach, not just the Plan card)
   const recovery = computeRecovery(data, goals);
 
+  // ── ENERGY BALANCE / ADAPTIVE TDEE
+  const energy = computeEnergyBalance(data, goals);
+
   // ── EJAC (private metric — neutral data only, NO insights/judgments generated)
   const ejacAll = data.ejac || [];
   const ejac30 = ejacAll.filter(e => e.date >= daysAgo(29));
@@ -1637,6 +1748,8 @@ function buildBrain(data, goals) {
   if (sleepIntel) {
     sleepIntel.insights.filter(i => i.axis !== "quantity").forEach(i => insights.push({ text: i.text, priority: i.priority }));
   }
+  // Adaptive TDEE / energy-balance insights (real maintenance, deficit/surplus, plateau, under-logging)
+  if (energy && energy.ready) energy.insights.forEach(i => insights.push(i));
 
   // --- IMPORTANT: nutrition and trend issues ---
   if (calDeficit7 != null && Math.abs(calDeficit7) > 400) {
@@ -1754,6 +1867,7 @@ function buildBrain(data, goals) {
     proteinDist,
     sleepIntel,
     sleepScreen: goals.sleepScreen || null,
+    energy,
     recovery: {
       verdict: recovery.verdict,
       readiness: recovery.readiness,
@@ -1990,6 +2104,23 @@ function formatBrainText(brain) {
       lines.push(`Sleep screen flagged: ${sk.osaCluster ? "possible OSA cluster; " : ""}${sk.insomniaCluster ? "insomnia pattern (CBT-I-treatable); " : ""}${sk.rls ? "restless-legs symptoms; " : ""}worth a clinician conversation. Reference supportively if sleep comes up; never diagnose.`);
     }
     lines.push(`SLEEP COACHING RULES: Treat the three axes as separate levers. If total sleep is fine but timing is irregular, the fix is regularity, not "sleep more". Anchor a fixed wake time as the #1 move. Do not chase sleep-stage/deep-sleep numbers (unreliable). Under a deficit, frame sleep as a muscle-retention tool.`);
+  }
+
+  // ─── ENERGY BALANCE / ADAPTIVE TDEE ───────────────────────────────────────
+  if (brain.energy) {
+    const en = brain.energy;
+    lines.push("");
+    if (!en.ready) {
+      lines.push("== ENERGY BALANCE / TDEE ==");
+      lines.push(`Not enough data to measure maintenance yet: ${en.reason} Do NOT estimate their TDEE from a formula or guess — say it's still being measured from their logs.`);
+    } else {
+      lines.push("== ENERGY BALANCE / TDEE (measured from their OWN intake + weight trend — this is real, not a Mifflin estimate) ==");
+      lines.push(`Measured maintenance: ~${en.tdee} kcal/day | confidence: ${en.confidence} (${en.loggedDays} logged days, ${Math.round(en.completeness * 100)}% complete) | their target: ${en.currentTarget ?? "—"}`);
+      lines.push(`At ~${en.meanIntake} kcal/day they're in a real ${en.realDelta < 0 ? `deficit of ~${Math.abs(en.realDelta)}` : en.realDelta > 0 ? `surplus of ~${en.realDelta}` : "neutral balance"}/day | trend weight ${en.weightRateKgWk > 0 ? "+" : ""}${en.weightRateKgWk}kg/wk | suggested intake for ${en.intent}: ~${en.recommendedIntake}`);
+      if (en.underLogging) lines.push(`⚠ UNDER-LOGGING SUSPECTED: measured maintenance is implausibly low — their food logs are probably incomplete. Gently flag this; don't trust the deficit until logging tightens.`);
+      if (en.plateau) lines.push(`PLATEAU: fat loss has stalled despite an apparent deficit — adaptation or under-logging. Reference this if they ask why the scale isn't moving.`);
+      lines.push(`Use the MEASURED maintenance (not formulas) for any calorie-target advice. If their target and measured maintenance disagree, trust the measured number. Confidence ${en.confidence} — ${en.confidence === "Low" ? "treat as provisional and say so" : "solid enough to act on"}.`);
+    }
   }
 
   // ─── PERSONAL METRIC (EJAC) — neutral data only, with guardrails ──────────
@@ -4628,6 +4759,60 @@ function ConsistencyHeatmap({ data }) {
   );
 }
 
+function EnergyBalanceCard({ data, goals }) {
+  const en = useMemo(() => computeEnergyBalance(data, goals), [data, goals]);
+
+  if (!en.ready) {
+    return (
+      <Card title="Energy balance" sub="Your real maintenance, measured — not guessed">
+        <div className="eb-building">
+          <div className="muted small" style={{ lineHeight: 1.5 }}>{en.reason}</div>
+          {en.haveWeight && (
+            <div style={{ marginTop: 10 }}>
+              <div className="rt-bar" style={{ margin: "0 0 6px" }}>
+                <div className="rt-bar-fill" style={{ width: `${Math.min(100, (en.loggedDays / 14) * 100)}%` }} />
+              </div>
+              <div className="muted small">{en.loggedDays} of 14 days logged</div>
+            </div>
+          )}
+        </div>
+      </Card>
+    );
+  }
+
+  const deficit = en.realDelta < 0;
+  const deltaColor = en.intent === "cut" ? (deficit ? "var(--good)" : "var(--bad)") : en.intent === "bulk" ? (deficit ? "var(--bad)" : "var(--good)") : "var(--text)";
+  const flag = en.underLogging
+    ? { c: "var(--bad)", t: "Measured maintenance looks implausibly low — your food logs are likely incomplete. Tighten logging before trusting the deficit." }
+    : en.plateau
+      ? { c: "#f9c97e", t: "Fat loss has stalled despite an apparent deficit — adaptation or unlogged food. A diet break or a small further cut restarts it." }
+      : null;
+
+  return (
+    <Card title="Energy balance" sub="Measured from your intake + weight trend" action={<StatusPill status={en.confidence === "High" ? "good" : en.confidence === "Moderate" ? "warn" : null} label={en.confidence} />}>
+      <div className="center-stack" style={{ marginBottom: 8 }}>
+        <div className="muted small">Your real maintenance</div>
+        <div style={{ fontSize: 34, fontWeight: 700, lineHeight: 1 }}>{en.tdee}<span className="muted" style={{ fontSize: 16, marginLeft: 4 }}>kcal</span></div>
+        <div className="muted small" style={{ marginTop: 2 }}>
+          eating ~{en.meanIntake}/day · <span style={{ color: deltaColor, fontWeight: 600 }}>{en.realDelta === 0 ? "at maintenance" : `${Math.abs(en.realDelta)} ${deficit ? "deficit" : "surplus"}`}</span>
+        </div>
+      </div>
+
+      <div className="eb-grid">
+        <div className="eb-cell"><span className="eb-l">Trend weight</span><span className="eb-v">{en.weightRateKgWk > 0 ? "+" : ""}{en.weightRateKgWk}<span className="muted" style={{ fontSize: 12 }}>kg/wk</span></span></div>
+        <div className="eb-cell"><span className="eb-l">Your target</span><span className="eb-v">{en.currentTarget ?? "—"}</span></div>
+        <div className="eb-cell"><span className="eb-l">Suggested ({en.intent})</span><span className="eb-v">{en.recommendedIntake}</span></div>
+      </div>
+
+      {flag && <div className="eb-flag" style={{ borderColor: flag.c, color: flag.c }}>{flag.t}</div>}
+
+      <p className="muted small" style={{ marginTop: 10, lineHeight: 1.45 }}>
+        Based on {en.loggedDays} logged days ({Math.round(en.completeness * 100)}% complete). This measures your actual metabolism, so it already accounts for any adaptation — trust it over any formula.
+      </p>
+    </Card>
+  );
+}
+
 function TrendsView({ data, goals }) {
   const [range, setRange] = useState(14);
   const series = useMemo(() => Array.from({ length: range }, (_, i) => daysAgo(range - 1 - i)), [range]);
@@ -4676,6 +4861,8 @@ function TrendsView({ data, goals }) {
           <button key={r} className={`seg-btn ${range === r ? "active" : ""}`} onClick={() => setRange(r)}>{r} days</button>
         ))}
       </div>
+
+      <EnergyBalanceCard data={data} goals={goals} />
 
       <ConsistencyHeatmap data={data} />
 
@@ -7301,4 +7488,12 @@ input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
 .sleep-detail-toggle { display: block; width: 100%; text-align: center; background: none; border: none; color: var(--accent); font-size: .85rem; font-weight: 600; cursor: pointer; padding: 16px 2px 4px; }
 .sleep-detail { animation: log-rise .2s ease; }
 .sleep-detail > .field-grid { margin-bottom: 4px; }
+
+/* ─── ENERGY BALANCE / TDEE CARD ───────────────────────────────────────────── */
+.eb-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.eb-cell { display: flex; flex-direction: column; gap: 2px; background: var(--surface-2); border-radius: 10px; padding: 9px 10px; text-align: center; align-items: center; }
+.eb-l { font-size: .68rem; color: var(--muted); }
+.eb-v { font-size: 1.1rem; font-weight: 700; }
+.eb-flag { margin-top: 10px; padding: 9px 12px; border-radius: 10px; border: 1px solid; font-size: .82rem; line-height: 1.45; background: rgba(255,255,255,.02); }
+.eb-building { padding: 4px 0; }
 `;
