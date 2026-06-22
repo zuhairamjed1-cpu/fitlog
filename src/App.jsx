@@ -2036,8 +2036,9 @@ function FuelCard({ data, goals, addEntry, deleteEntry }) {
   const plan = useMemo(() => planFueling({ sessions, weightKg, goals, wakeMin: sw.wakeMin, sleepMin: sw.sleepMin }), [sessions, weightKg, goals, sw]);
   const now = new Date();
   const nowMin = now.getHours() * 60 + now.getMinutes();
+  const isToday = planDate === today;
   const meals = (data.diet || []).filter(d => d.date === planDate);
-  const rec = useMemo(() => (planDate === today && plan && plan.blocks) ? reconcileFueling({ plan, meals, nowMin }) : null, [plan, meals, nowMin, planDate, today]);
+  const rec = useMemo(() => (plan && plan.blocks) ? reconcileFueling({ plan, meals, nowMin: isToday ? nowMin : -1 }) : null, [plan, meals, nowMin, isToday]);
 
   const fmtH = m => `${Math.floor(m / 60) % 24}:${String(m % 60).padStart(2, "0")}`;
   const timeToMin = t => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ""); return m ? +m[1] * 60 + +m[2] : 0; };
@@ -2094,7 +2095,7 @@ function FuelCard({ data, goals, addEntry, deleteEntry }) {
 
           {sw.hasData && <p className="muted small" style={{ margin: "0 0 12px" }}>Timed around your ~{fmtH(sw.wakeMin)} wake and ~{fmtH(sw.sleepMin)} sleep.</p>}
 
-          {rec && (
+          {isToday && rec && (
             <div className="es-embed">
               <div className="es-bars">
                 <div className="es-bar-row"><span className="es-bar-lab">Eaten</span><div className="rt-bar" style={{ margin: 0, flex: 1 }}><div className="rt-bar-fill" style={{ width: `${rec.carbPct}%` }} /></div><span className="es-bar-v">{rec.consumedCarbs}/{rec.dailyCarbs}g C</span></div>
@@ -2107,14 +2108,21 @@ function FuelCard({ data, goals, addEntry, deleteEntry }) {
           )}
 
           <div className="fuel-timeline">
-            {plan.blocks.map((b, i) => (
-              <div key={i} className={`fuel-block ${rec && timeToMin(b.time) <= nowMin ? "done" : ""}`} data-kind={b.kind}>
-                <span className="fuel-time">{b.time}</span>
-                <div className="fuel-bd">
-                  <div className="fuel-label">{b.label} <span className="fuel-macros">{b.carbsG}g C{b.proteinG ? ` · ${b.proteinG}g P` : ""}</span></div>
-                  <div className="muted small" style={{ lineHeight: 1.4, marginTop: 2 }}>{b.note}</div>
+            {(rec ? rec.timeline : plan.blocks).map((b, i) => (
+              b.kind === "session" ? (
+                <div key={i} className="fuel-block fuel-session-row" data-kind="session">
+                  <span className="fuel-time">{b.time}</span>
+                  <div className="fuel-bd"><div className="fuel-label">🏋 {b.label}</div></div>
                 </div>
-              </div>
+              ) : (
+                <div key={i} className={`fuel-block${b.done ? " done" : ""}${b.isNext ? " next" : ""}`} data-kind={b.kind}>
+                  <span className="fuel-time">{b.time}</span>
+                  <div className="fuel-bd">
+                    <div className="fuel-label">{b.isNext ? "→ " : ""}{b.label} <span className="fuel-macros">{b.carbsG}g C{b.proteinG ? ` · ${b.proteinG}g P` : ""}</span>{b.carbType ? <span className={`carb-chip ${b.carbType}`}>{b.carbType}</span> : null}</div>
+                    <div className="muted small" style={{ lineHeight: 1.4, marginTop: 2 }}>{b.done ? "Logged." : `${b.typeNote || b.baseNote || b.note || ""}${b.foodIdea ? ` — e.g. ${b.foodIdea}.` : ""}`}</div>
+                  </div>
+                </div>
+              )
             ))}
           </div>
           {plan.notes.map((n, i) => <p key={i} className="muted small" style={{ lineHeight: 1.45, marginTop: 8 }}>{n}</p>)}

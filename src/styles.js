@@ -1214,6 +1214,15 @@ input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
 .fuel-block[data-kind="during"] { border-left-color: #f9c97e; }
 .fuel-block[data-kind="post"] { border-left-color: var(--good); }
 .fuel-block[data-kind="meal"] { border-left-color: var(--muted); }
+.fuel-block[data-kind="eaten"] { border-left-color: var(--accent); }
+.fuel-block.done[data-kind="eaten"] { opacity: 1; }
+.fuel-block.next { box-shadow: inset 0 0 0 1.5px var(--accent); }
+.fuel-session-row { background: transparent; border: 1px dashed var(--border-strong); border-left: 3px dashed var(--accent); }
+.fuel-session-row .fuel-label { color: var(--text-2); font-weight: 700; }
+.carb-chip { display: inline-block; font-size: .58rem; text-transform: uppercase; letter-spacing: .03em; padding: 1px 6px; border-radius: 999px; margin-left: 6px; font-weight: 700; vertical-align: middle; }
+.carb-chip.fast { background: #fde6c7; color: #9a5b16; }
+.carb-chip.slow { background: #d9ecd6; color: #3f6b3a; }
+.carb-chip.mixed { background: var(--surface); color: var(--text-2); border: 1px solid var(--border); }
 .fuel-time { font-weight: 700; font-size: .82rem; width: 44px; flex: 0 0 auto; padding-top: 1px; }
 .fuel-bd { flex: 1; }
 .fuel-label { font-size: .86rem; font-weight: 600; }
