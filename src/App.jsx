@@ -17,7 +17,7 @@ import { computeRecovery } from "./engines/recovery";
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const TABS = ["Home", "Log", "History", "Coach", "Journal", "Settings", "Ejac"];
 const STORAGE_KEY = "fitlog_v5";
-const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], nicotine: [], nicotinePlans: [], journal: [], weight: [], ejac: [], skin: [], skinResearch: [] };
+const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], nicotine: [], nicotinePlans: [], journal: [], weight: [], ejac: [], skin: [], skinResearch: [], skinProcedures: [] };
 const defaultProfile = {
   // Body
   sex: "", age: "", heightCm: "", weightKg: "",
@@ -4483,6 +4483,105 @@ function SkinPhotos() {
   );
 }
 
+const SKIN_PROCEDURES = ["Microneedling", "PRP", "Chemical peel", "Laser", "Botox", "Filler", "Facial", "Extraction", "LED therapy", "Other"];
+
+function SkinProceduresCard({ data, addEntry, deleteEntry }) {
+  const [type, setType] = useState(null);
+  const [form, setForm] = useState({ date: getTodayStr(), provider: "", notes: "" });
+  const procs = (data.skinProcedures || []).slice().sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  function save() {
+    if (!type) return;
+    addEntry("skinProcedures")({ id: Date.now(), date: form.date, type, provider: form.provider.trim(), notes: form.notes.trim() });
+    setType(null); setForm({ date: getTodayStr(), provider: "", notes: "" }); toast("✦ Procedure logged");
+  }
+  return (
+    <Card title="Procedures" sub="Track treatments — the coach can talk you through them">
+      <div className="skin-proc-chips">
+        {SKIN_PROCEDURES.map(p => <button key={p} className={`skin-proc-chip ${type === p ? "on" : ""}`} onClick={() => { setType(t => t === p ? null : p); haptic(8); }}>{p}</button>)}
+      </div>
+      {type && (
+        <div className="stack" style={{ marginTop: 12 }}>
+          <div className="field-grid">
+            <label>Date<input type="date" value={form.date} onChange={e => setForm(f => ({ ...f, date: e.target.value }))} /></label>
+            <label>Provider / clinic<input value={form.provider} onChange={e => setForm(f => ({ ...f, provider: e.target.value }))} placeholder="optional" /></label>
+          </div>
+          <textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="What was done, settings if you know, how your skin reacted…" rows={2} />
+          <button className="btn full" onClick={save}>Log {type}</button>
+        </div>
+      )}
+      {procs.length > 0 && (
+        <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+          {procs.map(p => (
+            <div key={p.id} className="skin-proc-item">
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600, fontSize: ".9rem" }}>{p.type}{p.provider ? ` · ${p.provider}` : ""}</div>
+                <div className="muted small">{formatShortDate(p.date)}{p.notes ? ` — ${p.notes}` : ""}</div>
+              </div>
+              <button className="skin-x" onClick={() => deleteEntry("skinProcedures")(p.id)}>×</button>
+            </div>
+          ))}
+        </div>
+      )}
+      <p className="muted small" style={{ marginTop: 10, lineHeight: 1.45 }}>FitLog tracks and explains procedures and flags interactions (healing slowed by nicotine, microneedling over an irritated retinoid barrier, etc.). It won't prescribe settings or replace your provider's judgment.</p>
+    </Card>
+  );
+}
+
+const SKIN_COACH_SYSTEM = `You are FitLog's skin coach. The user's full physiology + skin data is provided below. You are warm, concrete, and honest.
+
+YOUR EDGE: you can see how this person's sleep, nicotine, diet, training and stress move their skin — use those cross-domain links, no generic skincare app has them. Lead with the highest-evidence lever for THIS person.
+
+RULES:
+- Be specific and personal — cite their actual numbers and logged patterns. No generic listicles.
+- Frame correlations as personal patterns, not proven cause.
+- Evidence order: not smoking + daily SPF (strong) > dairy/glycemic load, sleep, stress (moderate) > hydration/"detox" (weak — don't oversell water).
+- Prefer one-variable experiments over changing everything at once. Skin is slow (~6–8 weeks) — set that expectation.
+- PROCEDURES (microneedling, PRP, peels, lasers): you may EDUCATE — what it does, rough evidence, recovery/aftercare, how it interacts with their actives and physiology, and what to ask a provider. Do NOT prescribe protocols, depths or settings, or replace an in-person assessment. Send them to a qualified provider/dermatologist for the actual decision and anything medical (cystic/persistent acne, suspicious lesions, prescription actives).
+- Keep replies tight: a short answer plus the one next action. No walls of text.`;
+
+const SKIN_PROMPTS = ["Why am I breaking out?", "What's my biggest skin lever?", "Is microneedling worth it for me?", "Build me a simple routine"];
+
+function SkinCoach({ data, goals }) {
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const endRef = useRef(null);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }); }, [messages, loading]);
+  async function ask(text) {
+    const q = (text || input).trim(); if (!q || loading) return;
+    const next = [...messages, { role: "user", content: q }];
+    setMessages(next); setInput(""); setLoading(true);
+    try {
+      const system = SKIN_COACH_SYSTEM + "\n\n=== USER DATA ===\n" + formatBrainText(buildBrain(data, goals));
+      const reply = await callClaude({ system, conversationMessages: next, maxTokens: 1100 });
+      setMessages(m => [...m, { role: "assistant", content: reply || "I didn't catch that — try rephrasing?" }]);
+    } catch {
+      setMessages(m => [...m, { role: "assistant", content: "Couldn't reach the coach right now — check your connection and try again." }]);
+    }
+    setLoading(false);
+  }
+  return (
+    <Card title="Ask your skin coach" sub="Reads your skin + sleep, nicotine, diet & stress">
+      {messages.length === 0 ? (
+        <p className="muted small" style={{ lineHeight: 1.5, marginBottom: 10 }}>Ask anything about your skin. The coach reads your logged patterns and your physiology — so the answers are about you, not generic advice.</p>
+      ) : (
+        <div className="skin-chat">
+          {messages.map((m, i) => <div key={i} className={`skin-msg ${m.role === "user" ? "user" : "ai"}`}>{m.content}</div>)}
+          {loading && <div className="skin-msg ai typing"><span /><span /><span /></div>}
+          <div ref={endRef} />
+        </div>
+      )}
+      <div className="skin-coach-chips">
+        {SKIN_PROMPTS.map(p => <button key={p} className="skin-coach-chip" onClick={() => ask(p)} disabled={loading}>{p}</button>)}
+      </div>
+      <div className="skin-coach-row">
+        <textarea value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); } }} placeholder="Ask about your skin…" rows={1} />
+        <button className="btn" onClick={() => ask()} disabled={loading || !input.trim()}>{loading ? "…" : "Send"}</button>
+      </div>
+    </Card>
+  );
+}
+
 function SkinSection({ data, goals, addEntry, deleteEntry, onSaveGoals }) {
   const skin = useMemo(() => computeSkin(data, goals), [data, goals]);
   const conflicts = useMemo(() => detectRoutineConflicts(goals.skinRoutine), [goals.skinRoutine]);
@@ -4533,13 +4632,16 @@ function SkinSection({ data, goals, addEntry, deleteEntry, onSaveGoals }) {
         </Card>
       )}
 
+      <SkinCoach data={data} goals={goals} />
+
       <SkinRoutineCard goals={goals} onSaveGoals={onSaveGoals} conflicts={conflicts} />
+      <SkinProceduresCard data={data} addEntry={addEntry} deleteEntry={deleteEntry} />
       <SkinPhotos />
       <SkinExperimentCard data={data} goals={goals} onSaveGoals={onSaveGoals} />
       <SkinResearchStore data={data} addEntry={addEntry} deleteEntry={deleteEntry} />
 
       <p className="muted small" style={{ textAlign: "center", lineHeight: 1.5, padding: "4px 12px" }}>
-        FitLog's skin tools track, correlate, and experiment — they don't diagnose. For persistent acne, suspicious spots, prescription actives, or procedures, see a dermatologist.
+        FitLog's skin tools track, correlate, experiment, and explain — they don't diagnose or prescribe. For persistent acne, suspicious spots, prescription actives, or the decision to get a procedure, see a dermatologist.
       </p>
     </div>
   );

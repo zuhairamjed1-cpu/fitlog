@@ -754,7 +754,9 @@ export function formatBrainText(brain) {
       sk.correlations.forEach(c => lines.push(`  • [${c.evidence} evidence] ${c.text}`));
     }
     if (sk.conflicts.length) lines.push(`Routine conflicts flagged: ${sk.conflicts.join(" | ")}`);
-    lines.push(`SKIN COACHING RULES: lead with the best-evidenced levers (nicotine, sun/SPF strong; dairy/glycemic-load moderate; hydration weak — don't push water-for-skin). Suggest one-variable experiments over shotgun changes. For anything medical (persistent acne, suspicious lesions, prescription actives, procedures) tell them to see a dermatologist.`);
+    if (sk.procedures && sk.procedures.length) lines.push(`Procedures logged (most recent first): ${sk.procedures.map(p => `${p.type}${p.date ? ` on ${p.date}` : ""}${p.notes ? ` (${p.notes})` : ""}`).join(" | ")}`);
+    lines.push(`SKIN COACHING RULES: lead with the best-evidenced levers (nicotine, sun/SPF strong; dairy/glycemic-load moderate; hydration weak — don't push water-for-skin). Suggest one-variable experiments over shotgun changes.`);
+    lines.push(`ON PROCEDURES (microneedling, PRP, peels, lasers, etc.): you CAN educate — explain what a procedure does, the rough state of evidence, typical recovery/aftercare, how it interacts with their actives and physiology (e.g. don't microneedle over active retinoid irritation; nicotine slows healing), and what to ask a provider. You may help them weigh options against their goals and data. You must NOT prescribe a specific medical protocol, settings, depths, or substitute for an in-person assessment — send them to a qualified provider/dermatologist for the actual treatment decision and anything that looks medical (cystic/persistent acne, suspicious lesions, prescription actives).`);
   }
 
   return lines.join("\n");

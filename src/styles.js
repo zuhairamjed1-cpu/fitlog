@@ -1080,7 +1080,46 @@ input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
 .train-vol-sets { font-size: .85rem; font-weight: 700; text-align: right; }
 
 /* ─── SKIN INTELLIGENCE SECTION (own visual identity: softer rose accent) ───── */
-.skin-scope { --accent: #e0879f; --accent-dim: rgba(224,135,159,.14); }
+/* ─── SKIN: calm light theme (warm beige + sage green), narrowed & centered ─── */
+.skin-scope {
+  --bg: #ece4d4;
+  --surface: #faf7f0;
+  --surface-2: #f0e9da;
+  --border: rgba(74,92,62,.12);
+  --border-strong: rgba(74,92,62,.2);
+  --text: #313a2c;
+  --text-2: #56624f;
+  --muted: #8a937c;
+  --accent: #5f8d57;
+  --accent-dim: rgba(95,141,87,.14);
+  --good: #5f8d57;
+  --bad: #c0673e;
+  max-width: 580px; margin: 0 auto;
+  background: #ece4d4; border-radius: 22px; padding: 16px;
+}
+.skin-scope .card { background: var(--surface); border-color: var(--border); box-shadow: 0 1px 3px rgba(74,92,62,.06); }
+.skin-scope input, .skin-scope textarea { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); }
+.skin-scope input::placeholder, .skin-scope textarea::placeholder { color: var(--muted); }
+.skin-scope .sleep-q-chip { background: var(--surface-2); color: var(--text-2); border-color: var(--border-strong); }
+.skin-scope .sleep-q-chip.on { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); }
+/* skin coach */
+.skin-chat { display: flex; flex-direction: column; gap: 8px; max-height: 340px; overflow-y: auto; padding: 2px; }
+.skin-msg { max-width: 88%; padding: 9px 13px; border-radius: 14px; font-size: .88rem; line-height: 1.5; white-space: pre-wrap; }
+.skin-msg.user { align-self: flex-end; background: var(--accent-dim); color: var(--text); border-bottom-right-radius: 4px; }
+.skin-msg.ai { align-self: flex-start; background: var(--surface-2); color: var(--text); border-bottom-left-radius: 4px; }
+.skin-msg.typing { display: flex; gap: 4px; padding: 13px; }
+.skin-msg.typing span { width: 6px; height: 6px; background: var(--muted); border-radius: 50%; animation: bounce .9s infinite; }
+.skin-msg.typing span:nth-child(2) { animation-delay: .15s; }
+.skin-msg.typing span:nth-child(3) { animation-delay: .3s; }
+.skin-coach-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.skin-coach-chip { font-size: .76rem; padding: 6px 11px; border-radius: 999px; background: var(--accent-dim); color: var(--accent); border: 1px solid var(--border-strong); cursor: pointer; }
+.skin-coach-row { display: flex; gap: 8px; margin-top: 10px; align-items: flex-end; }
+.skin-coach-row textarea { flex: 1; resize: none; min-height: 42px; }
+/* skin procedures */
+.skin-proc-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.skin-proc-chip { font-size: .8rem; padding: 7px 12px; border-radius: 10px; background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border-strong); cursor: pointer; }
+.skin-proc-chip.on { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); }
+.skin-proc-item { display: flex; align-items: flex-start; gap: 10px; background: var(--surface-2); border-radius: 10px; padding: 10px 12px; }
 .skin-routine-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .skin-routine-col { background: var(--surface-2); border-radius: 12px; padding: 12px; }
 .skin-routine-head { font-size: .8rem; font-weight: 700; color: var(--text-2); margin-bottom: 8px; }

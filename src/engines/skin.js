@@ -129,6 +129,7 @@ export function computeSkin(data, goals) {
     nLogs: logs.length, avgCond14, condTrend, breakouts14,
     correlations, conflicts, experiment, topLever, confidence,
     lastConcern: logs[logs.length - 1]?.concern || null,
+    procedures: (data.skinProcedures || []).slice().sort((a, b) => (b.date || "").localeCompare(a.date || "")).slice(0, 6),
     insights, series,
   };
 }
