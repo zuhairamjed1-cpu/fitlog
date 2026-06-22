@@ -1138,4 +1138,12 @@ input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
 .skin-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .skin-compare-cell { display: flex; flex-direction: column; gap: 4px; align-items: center; }
 .skin-compare-cell img { width: 100%; aspect-ratio: 3/4; object-fit: cover; border-radius: 10px; }
+
+/* ─── GLYCEMIC LOAD PILL ───────────────────────────────────────────────────── */
+.gl-pill { display: inline-flex; align-items: center; font-size: .62rem; font-weight: 800; letter-spacing: .03em; text-transform: uppercase; padding: 2px 7px; border-radius: 999px; border: 1px solid; vertical-align: middle; white-space: nowrap; }
+.gl-pill[data-band="low"] { color: #62b06a; background: rgba(98,176,106,.13); border-color: rgba(98,176,106,.32); }
+.gl-pill[data-band="moderate"] { color: #e0a23c; background: rgba(224,162,60,.13); border-color: rgba(224,162,60,.32); }
+.gl-pill[data-band="high"] { color: #e6713f; background: rgba(230,113,63,.14); border-color: rgba(230,113,63,.34); }
+.gl-pill[data-band="none"] { color: var(--muted); background: var(--surface-2); border-color: var(--border); }
+.rt-gl { text-align: center; font-size: .82rem; color: var(--text-2); margin-top: 8px; display: flex; align-items: center; justify-content: center; gap: 7px; flex-wrap: wrap; }
 `;

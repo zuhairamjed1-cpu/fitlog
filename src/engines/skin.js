@@ -11,6 +11,7 @@
 
 import { daysAgo, daysAgoFrom, getTodayStr } from "../lib/dates.js";
 import { sleepTST, estimateSleepNeed } from "./sleep.js";
+import { estimateGlycemicLoad } from "./glycemic.js";
 
 const DAIRY_RE = /\b(milk|cheese|yogurt|yoghurt|dairy|whey|ice ?cream|latte|cappuccino|cereal)\b/i;
 const STRESS_RE = /\b(stress|stressed|anxious|anxiety|overwhelmed|exhausted|burnt out|burned out|wrecked|rough day)\b/i;
@@ -71,7 +72,8 @@ export function computeSkin(data, goals) {
   const need = estimateSleepNeed(data, goals).hours;
   const sleepByDate = {}; (data.sleep || []).forEach(s => { if (s.date) sleepByDate[s.date] = sleepTST(s); });
   const nicByDate = {}; (data.nicotine || []).forEach(n => { if (n.date) nicByDate[n.date] = (nicByDate[n.date] || 0) + 1; });
-  const dairyByDate = {}; (data.diet || []).forEach(d => { if (d.date && DAIRY_RE.test(`${d.name || ""} ${d.label || ""} ${d.text || ""}`)) dairyByDate[d.date] = true; });
+  const dairyByDate = {}; (data.diet || []).forEach(d => { if (d.date && DAIRY_RE.test(`${d.name || ""} ${d.label || ""} ${d.text || ""} ${d.food || ""}`)) dairyByDate[d.date] = true; });
+  const glByDate = {}; (data.diet || []).forEach(d => { if (!d.date) return; const r = estimateGlycemicLoad(d); if (r.hasCarbs) glByDate[d.date] = (glByDate[d.date] || 0) + r.gl; });
   const stressByDate = {}; (data.journal || []).forEach(j => { if (j.date && STRESS_RE.test(j.text || "")) stressByDate[j.date] = true; });
 
   // Lagged correlation: skin reacts a day or two after the trigger. Compare
@@ -97,6 +99,8 @@ export function computeSkin(data, goals) {
   if (cNic) correlations.push({ key: "nicotine", evidence: "strong", ...cNic, text: `Skin rates worse around your nicotine days (${cNic.exposedAvg} vs ${cNic.baseAvg}/5). Nicotine constricts blood flow and impairs skin repair — one of the best-evidenced skin levers you control.` });
   const cDairy = corr(d => dairyByDate[d]);
   if (cDairy) correlations.push({ key: "dairy", evidence: "moderate", ...cDairy, text: `Higher-dairy days precede worse skin for you (${cDairy.exposedAvg} vs ${cDairy.baseAvg}/5). Dairy has moderate evidence linking to acne in some people — worth a controlled 4-week test, not a blanket cut.` });
+  const cGL = corr(d => (glByDate[d] || 0) >= 120);
+  if (cGL) correlations.push({ key: "glycemic", evidence: "moderate", ...cGL, text: `High glycemic-load days line up with worse skin for you (${cGL.exposedAvg} vs ${cGL.baseAvg}/5). High blood-sugar spikes can drive acne via insulin/IGF-1 — moderate evidence. Pairing carbs with protein/fat/fibre lowers the load without cutting them.` });
   const cStress = corr(d => stressByDate[d]);
   if (cStress) correlations.push({ key: "stress", evidence: "moderate", ...cStress, text: `Your higher-stress days line up with worse skin (${cStress.exposedAvg} vs ${cStress.baseAvg}/5). Stress flares are real via the HPA axis — managing load may help your skin too.` });
 

@@ -12,6 +12,7 @@ import { computeRecovery } from "../src/engines/recovery.js";
 import { computeNicotineStats } from "../src/engines/nicotine.js";
 import { computeProteinDistribution } from "../src/engines/protein.js";
 import { computeSkin, detectRoutineConflicts } from "../src/engines/skin.js";
+import { estimateGlycemicLoad, dayGlycemicLoad } from "../src/engines/glycemic.js";
 import { buildBrain, formatBrainText } from "../src/brain/brain.js";
 
 let pass = 0, fail = 0;
@@ -71,6 +72,12 @@ ok("protein: runs", computeProteinDistribution(data, goals) !== undefined, 1);
 const sk = computeSkin(data, goals);
 ok("skin: runs + correlations array", sk && Array.isArray(sk.correlations), Object.keys(sk || {}));
 ok("skin: routine conflict detected", detectRoutineConflicts(goals.skinRoutine).length >= 1, detectRoutineConflicts(goals.skinRoutine));
+
+// ── glycemic load ──
+ok("glycemic: high-carb low-protein = high band", estimateGlycemicLoad({ food: "white rice", carbs: 80, protein: 5, fat: 1 }).band === "high", 1);
+ok("glycemic: protein/fat blunts the same carbs", estimateGlycemicLoad({ food: "chicken and rice", carbs: 60, protein: 45, fat: 12 }).gl < estimateGlycemicLoad({ food: "white rice", carbs: 60, protein: 2, fat: 0 }).gl, 1);
+ok("glycemic: no carb data → no estimate", estimateGlycemicLoad({ food: "steak", carbs: 0 }).hasCarbs === false, 1);
+ok("glycemic: day aggregates", dayGlycemicLoad([{ food: "rice", carbs: 80 }, { food: "oats", carbs: 40 }]).total > 0, 1);
 
 // ── brain (wires everything) ──
 const brain = buildBrain(data, goals);

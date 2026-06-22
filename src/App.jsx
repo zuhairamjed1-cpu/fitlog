@@ -10,6 +10,7 @@ import { computeEnergyBalance, mifflinBMR } from "./engines/energy";
 import { computeTraining, mapMuscles, MUSCLE_LABELS } from "./engines/training";
 import { computeNicotineStats, computeNicotineCorrelations, computeNicotineTiming, NIC_MG } from "./engines/nicotine";
 import { computeSkin, detectRoutineConflicts } from "./engines/skin";
+import { estimateGlycemicLoad, dayGlycemicLoad } from "./engines/glycemic";
 import { buildBrain, formatBrainText, prioritizeInsights } from "./brain/brain";
 import { sleepTST, estimateSleepNeed, computeSleep } from "./engines/sleep";
 import { computeRecovery } from "./engines/recovery";
@@ -1993,6 +1994,14 @@ function ProteinTimingCard({ data, goals }) {
   );
 }
 
+// Estimated glycemic-load pill — appears on meals that have carb data.
+function GLPill({ meal, showValue = true }) {
+  const r = estimateGlycemicLoad(meal);
+  if (!r.hasCarbs) return null;
+  const title = `Estimated glycemic load ~${r.gl} (${r.band})${r.blunted ? " — softened by the protein/fat in this meal" : ""}. Estimate from logged carbs + food type, not a lab value.`;
+  return <span className="gl-pill" data-band={r.band} title={title}>GL {r.band}{showValue ? `\u00a0·\u00a0${r.gl}` : ""}</span>;
+}
+
 function DietForm({ onAdd, recent, goals, data, todayDiet = [] }) {
   const [date, setDate] = useState(getTodayStr());
   const [time, setTime] = useState(() => {
@@ -2125,6 +2134,9 @@ function DietForm({ onAdd, recent, goals, data, todayDiet = [] }) {
           </div>
         )}
         <div className="rt-hint">{pLeft > 0 ? `${pLeft}g protein to go today` : "✓ protein goal hit"}</div>
+        {(() => { const gl = dayGlycemicLoad(todayDiet); return gl.hasData ? (
+          <div className="rt-gl">Est. glycemic load: <span className="gl-pill" data-band={gl.band}>{gl.band}</span> <span className="muted small">~{gl.total} · estimate, not a lab value</span></div>
+        ) : null; })()}
       </div>
     )}
     <ProteinTimingCard data={data} goals={goals} />
@@ -2187,6 +2199,9 @@ function DietForm({ onAdd, recent, goals, data, todayDiet = [] }) {
             </div>
           ) : null; })()}
 
+          {(() => { const m = bcMacros(); const r = m ? estimateGlycemicLoad({ ...m, carbs: m.carbs, food: bcProduct.name }) : null; return r && r.hasCarbs ? (
+            <p className="ai-card-note" style={{ display: "flex", alignItems: "center", gap: 8 }}><GLPill meal={{ ...m, food: bcProduct.name }} /> <span className="muted small">estimate from carbs + food type</span></p>
+          ) : null; })()}
           <div className="row">
             <button className="btn flex" onClick={saveBarcode}>+ Add to log</button>
             <button className="btn-ghost" onClick={() => { setBcProduct(null); setError(""); }}>Scan another</button>
@@ -2258,6 +2273,9 @@ function DietForm({ onAdd, recent, goals, data, todayDiet = [] }) {
             </div>
           </div>
           {result.notes && <p className="ai-card-note">{result.notes}</p>}
+          {(() => { const r = estimateGlycemicLoad(result); return r.hasCarbs ? (
+            <p className="ai-card-note" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}><GLPill meal={result} /> <span className="muted small">{r.blunted ? "softened by the protein/fat here" : r.band === "high" ? "carb-heavy — pair with protein/fat or fibre to flatten the spike" : "gentle on blood sugar"}</span></p>
+          ) : null; })()}
           <div className="row">
             <button className="btn flex" onClick={save}>+ Add to log</button>
             <button className="btn-ghost" onClick={() => { setResult(null); }}>Redo</button>
@@ -2265,7 +2283,7 @@ function DietForm({ onAdd, recent, goals, data, todayDiet = [] }) {
         </div>
       )}
       </Card>
-      <RecentList entries={recent} render={m => <><span className="ra-main">{m.meal} · {m.calories} kcal · {m.food.slice(0, 26)}{m.food.length > 26 ? "…" : ""}</span><span className="ra-date">{formatShortDate(m.date)}</span></>} />
+      <RecentList entries={recent} render={m => <><span className="ra-main">{m.meal} · {m.calories} kcal · {m.food.slice(0, 26)}{m.food.length > 26 ? "…" : ""} <GLPill meal={m} showValue={false} /></span><span className="ra-date">{formatShortDate(m.date)}</span></>} />
     </>
   );
 }
