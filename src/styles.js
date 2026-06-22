@@ -1148,4 +1148,57 @@ input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
 .gl-pill[data-band="high"] { color: #e6713f; background: rgba(230,113,63,.14); border-color: rgba(230,113,63,.34); }
 .gl-pill[data-band="none"] { color: var(--muted); background: var(--surface-2); border-color: var(--border); }
 .rt-gl { text-align: center; font-size: .82rem; color: var(--text-2); margin-top: 8px; display: flex; align-items: center; justify-content: center; gap: 7px; flex-wrap: wrap; }
+.pt-divider { height: 1px; background: var(--border); margin: 16px 0 14px; }
+.pt-gl-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.pt-gl-label { font-weight: 600; font-size: .92rem; }
+
+/* ─── CARB TIMING CARD ─────────────────────────────────────────────────────── */
+.ct-hero { display: flex; gap: 10px; margin-bottom: 4px; }
+.ct-stat { flex: 1; background: var(--surface-2); border-radius: 12px; padding: 11px 8px; text-align: center; }
+.ct-v { display: block; font-size: 1.3rem; font-weight: 700; line-height: 1; }
+.ct-l { display: block; font-size: .68rem; color: var(--muted); margin-top: 4px; }
+.ct-status { font-weight: 700; font-size: .95rem; margin-top: 12px; }
+.ct-status[data-tone="warn"] { color: #e0a23c; }
+.ct-status[data-tone="ok"] { color: var(--good); }
+.ct-list { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.ct-row { display: flex; align-items: center; gap: 8px; font-size: .78rem; background: var(--surface-2); border-radius: 8px; padding: 7px 10px; }
+.ct-row-when { color: var(--muted); white-space: nowrap; }
+.ct-row-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ct-row-carbs { white-space: nowrap; font-weight: 600; }
+
+/* ─── FUEL PLAN ────────────────────────────────────────────────────────────── */
+.fuel-sessions { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.fuel-sess { display: flex; align-items: center; justify-content: space-between; gap: 8px; background: var(--surface-2); border-radius: 8px; padding: 8px 11px; font-size: .82rem; }
+.fuel-type-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.fuel-type-chip { font-size: .8rem; padding: 7px 12px; border-radius: 999px; background: var(--accent-dim); color: var(--accent); border: 1px solid var(--border-strong); cursor: pointer; }
+.fuel-plan { margin-top: 14px; }
+.fuel-totals { display: flex; gap: 8px; margin-bottom: 12px; }
+.fuel-tot { flex: 1; background: var(--surface-2); border-radius: 12px; padding: 11px 8px; text-align: center; }
+.fuel-tot-v { display: block; font-size: 1.15rem; font-weight: 700; line-height: 1; text-transform: capitalize; }
+.fuel-tot-l { display: block; font-size: .66rem; color: var(--muted); margin-top: 4px; }
+.fuel-timeline { display: flex; flex-direction: column; gap: 8px; }
+.fuel-block { display: flex; gap: 10px; padding: 9px 11px; border-radius: 10px; background: var(--surface-2); border-left: 3px solid var(--border-strong); }
+.fuel-block[data-kind="pre"] { border-left-color: #6ee7f7; }
+.fuel-block[data-kind="during"] { border-left-color: #f9c97e; }
+.fuel-block[data-kind="post"] { border-left-color: var(--good); }
+.fuel-block[data-kind="meal"] { border-left-color: var(--muted); }
+.fuel-time { font-weight: 700; font-size: .82rem; width: 44px; flex: 0 0 auto; padding-top: 1px; }
+.fuel-bd { flex: 1; }
+.fuel-label { font-size: .86rem; font-weight: 600; }
+.fuel-macros { font-weight: 700; color: var(--accent); font-size: .8rem; margin-left: 4px; }
+
+/* ─── ENERGY CHECK CARD ────────────────────────────────────────────────────── */
+.es-bars { display: flex; flex-direction: column; gap: 9px; }
+.es-bar-row { display: flex; align-items: center; gap: 10px; }
+.es-bar-lab { font-size: .76rem; color: var(--muted); width: 52px; flex: 0 0 auto; }
+.es-bar-v { font-size: .78rem; font-weight: 600; width: 78px; text-align: right; flex: 0 0 auto; }
+.es-status { font-weight: 700; font-size: .95rem; margin-top: 12px; }
+.es-status[data-tone="warn"] { color: #e0a23c; }
+.es-status[data-tone="ok"] { color: var(--good); }
+.es-upcoming { margin-top: 12px; }
+.es-up-title { font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-bottom: 6px; }
+.es-up-row { display: flex; align-items: center; gap: 8px; font-size: .78rem; background: var(--surface-2); border-radius: 8px; padding: 7px 10px; margin-bottom: 5px; }
+.es-up-time { font-weight: 700; width: 44px; flex: 0 0 auto; }
+.es-up-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.es-up-carbs { white-space: nowrap; font-weight: 600; color: var(--accent); }
 `;

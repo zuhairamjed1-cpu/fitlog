@@ -13,6 +13,9 @@ import { computeNicotineStats } from "../src/engines/nicotine.js";
 import { computeProteinDistribution } from "../src/engines/protein.js";
 import { computeSkin, detectRoutineConflicts } from "../src/engines/skin.js";
 import { estimateGlycemicLoad, dayGlycemicLoad } from "../src/engines/glycemic.js";
+import { lookupGI } from "../src/engines/gi-database.js";
+import { computeCarbTiming } from "../src/engines/carbtiming.js";
+import { planFueling, reconcileFueling } from "../src/engines/fueling.js";
 import { buildBrain, formatBrainText } from "../src/brain/brain.js";
 
 let pass = 0, fail = 0;
@@ -78,6 +81,39 @@ ok("glycemic: high-carb low-protein = high band", estimateGlycemicLoad({ food: "
 ok("glycemic: protein/fat blunts the same carbs", estimateGlycemicLoad({ food: "chicken and rice", carbs: 60, protein: 45, fat: 12 }).gl < estimateGlycemicLoad({ food: "white rice", carbs: 60, protein: 2, fat: 0 }).gl, 1);
 ok("glycemic: no carb data → no estimate", estimateGlycemicLoad({ food: "steak", carbs: 0 }).hasCarbs === false, 1);
 ok("glycemic: day aggregates", dayGlycemicLoad([{ food: "rice", carbs: 80 }, { food: "oats", carbs: 40 }]).total > 0, 1);
+ok("GI db: specific beats generic (brown rice 68 ≠ rice 73)", lookupGI("brown rice").gi === 68 && lookupGI("white rice").gi === 73, 1);
+ok("GI db: sweet potato 63 ≠ potato 78", lookupGI("sweet potato").gi === 63 && lookupGI("potato").gi === 78, 1);
+ok("GI db: unknown food falls back to null", lookupGI("zorblax stew") === null, 1);
+ok("GI db: known food flagged source=database", estimateGlycemicLoad({ food: "oatmeal", carbs: 40 }).source === "database", 1);
+
+// ── carb timing (diet × training) ──
+{
+  const cdiet = [], cex = [];
+  for (let a = 0; a < 12; a++) { const dd = daysAgo(a); if (a % 2 === 0) cex.push({ id: a, date: dd, time: "06:00", label: "Lift" }); cdiet.push({ date: dd, time: "13:00", carbs: 80, calories: 700 }, { date: dd, time: "19:00", carbs: 70, calories: 700 }); }
+  const ct = computeCarbTiming({ exercise: cex, sports: [], diet: cdiet }, {});
+  ok("carb timing: flags fasted morning training", ct && /under-fueled/i.test(ct.status), ct && ct.status);
+  ok("carb timing: no training → null", computeCarbTiming({ exercise: [], sports: [], diet: [] }, {}) === null, 1);
+}
+
+// ── fuel planner ──
+{
+  ok("fuel: no weight → needWeight", planFueling({ sessions: [{ type: "gym", time: "17:00" }] }).needWeight === true, 1);
+  const single = planFueling({ sessions: [{ type: "gym", time: "17:00", durationMin: 60, intensity: "moderate" }], weightKg: 80, goals: { protein: 160 } });
+  ok("fuel: protein hits goal exactly", single.planProtein === 160, single.planProtein);
+  ok("fuel: carbs scale to load + weight", single.dailyCarbs > 0 && single.gPerKg >= 3, single.gPerKg);
+  const both = planFueling({ sessions: [{ type: "gym", time: "08:00", durationMin: 60, intensity: "moderate" }, { type: "basketball", time: "13:00", durationMin: 75, intensity: "hard" }], weightKg: 80 });
+  ok("fuel: two sessions → higher load + refuel note", both.sessions.length === 2 && both.blocks.some(b => /Rapid refuel/.test(b.note || "")), both.loadLevel);
+  const longGame = planFueling({ sessions: [{ type: "football", time: "18:00", durationMin: 90, intensity: "hard" }], weightKg: 80 });
+  ok("fuel: long sport gets during-fuel block", longGame.blocks.some(b => b.kind === "during"), 1);
+
+  // adaptive reconcile
+  const rplan = planFueling({ sessions: [{ type: "basketball", time: "18:00", durationMin: 75, intensity: "hard" }], weightKg: 80, goals: { protein: 160 } });
+  const rec = reconcileFueling({ plan: rplan, meals: [{ time: "08:00", carbs: 60, protein: 30 }, { time: "12:00", carbs: 80, protein: 40 }], nowMin: 13 * 60 });
+  ok("reconcile: sums consumed carbs", rec.consumedCarbs === 140, rec.consumedCarbs);
+  ok("reconcile: flags upcoming pre-session fuel", /Fuel up for Basketball/.test(rec.status), rec.status);
+  ok("reconcile: computes carbs left + add suggestion", rec.carbsLeft > 0 && rec.addPhrase.length > 0, rec.addPhrase);
+  ok("reconcile: topped up when target met", reconcileFueling({ plan: rplan, meals: [{ time: "08:00", carbs: rplan.dailyCarbs, protein: rplan.dailyProtein }], nowMin: 23 * 60 }).status === "Topped up", 1);
+}
 
 // ── brain (wires everything) ──
 const brain = buildBrain(data, goals);

@@ -12,6 +12,8 @@ import { computeSleep, estimateSleepNeed, sleepTST } from "../engines/sleep.js";
 import { computeRecovery } from "../engines/recovery.js";
 import { computeNicotineStats } from "../engines/nicotine.js";
 import { computeSkin } from "../engines/skin.js";
+import { computeCarbTiming } from "../engines/carbtiming.js";
+import { planFueling, reconcileFueling } from "../engines/fueling.js";
 
 export function insightCategory(text) {
   const t = (text || "").toLowerCase();
@@ -267,6 +269,9 @@ export function buildBrain(data, goals) {
 
   // ── SKIN INTELLIGENCE (separate lens — kept out of the physiology insight pool)
   const skin = computeSkin(data, goals);
+  const carbTiming = computeCarbTiming(data, goals);
+  const fuelPlan = planFueling({ sessions: (data.plannedSessions || []).filter(s => s.date === getTodayStr()), weightKg: goals && goals.profile && goals.profile.weightKg, goals });
+  const fuelStatus = (fuelPlan && fuelPlan.blocks) ? reconcileFueling({ plan: fuelPlan, meals: (data.diet || []).filter(d => d.date === getTodayStr()), nowMin: new Date().getHours() * 60 + new Date().getMinutes() }) : null;
 
   // ── EJAC (private metric — neutral data only, NO insights/judgments generated)
   const ejacAll = data.ejac || [];
@@ -422,6 +427,9 @@ export function buildBrain(data, goals) {
     energy,
     training,
     skin,
+    carbTiming,
+    fuelPlan,
+    fuelStatus,
     recovery: {
       verdict: recovery.verdict,
       readiness: recovery.readiness,
@@ -739,6 +747,28 @@ export function formatBrainText(brain) {
         lines.push(`  ${e.t}  ${e.text}`);
       });
     });
+  }
+
+  // ─── FUEL PLAN (today's planned sessions → timed carb/protein targets) ────
+  if (brain.fuelPlan && brain.fuelPlan.blocks && brain.fuelPlan.blocks.length) {
+    const fp = brain.fuelPlan;
+    lines.push("");
+    lines.push("== TODAY'S FUEL PLAN (the user has planned sessions today; this is their periodized fuelling target. Honest: evidence-based starting points scaled to bodyweight + load, not exact truth — adjust by performance/gut. Help them follow or adapt it; for weight-cut/boxing defer to individual guidance) ==");
+    lines.push(`Load: ${fp.loadLevel} → ~${fp.gPerKg} g/kg = ${fp.dailyCarbs}g carbs, ${fp.dailyProtein}g protein (~${fp.dailyCalories} kcal). Sessions: ${fp.sessions.map(s => `${s.label} ${s.time} ${s.durMin}min ${s.intensity}`).join("; ")}.`);
+    lines.push("Timeline: " + fp.blocks.map(b => `${b.time} ${b.label} ${b.carbsG}gC${b.proteinG ? `/${b.proteinG}gP` : ""}`).join(" | "));
+    if (brain.fuelStatus) {
+      const fs = brain.fuelStatus;
+      lines.push(`So far today: ${fs.consumedCarbs}g carbs / ${fs.consumedProtein}g protein eaten; ${fs.carbsLeft}g carbs + ${fs.proteinLeft}g protein still to go. Status: ${fs.status}. ${fs.advice}`);
+    }
+  }
+
+  // ─── CARB TIMING (diet × training; honest — daily total dominates) ───────
+  if (brain.carbTiming && brain.carbTiming.analyzed > 0) {
+    const ct = brain.carbTiming;
+    lines.push("");
+    lines.push("== CARB TIMING (peri-workout carbs. HONESTY RULES: total daily carbs/protein dominate recovery & growth; the post-workout 'anabolic window' is largely a myth for once-a-day lifters — do NOT push it. The one real lever is PRE-fuel for hard/long sessions. Reassure when timing is fine) ==");
+    lines.push(`Last ${ct.analyzed} sessions: avg ${ct.avgPre}g carbs in the 3h before, ${ct.avgPost}g in the 2h after. Fueled going in: ${ct.fueledPct}%. Trained essentially fasted: ${ct.fastedPct}%.${ct.morningFasted >= 2 ? " Fasted sessions cluster in the morning." : ""}`);
+    lines.push(`Read: ${ct.status}. ${ct.lever}`);
   }
 
   // ─── SKIN (separate lens — guarded: non-diagnostic, no prescribing) ───────
