@@ -204,19 +204,26 @@ export function reconcileFueling({ plan, meals, nowMin }) {
   const PRE_C = Math.round(0.5 * w), PRE_P = Math.round(0.25 * w);  // pre-gym stays LIGHT
   const POST_C = Math.round(0.8 * w), POST_P = Math.round(0.4 * w);
 
-  // wake-relative, training-aware meal name
-  const inPre = at => sess.find(s => at >= s.start - 150 && at <= s.start);
-  const inPost = at => sess.find(s => at >= s.end && at <= s.end + 120);
-  const bandName = at => {
-    if (inPre(at)) return "Pre-gym";
-    if (inPost(at)) return "Post-gym";
-    const h = (at - wakeMin) / 60;
-    if (h < 3.5) return "Breakfast";
-    if (h < 6.5) return "Lunch";
-    if (h < 9) return "Snack";
-    if (h < 12) return "Dinner";
-    return "Late meal";
-  };
+  // Name eating occasions (eaten groups + normal meals) in one ordered pass so names
+  // progress and never repeat. Anchored on the FIRST actual meal = Breakfast (robust
+  // to a noisy wake average), then by clock + sequence. Pre/Post are named separately.
+  const NAME_NEXT = { Breakfast: "Lunch", Lunch: "Snack", Dinner: "Late meal", "Late meal": "Supper", Supper: "Late supper" };
+  function nameMealOccasions(occ) {
+    const used = {};
+    const reserve = nm => { if (nm === "Snack") return "Snack"; let n = nm, g = 0; while (used[n] && g++ < 8) n = NAME_NEXT[n] || (n + " +"); used[n] = 1; return n; };
+    const arr = occ.sort((a, b) => a.at - b.at);
+    const N = arr.length;
+    arr.forEach((o, i) => {
+      const cm = (((o.at % 1440) + 1440) % 1440);
+      let nm;
+      if (cm >= 21.5 * 60 || cm < 4 * 60) nm = "Late meal";      // genuinely late / past midnight
+      else if (i === 0) nm = cm < 16 * 60 ? "Breakfast" : "Dinner";
+      else if (i === 1) nm = "Lunch";
+      else if (i === N - 1) nm = cm >= 16 * 60 ? "Dinner" : "Lunch"; // last meal of day
+      else nm = "Snack";
+      o.label = reserve(nm);
+    });
+  }
 
   // group logged meals: entries within 1h merge into one block
   const ML = (meals || []).filter(m => m && (m.carbs || m.protein || m.food || m.meal))
@@ -236,52 +243,49 @@ export function reconcileFueling({ plan, meals, nowMin }) {
   const carbPct = Math.min(100, Math.round((consumedCarbs / Math.max(plan.dailyCarbs, 1)) * 100));
   const proteinPct = Math.min(100, Math.round((consumedProtein / Math.max(plan.dailyProtein, 1)) * 100));
 
-  const eatenRows = groups.map(g => ({ at: g.at, time: fmt(g.at), kind: "eaten", label: bandName(g.at), carbsG: g.carbs, proteinG: g.protein, carbType: carbTypeOf(g.raw), foodsLine: g.foods.slice(0, 4).join(" · "), done: true }));
+  const eatenRows = groups.map(g => ({ at: g.at, time: fmt(g.at), kind: "eaten", carbsG: g.carbs, proteinG: g.protein, carbType: carbTypeOf(g.raw), foodsLine: g.foods.slice(0, 4).join(" · "), done: true }));
   const sessRows = sess.map(s => ({ at: s.start, time: fmt(s.start), kind: "session", label: `${s.label} · ${s.durMin}min · ${s.intensity}` }));
 
   // ── divide the REMAINING budget across the rest of the day ──
   let rC = carbsLeft, rP = proteinLeft;
   const winStart = Math.max((nowMin || 0) + 15, wakeMin);
-  const winEnd = Math.max(winStart + 60, bedMin - 75);
+  const lastStart = bedMin - 45; // latest a meal may START — pushing past midnight is OK
+  const inSession = t => sess.some(s => t >= s.start - 30 && t <= s.end + 30);
   const sugg = [];
-  // training slots first: light pre, moderate post (only ones still ahead)
+  // training slots first: LIGHT pre ~30 min before, moderate post (only ones still ahead)
   sess.forEach(s => {
-    const preAt = s.start - 105, postAt = s.end + 40;
+    const preAt = s.start - 30, postAt = s.end + 40;
     const preName = s.label === "Gym" ? "Pre-gym" : `Pre: ${s.label}`;
     const postName = s.label === "Gym" ? "Post-gym" : `Post: ${s.label}`;
-    if (preAt > nowMin) { const c = Math.min(PRE_C, rC), pr = Math.min(PRE_P, rP); sugg.push({ at: preAt, kind: "pre", baseLabel: preName, sessLabel: s.label, carbsG: Math.round(c / 5) * 5, proteinG: Math.round(pr / 5) * 5, carbType: "fast", light: true }); rC -= c; rP -= pr; }
-    if (postAt > nowMin) { const c = Math.min(POST_C, rC), pr = Math.min(POST_P, rP); sugg.push({ at: postAt, kind: "post", baseLabel: postName, sessLabel: s.label, carbsG: Math.round(c / 5) * 5, proteinG: Math.round(pr / 5) * 5, carbType: "fast" }); rC -= c; rP -= pr; }
+    if (preAt > nowMin) { const c = Math.min(PRE_C, rC), pr = Math.min(PRE_P, rP); sugg.push({ at: preAt, kind: "pre", label: preName, sessLabel: s.label, carbsG: Math.round(c / 5) * 5, proteinG: Math.round(pr / 5) * 5, carbType: "fast", light: true }); rC -= c; rP -= pr; }
+    if (postAt > nowMin) { const c = Math.min(POST_C, rC), pr = Math.min(POST_P, rP); sugg.push({ at: postAt, kind: "post", label: postName, sessLabel: s.label, carbsG: Math.round(c / 5) * 5, proteinG: Math.round(pr / 5) * 5, carbType: "fast" }); rC -= c; rP -= pr; }
   });
   rC = Math.max(0, rC); rP = Math.max(0, rP);
-  // normal meals: dynamic count so no meal exceeds the ceiling
+  // normal meals: dynamic count, capped size, extending LATER (past midnight, up to
+  // bed-45) only when carbs need the room — never an obnoxious single meal.
   let behind = 0;
   if (rC > 0 || rP > 0) {
-    const byC = Math.ceil(rC / Math.max(MEAL_C_TARGET, 1));
-    const byP = Math.ceil(rP / Math.max(MEAL_P_TARGET, 1));
-    const maxSlots = Math.max(1, Math.floor((winEnd - winStart) / 150) + 1); // >= 2.5h apart
-    const n = Math.min(Math.max(byC, byP, 1), maxSlots);
-    const taken = [...sugg.map(b => b.at), ...eatenRows.map(b => b.at)];
-    const inSession = t => sess.some(s => t >= s.start - 30 && t <= s.end + 30);
-    const times = [];
-    for (let i = 0; i < n; i++) { const t = Math.round(winStart + (winEnd - winStart) * ((i + 0.5) / n)); if (!taken.some(x => Math.abs(x - t) < 75) && !inSession(t)) times.push(t); }
+    const anchors = [...sugg.map(b => b.at), ...eatenRows.map(b => b.at)];
+    const valid = t => !anchors.some(x => Math.abs(x - t) < 75) && !inSession(t);
+    const need = Math.max(Math.ceil(rC / Math.max(MEAL_C_TARGET, 1)), Math.ceil(rP / Math.max(MEAL_P_TARGET, 1)), 1);
+    const pickUpTo = end => { const out = []; let last = -1e9; for (let t = winStart; t <= end; t += 15) { if (t - last >= 150 && valid(t)) { out.push(t); last = t; } } return out; };
+    let softEnd = Math.min(lastStart, winStart + need * 165); // only as late as needed
+    let times = pickUpTo(softEnd);
+    while (times.length < need && softEnd < lastStart) { softEnd = Math.min(lastStart, softEnd + 45); times = pickUpTo(softEnd); }
+    times = times.slice(0, need);
     const k = times.length || 1;
-    const perC = rC / k, perP = rP / k;
-    if (perC > MEAL_C_CAP) behind = Math.round(rC - MEAL_C_CAP * k);
-    const capC = Math.min(perC, MEAL_C_CAP), capP = Math.min(perP, MEAL_P_CAP);
+    if (rC > k * MEAL_C_CAP) behind = Math.round(rC - k * MEAL_C_CAP);
+    const perC = Math.min(rC / k, MEAL_C_CAP), perP = Math.min(rP / k, MEAL_P_CAP);
     times.forEach(t => {
       const near = (bedMin - t) <= 150;
-      sugg.push({ at: t, kind: "meal", baseLabel: bandName(t), carbsG: Math.round(capC / 5) * 5, proteinG: Math.round(capP / 5) * 5, carbType: near ? "slow" : "mixed" });
+      sugg.push({ at: t, kind: "meal", carbsG: Math.round(perC / 5) * 5, proteinG: Math.round(perP / 5) * 5, carbType: near ? "slow" : "mixed" });
     });
   }
-  // finalize: order, dedupe names, type note, food idea
-  const used = {};
-  sugg.sort((a, b) => a.at - b.at).forEach(b => {
+  // name eaten + normal-meal occasions together (one progressing sequence)
+  nameMealOccasions([...eatenRows, ...sugg.filter(b => b.kind === "meal")]);
+  // finalize suggestion display fields
+  sugg.forEach(b => {
     b.time = fmt(b.at);
-    let nm = b.baseLabel;
-    if (used[nm]) nm = nm === "Lunch" ? "Snack" : nm === "Snack" ? "Dinner" : nm === "Dinner" ? "Late meal" : nm === "Breakfast" ? "Snack" : nm;
-    if (used[nm]) nm = "Snack";
-    used[nm] = 1; used[b.baseLabel] = 1;
-    b.label = nm;
     b.typeNote = (TYPE_NOTE[b.carbType] || "") + (b.light ? " — keep it light right before training" : "");
     b.foodIdea = b.carbsG >= 10 ? suggestMeal(b.carbsG, b.carbType, b.proteinG) : "";
   });
