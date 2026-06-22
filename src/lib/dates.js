@@ -24,3 +24,5 @@ export function daysAgoFrom(dateStr, delta) {
   d.setDate(d.getDate() - delta);
   return localDateStr(d);
 }
+
+export const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];

@@ -1,18 +1,23 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { supabase, hasSupabase } from "./supabase";
 import { styles } from "./styles";
-import { localDateStr, getTodayStr, formatDate, formatShortDate, daysAgo, daysAgoFrom } from "./lib/dates";
+import { localDateStr, getTodayStr, formatDate, formatShortDate, daysAgo, daysAgoFrom, WEEKDAYS } from "./lib/dates";
 import { computeWeightTrend } from "./engines/weight";
 import { avgTimeMins, avgTimeHHMM, minsOfTime } from "./lib/time";
 import { parseWorkout, bestSet, e1rm, detectPRs } from "./engines/workout";
 import { clusterFeedings, computeProteinDistribution } from "./engines/protein";
 import { computeEnergyBalance, mifflinBMR } from "./engines/energy";
 import { computeTraining, mapMuscles, MUSCLE_LABELS } from "./engines/training";
+import { computeNicotineStats, computeNicotineCorrelations, computeNicotineTiming, NIC_MG } from "./engines/nicotine";
+import { computeSkin, detectRoutineConflicts } from "./engines/skin";
+import { buildBrain, formatBrainText, prioritizeInsights } from "./brain/brain";
+import { sleepTST, estimateSleepNeed, computeSleep } from "./engines/sleep";
+import { computeRecovery } from "./engines/recovery";
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const TABS = ["Home", "Log", "History", "Coach", "Journal", "Settings", "Ejac"];
 const STORAGE_KEY = "fitlog_v5";
-const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], nicotine: [], nicotinePlans: [], journal: [], weight: [], ejac: [] };
+const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], nicotine: [], nicotinePlans: [], journal: [], weight: [], ejac: [], skin: [], skinResearch: [] };
 const defaultProfile = {
   // Body
   sex: "", age: "", heightCm: "", weightKg: "",
@@ -38,7 +43,7 @@ const defaultStrategy = {
   notes: "", // free text — anything else the AI should know about strategy right now
 };
 
-const defaultGoals = { calories: 2500, protein: 180, carbs: 250, fat: 80, goal: "Build Muscle", waterGoalMl: 2500, profile: defaultProfile, strategy: defaultStrategy, sleepScreen: null, sleepExperiment: null };
+const defaultGoals = { calories: 2500, protein: 180, carbs: 250, fat: 80, goal: "Build Muscle", waterGoalMl: 2500, profile: defaultProfile, strategy: defaultStrategy, sleepScreen: null, sleepExperiment: null, skinRoutine: { am: [], pm: [] }, skinExperiment: null };
 const fitnessGoals = ["Build Muscle", "Lose Fat", "Improve Endurance", "Maintain Weight", "Athletic Performance"];
 const mealTypes = ["Breakfast", "Lunch", "Dinner", "Snack"];
 const sportsOptions = ["Running","Football","Basketball","Tennis","Swimming","Cycling","Yoga","Boxing","Soccer","Volleyball","Badminton","Table Tennis","Golf","Martial Arts","Hiking","Walking","Rowing","Climbing","Other"];
@@ -60,10 +65,8 @@ const NIC_QUICK = [
   { type: "pouch", amount: 1, mg: 6, label: "Pouch 6mg" },
 ];
 // Approx nicotine mg per unit, for a rough combined "nicotine load" estimate.
-const NIC_MG = { cigarette: 1.2, vape: 0.05, pouch: 6 }; // pouch overridden by its own mg if set
 
 // ─── WORKOUT PLANNING ─────────────────────────────────────────────────────────
-const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const SPLIT_TYPES = [
   "Push / Pull / Legs",
   "Upper / Lower",
@@ -264,132 +267,9 @@ function computeAchievements(data, goals, streak) {
 // ─── NICOTINE ANALYTICS ───────────────────────────────────────────────────────
 // Computes totals, rolling averages, and honest correlations from the user's own data.
 // Returns null-ish fields gracefully when there isn't enough data yet.
-function nicMg(entry) {
-  if (entry.type === "pouch") return (entry.amount || 0) * (entry.mg || NIC_MG.pouch);
-  return (entry.amount || 0) * (NIC_MG[entry.type] || 0);
-}
-function computeNicotineStats(data) {
-  const nic = data.nicotine || [];
-  const today = getTodayStr();
-  const byDay = {}; // date -> { mg, count, byType }
-  nic.forEach(e => {
-    if (!e.date) return;
-    if (!byDay[e.date]) byDay[e.date] = { mg: 0, count: 0, cigarette: 0, vape: 0, pouch: 0 };
-    const d = byDay[e.date];
-    d.mg += nicMg(e);
-    d.count += 1;
-    d[e.type] = (d[e.type] || 0) + (e.amount || 0);
-  });
-
-  const sumWindow = (days) => {
-    let mg = 0, count = 0, daysWithData = 0;
-    for (let i = 0; i < days; i++) {
-      const ds = daysAgo(i);
-      if (byDay[ds]) { mg += byDay[ds].mg; count += byDay[ds].count; daysWithData++; }
-    }
-    return { mg, count, daysWithData };
-  };
-
-  const todayStats = byDay[today] || { mg: 0, count: 0, cigarette: 0, vape: 0, pouch: 0 };
-  const w7 = sumWindow(7);
-  const w30 = sumWindow(30);
-  // Rolling averages per day (over the window length, treating no-log days as 0)
-  const avg7 = +(w7.mg / 7).toFixed(1);
-  const avg30 = +(w30.mg / 30).toFixed(1);
-  const avgCount7 = +(w7.count / 7).toFixed(1);
-
-  // Daily series for the trend chart (last 30 days, mg per day)
-  const series30 = Array.from({ length: 30 }, (_, i) => {
-    const ds = daysAgo(29 - i);
-    return { value: byDay[ds] ? +byDay[ds].mg.toFixed(1) : 0, label: ds };
-  });
-  // Entries-per-day series (what the trend chart shows — more intuitive than mg)
-  const seriesCount30 = Array.from({ length: 30 }, (_, i) => {
-    const ds = daysAgo(29 - i);
-    return { value: byDay[ds] ? byDay[ds].count : 0, label: ds };
-  });
-
-  // Type breakdown over last 30 days
-  const typeTotals = { cigarette: 0, vape: 0, pouch: 0 };
-  nic.filter(e => e.date >= daysAgo(29)).forEach(e => { typeTotals[e.type] = (typeTotals[e.type] || 0) + (e.amount || 0); });
-
-  // Context tag frequency (last 30d)
-  const contextCounts = {};
-  nic.filter(e => e.date >= daysAgo(29)).forEach(e => (e.contexts || []).forEach(c => { contextCounts[c] = (contextCounts[c] || 0) + 1; }));
-  const topContexts = Object.entries(contextCounts).sort((a, b) => b[1] - a[1]).slice(0, 3);
-
-  return { byDay, today: todayStats, w7, w30, avg7, avg30, avgCount7, series30, seriesCount30, typeTotals, topContexts, totalDaysLogged: Object.keys(byDay).length };
-}
 
 // Honest, data-gated correlations. Only returns a finding when there's enough signal.
 // Compares "higher intake" vs "lower intake" days/weeks within the user's OWN data.
-function computeNicotineCorrelations(data) {
-  const nic = data.nicotine || [];
-  if (nic.length < 10) return { ready: false, reason: "Keep logging — correlations unlock once there's about 2 weeks of data." };
-
-  const stats = computeNicotineStats(data);
-  const byDay = stats.byDay;
-  // Only consider days that have BOTH a nicotine value (0 counts) and the comparison metric.
-  const findings = [];
-
-  // Helper: split days into high vs low nicotine (above/below median mg) and compare a metric
-  function compareByNicotine(metricForDate, label, unit, minPairs = 8) {
-    const rows = [];
-    // Look back 60 days
-    for (let i = 0; i < 60; i++) {
-      const ds = daysAgo(i);
-      const mg = byDay[ds] ? byDay[ds].mg : 0;
-      const metric = metricForDate(ds);
-      if (metric != null) rows.push({ mg, metric });
-    }
-    if (rows.length < minPairs) return null;
-    const mgs = rows.map(r => r.mg).sort((a, b) => a - b);
-    const median = mgs[Math.floor(mgs.length / 2)];
-    const high = rows.filter(r => r.mg > median);
-    const low = rows.filter(r => r.mg <= median);
-    if (high.length < 3 || low.length < 3) return null;
-    const avg = arr => arr.reduce((a, b) => a + b.metric, 0) / arr.length;
-    const hi = avg(high), lo = avg(low);
-    const diff = hi - lo;
-    return { hi, lo, diff, label, unit, nHigh: high.length, nLow: low.length };
-  }
-
-  // Sleep duration vs nicotine
-  const sleepByDate = {};
-  (data.sleep || []).forEach(s => { if (s.date) sleepByDate[s.date] = s.duration; });
-  const sleepCorr = compareByNicotine(ds => sleepByDate[ds] ?? null, "sleep", "h");
-  if (sleepCorr && Math.abs(sleepCorr.diff) >= 0.4) {
-    const mins = Math.abs(Math.round(sleepCorr.diff * 60));
-    findings.push(`On your higher-nicotine days, average sleep was about ${mins} min ${sleepCorr.diff < 0 ? "shorter" : "longer"} (${sleepCorr.hi.toFixed(1)}h vs ${sleepCorr.lo.toFixed(1)}h).`);
-  }
-
-  // Workout RPE vs nicotine (same-day)
-  const rpeByDate = {};
-  (data.exercise || []).forEach(e => { const p = e._parsed || parseWorkout(e.text || ""); if (p.avgRPE != null && e.date) rpeByDate[e.date] = p.avgRPE; });
-  const rpeCorr = compareByNicotine(ds => rpeByDate[ds] ?? null, "RPE", "");
-  if (rpeCorr && Math.abs(rpeCorr.diff) >= 0.5) {
-    findings.push(`On higher-nicotine days, your logged session RPE averaged ${rpeCorr.hi.toFixed(1)} vs ${rpeCorr.lo.toFixed(1)} — sessions felt ${rpeCorr.diff > 0 ? "harder" : "easier"}.`);
-  }
-
-  // Calories vs nicotine (appetite)
-  const calByDate = {};
-  (data.diet || []).forEach(m => { if (m.date) calByDate[m.date] = (calByDate[m.date] || 0) + (m.calories || 0); });
-  const calCorr = compareByNicotine(ds => calByDate[ds] ?? null, "calories", "kcal");
-  if (calCorr && Math.abs(calCorr.diff) >= 150) {
-    findings.push(`On higher-nicotine days, you ate about ${Math.abs(Math.round(calCorr.diff))} kcal ${calCorr.diff < 0 ? "less" : "more"} on average (${Math.round(calCorr.hi)} vs ${Math.round(calCorr.lo)}).`);
-  }
-
-  // Sleep quality (map quality words to score)
-  const qMap = { Poor: 1, Fair: 2, Good: 3, Great: 4, Excellent: 4 };
-  const sleepQByDate = {};
-  (data.sleep || []).forEach(s => { if (s.date && qMap[s.quality]) sleepQByDate[s.date] = qMap[s.quality]; });
-  const sqCorr = compareByNicotine(ds => sleepQByDate[ds] ?? null, "sleep quality", "");
-  if (sqCorr && Math.abs(sqCorr.diff) >= 0.4) {
-    findings.push(`On higher-nicotine days, your sleep quality rating trended ${sqCorr.diff < 0 ? "lower" : "higher"}.`);
-  }
-
-  return { ready: true, findings, enoughForMore: nic.length >= 20 };
-}
 
 // ─── NICOTINE TIMING ENGINE ───────────────────────────────────────────────────
 // Reads the user's CURRENT state and counts recovery factors stacked against them
@@ -401,177 +281,6 @@ function computeNicotineCorrelations(data) {
 //   recommendation or green light. Lowest band = "Lower-impact", never "good time".
 // - NO numbers/scores/percentages — bands + named reasons only.
 // - Degrades gracefully: a missing metric is reported as "unknown", never guessed.
-function computeNicotineTiming(data, goals) {
-  const now = new Date();
-  const nowMins = now.getHours() * 60 + now.getMinutes();
-  const today = getTodayStr();
-  const minsOf = t => { if (!t) return null; const m = /^(\d{1,2}):(\d{2})/.exec(t); return m ? +m[1] * 60 + +m[2] : null; };
-
-  // ── ACTIVE DAY ──
-  // People don't reset at midnight — they reset when they wake. If it's the small hours
-  // (before ~5am) and there's no sleep logged for the new calendar day yet, the user is
-  // still inside their PREVIOUS waking day. So "today's" workouts/meals should be read from
-  // yesterday's date, and time-since-event must count across midnight (+24h).
-  const preDawn = nowMins < 5 * 60; // before 5:00am
-  const sleptForToday = (data.sleep || []).some(s => s.date === today);
-  const activeDay = (preDawn && !sleptForToday) ? daysAgo(1) : today;
-  const crossedMidnight = activeDay !== today;
-  // When comparing event times on the active (previous) day to "now", add 24h to now.
-  const nowMinsAdj = crossedMidnight ? nowMins + 24 * 60 : nowMins;
-
-  const raising = [];   // { text } — factors increasing impact right now
-  const easing = [];    // { text } — factors that are currently favorable
-  const unknown = [];   // metrics we couldn't read
-  let strongOverride = false; // post-workout 0-2h or near-bedtime → never "Lower"
-
-  // ── FACTOR 1: Trained in last ~0–3h (lift OR sport) ──
-  // Read from the ACTIVE day (which may be yesterday's date if pre-dawn).
-  const dayWorkouts = [
-    ...(data.exercise || []).filter(e => e.date === activeDay && e.time).map(e => ({ time: e.time, label: e.label || "workout" })),
-    ...(data.sports || []).filter(s => s.date === activeDay && s.time).map(s => ({ time: s.time, label: s.sport || "sport" })),
-  ];
-  if (dayWorkouts.length) {
-    let mostRecent = null, mostRecentMins = -1;
-    dayWorkouts.forEach(w => {
-      let m = minsOf(w.time);
-      if (m == null) return;
-      // If we're past midnight, the event happened on the previous day → it's at m (no +24);
-      // "now" already had +24 added, so the difference is correct.
-      if (m > mostRecentMins && m <= nowMinsAdj) { mostRecentMins = m; mostRecent = w; }
-    });
-    if (mostRecent) {
-      const hrsSince = (nowMinsAdj - mostRecentMins) / 60;
-      if (hrsSince >= 0 && hrsSince <= 2) {
-        raising.push({ text: `Trained ${hrsSince < 1 ? "under an hour" : Math.round(hrsSince) + "h"} ago — you're in the post-workout window where blood flow drives recovery and protein synthesis; nicotine's vasoconstriction works directly against that.` });
-        strongOverride = true;
-      } else if (hrsSince > 2 && hrsSince <= 3) {
-        raising.push({ text: `Trained about ${Math.round(hrsSince)}h ago — still within the recovery window where blood flow matters.` });
-      } else {
-        easing.push({ text: `Last trained ${Math.round(hrsSince)}h ago — outside the tightest recovery window.` });
-      }
-    }
-  } else {
-    const activeName = WEEKDAYS[(new Date(activeDay + "T00:00:00").getDay() + 6) % 7];
-    const isTrainingDay = goals.plan?.trainingDays?.includes(activeName);
-    if (isTrainingDay) easing.push({ text: `No training logged ${crossedMidnight ? "yesterday" : "yet today"} — not currently in a recovery window.` });
-    else easing.push({ text: `Rest day — no training stress to recover from right now, so the training-specific cost is lowest.` });
-  }
-
-  // ── FACTOR 2: Short / poor sleep ──
-  // Find the MOST RECENT sleep log (not just today/yesterday — don't "forget" older data).
-  const sortedSleep = (data.sleep || []).filter(s => s.date && s.duration != null).sort((a, b) => b.date.localeCompare(a.date));
-  const lastSleep = sortedSleep[0] || null;
-  if (!lastSleep) {
-    unknown.push("sleep");
-  } else {
-    // Staleness is measured from the most recent night that COULD have a log.
-    // If we've crossed midnight and slept already, last night = today's date; otherwise
-    // last night = yesterday's date. Compare the log's age against that reference.
-    const lastNightDate = sleptForToday ? today : daysAgo(1);
-    const daysOld = Math.round((new Date(lastNightDate + "T00:00:00") - new Date(lastSleep.date + "T00:00:00")) / 86400000);
-    const whenLabel = daysOld <= 0 ? "last night" : daysOld === 1 ? "the night before last" : `${daysOld + 1} nights ago (most recent log)`;
-    const stale = daysOld >= 1; // anything older than the most recent loggable night is stale
-    const poorQuality = lastSleep.quality === "Poor" || lastSleep.quality === "Fair";
-    const dur = lastSleep.duration;
-    const qStr = lastSleep.quality ? ` (${lastSleep.quality.toLowerCase()})` : "";
-    if (stale) {
-      unknown.push(`sleep — not logged for last night (most recent: ${dur}h${qStr}, ${whenLabel})`);
-    } else if (dur < 6) {
-      raising.push({ text: `Slept ${dur}h last night — recovery is already compromised before anything else stacks on top.` });
-    } else if (dur < 7 || poorQuality) {
-      raising.push({ text: `Slept ${dur}h${qStr} last night — recovery is running below par.` });
-    } else {
-      easing.push({ text: `Slept ${dur}h${qStr} last night — recovery base is solid.` });
-    }
-  }
-
-  // ── FACTOR 3: Under-fuelled vs target on the ACTIVE day (esp. protein) ──
-  const dayDiet = (data.diet || []).filter(d => d.date === activeDay);
-  // "Hours into the waking day" — if pre-dawn, the day's been going a long time, so don't
-  // excuse low intake as "just getting started".
-  const hoursIntoDay = crossedMidnight ? (nowMins / 60 + 24 - 6) : (nowMins / 60 - 6);
-  if (dayDiet.length === 0 && !crossedMidnight && nowMins < 11 * 60) {
-    easing.push({ text: `Early in the day — fuelling just getting started.` });
-  } else if (dayDiet.length === 0) {
-    // Late in a day (or past midnight) with no food logged is itself a fuelling gap, not "unknown".
-    if (crossedMidnight || nowMins >= 15 * 60) {
-      raising.push({ text: `No food logged ${crossedMidnight ? "for yesterday" : "today"} — if that's accurate, you're under-fuelled, which compounds the recovery hit.` });
-    } else {
-      unknown.push("food");
-    }
-  } else {
-    const cal = dayDiet.reduce((a, m) => a + (m.calories || 0), 0);
-    const protein = dayDiet.reduce((a, m) => a + (m.protein || 0), 0);
-    const calTarget = goals.calories || 0;
-    const pTarget = goals.protein || 0;
-    // Fraction of the day elapsed (cap at 1 once past ~9pm or after midnight)
-    const dayFrac = crossedMidnight ? 1 : Math.max(0, Math.min(1, (nowMins - 6 * 60) / ((21 - 6) * 60)));
-    const expectedCal = calTarget * dayFrac;
-    const lowProtein = pTarget && protein < pTarget * dayFrac * 0.7;
-    const lowCal = calTarget && cal < expectedCal * 0.65;
-    if (lowProtein && lowCal) {
-      raising.push({ text: `Under-fuelled (${cal} kcal, ${protein}g protein) ${crossedMidnight ? "across yesterday" : "for this point in the day"} — under-eating, especially low protein, compounds the recovery hit.` });
-    } else if (lowProtein) {
-      raising.push({ text: `Protein is behind (${protein}g vs ${pTarget}g target) — low protein leaves recovery under-supported.` });
-    } else if (lowCal) {
-      raising.push({ text: `Calories are behind target — under-fuelling compounds recovery stress.` });
-    } else {
-      easing.push({ text: `Fuelling is on track — recovery is supported.` });
-    }
-  }
-
-  // ── FACTOR 4: Within ~1–2h of usual bedtime ──
-  // Use 7-day average bedtime, fall back to last night's.
-  const recentBedtimes = (data.sleep || []).filter(s => s.date >= daysAgo(7) && s.bedtime).map(s => s.bedtime);
-  let bedtimeMins = null;
-  if (recentBedtimes.length >= 2) {
-    bedtimeMins = avgTimeMins(recentBedtimes);
-  } else if (lastSleep?.bedtime) {
-    bedtimeMins = minsOf(lastSleep.bedtime);
-    if (bedtimeMins != null && bedtimeMins < 5 * 60) bedtimeMins += 24 * 60;
-  }
-  if (bedtimeMins == null) {
-    unknown.push("bedtime");
-  } else {
-    // Normalize "now" to compare against a possibly-after-midnight bedtime
-    let nowForBed = nowMins;
-    if (bedtimeMins >= 24 * 60 && nowMins < 12 * 60) nowForBed += 24 * 60;
-    const minsToBed = bedtimeMins - nowForBed;
-    const bedLabel = `${String(Math.floor((bedtimeMins % (24 * 60)) / 60)).padStart(2, "0")}:${String(bedtimeMins % 60).padStart(2, "0")}`;
-    if (minsToBed >= 0 && minsToBed <= 60) {
-      raising.push({ text: `It's within an hour of your usual bedtime (~${bedLabel}) — nicotine is a stimulant and fragments sleep, your biggest recovery lever.` });
-      strongOverride = true;
-    } else if (minsToBed > 60 && minsToBed <= 120) {
-      raising.push({ text: `Getting close to your usual bedtime (~${bedLabel}) — late nicotine can disrupt sleep onset and quality.` });
-    } else if (minsToBed > 120 && minsToBed <= 240) {
-      easing.push({ text: `A few hours from your usual bedtime — outside the window where it most disrupts sleep.` });
-    } else {
-      easing.push({ text: `Far from bedtime — sleep disruption isn't the main concern right now.` });
-    }
-  }
-
-  // ── ROLL INTO BANDS ──
-  // Additive: 0 raising → lower; 1-2 → moderate; 3+ → higher.
-  // Override: a strong factor (0-2h post-workout OR within 1h of bed) can never read "Lower".
-  let band;
-  const n = raising.length;
-  if (n >= 3) band = "higher";
-  else if (n >= 1) band = "moderate";
-  else band = "lower";
-  if (band === "lower" && strongOverride) band = "moderate";
-
-  // Guard: the two factors that most define recovery are sleep and training status.
-  // If sleep is unknown, we can't honestly call this a "Lower-impact" window — that would
-  // read like a green light based on missing data. Floor it at Moderate and flag why.
-  const sleepUnknown = unknown.some(u => u === "sleep" || u.startsWith("sleep"));
-  let insufficientData = false;
-  if (band === "lower" && sleepUnknown) {
-    band = "moderate";
-    insufficientData = true;
-  }
-
-  return { band, raising, easing, unknown, strongOverride, insufficientData, crossedMidnight, activeDay, time: `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}` };
-}
 
 // Average a list of "HH:MM" times into minutes-since-midnight.
 // wrapPM: treat after-midnight times (before 5am) as the prior night (+24h) for bedtime math.
@@ -584,171 +293,6 @@ function computeNicotineTiming(data, goals) {
 // Instant, rule-based "should I train today?" read from real data. Mirrors the
 // nicotine-timing pattern: counts recovery signals, rolls into a verdict, lists reasons.
 // Verdict: "go" (train as planned) | "caution" (train lighter / listen to your body) | "rest".
-function computeRecovery(data, goals) {
-  const today = getTodayStr();
-  const reasons = [];   // { text, dir: "neg" | "pos" } — neg pushes toward rest
-  const unknown = [];
-  let negScore = 0;     // weighted points pushing toward rest
-  const negByCat = {};  // weighted negatives grouped by category → finds the limiter
-
-  const add = (text, dir, weight = 1, category = "load") => {
-    reasons.push({ text, dir, category });
-    if (dir === "neg") { negScore += weight; negByCat[category] = (negByCat[category] || 0) + weight; }
-  };
-
-  // What does the plan say for today?
-  const todayName = WEEKDAYS[(new Date(today + "T00:00:00").getDay() + 6) % 7];
-  const plannedToday = goals.plan?.trainingDays?.includes(todayName);
-  const todayLabel = goals.plan?.assignments?.[todayName] || (plannedToday ? "training" : "rest");
-
-  // ── Last night's sleep ──
-  const sortedSleep = (data.sleep || []).filter(s => s.date && s.duration != null).sort((a, b) => b.date.localeCompare(a.date));
-  const lastSleep = sortedSleep[0];
-  const lastNightDate = (data.sleep || []).some(s => s.date === today) ? today : daysAgo(1);
-  if (!lastSleep || Math.round((new Date(lastNightDate + "T00:00:00") - new Date(lastSleep.date + "T00:00:00")) / 86400000) >= 1) {
-    unknown.push("last night's sleep");
-  } else {
-    const poor = lastSleep.quality === "Poor" || lastSleep.quality === "Fair";
-    if (lastSleep.duration < 5.5) add(`Only ${lastSleep.duration}h sleep last night — recovery is significantly down`, "neg", 2, "sleep");
-    else if (lastSleep.duration < 7 || poor) add(`Slept ${lastSleep.duration}h${poor ? ` (${lastSleep.quality.toLowerCase()})` : ""} last night — a bit under-recovered`, "neg", 1, "sleep");
-    else add(`Slept ${lastSleep.duration}h (${(lastSleep.quality || "ok").toLowerCase()}) last night — well rested`, "pos");
-  }
-
-  // ── Sleep timing: hours awake since waking, estimated hours until next sleep ──
-  const now = new Date();
-  const nowMins = now.getHours() * 60 + now.getMinutes();
-  const minsOf = t => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ""); return m ? +m[1] * 60 + +m[2] : null; };
-  // Hours awake: from last logged wake time (if today/last night)
-  let hoursAwake = null;
-  if (lastSleep?.wakeTime) {
-    const wake = minsOf(lastSleep.wakeTime);
-    if (wake != null) {
-      // If the sleep log is for today, wake was today; otherwise assume it was yesterday morning
-      const wakeWasToday = lastSleep.date === today;
-      let mins = nowMins - wake;
-      if (!wakeWasToday) mins += 24 * 60; // woke yesterday
-      if (mins >= 0 && mins < 36 * 60) hoursAwake = +(mins / 60).toFixed(1);
-    }
-  }
-  // Estimated next bedtime: 7-day average bedtime (fallback last night's)
-  const recentBeds = (data.sleep || []).filter(s => s.date >= daysAgo(7) && s.bedtime).map(s => s.bedtime);
-  let nextBedMins = recentBeds.length >= 2 ? avgTimeMins(recentBeds) : (lastSleep?.bedtime ? minsOf(lastSleep.bedtime) : null);
-  let hoursToBed = null, nextBedLabel = null;
-  if (nextBedMins != null) {
-    nextBedLabel = `${String(Math.floor((nextBedMins % 1440) / 60)).padStart(2, "0")}:${String(nextBedMins % 60).padStart(2, "0")}`;
-    let toBed = nextBedMins - nowMins;
-    if (toBed < -60) toBed += 24 * 60; // bedtime already passed → next one is tomorrow
-    if (toBed >= -60 && toBed <= 24 * 60) hoursToBed = +(toBed / 60).toFixed(1);
-  }
-  // Surface as context (not heavily weighted — informational, plus a nudge if up very late)
-  if (hoursAwake != null && hoursAwake >= 16) add(`You've been awake ~${hoursAwake}h — long day, recovery capacity is lower late`, "neg", 0.5, "sleep");
-
-  const sleepTiming = { hoursAwake, hoursToBed, nextBedLabel, lastWake: lastSleep?.wakeTime || null, lastBed: lastSleep?.bedtime || null };
-
-  // ── 7-day sleep debt (vs the user's personal need, not a hardcoded 8h) ──
-  const last7Sleep = (data.sleep || []).filter(s => s.date >= daysAgo(6));
-  if (last7Sleep.length >= 3) {
-    const need = estimateSleepNeed(data, goals).hours;
-    const debt = last7Sleep.reduce((d, s) => d + (need - sleepTST(s)), 0);
-    if (debt > 8) add(`Sleep debt is high (~${debt.toFixed(0)}h short of your ${need}h need this week)`, "neg", 2, "sleep");
-    else if (debt > 4) add(`Some sleep debt building this week (~${debt.toFixed(0)}h short of your ${need}h need)`, "neg", 1, "sleep");
-  }
-
-  // ── Consecutive training days / days since rest ──
-  const trainDates = new Set([...(data.exercise || []).map(e => e.date), ...(data.sports || []).map(s => s.date)]);
-  let consec = 0;
-  { let cur = new Date(); if (!trainDates.has(getTodayStr())) cur.setDate(cur.getDate() - 1);
-    for (;;) { const ds = localDateStr(cur); if (trainDates.has(ds)) { consec++; cur.setDate(cur.getDate() - 1); } else break; } }
-  if (consec >= 5) add(`Trained ${consec} days straight with no rest — strong deload signal`, "neg", 2, "load");
-  else if (consec >= 3) add(`${consec} training days in a row — fatigue accumulating`, "neg", 1, "load");
-  else if (consec === 0 && trainDates.size > 0) add(`Rested recently — you're fresh`, "pos");
-
-  // ── Recent RPE trend (from parsed Strong data) ──
-  const last5Lifts = (data.exercise || []).filter(e => e.date >= daysAgo(6))
-    .map(e => (e._parsed || parseWorkout(e.text || "")).avgRPE).filter(v => v != null);
-  if (last5Lifts.length >= 2) {
-    const avgRPE = last5Lifts.reduce((a, b) => a + b, 0) / last5Lifts.length;
-    if (avgRPE >= 8.5) add(`Recent sessions have felt very hard (avg RPE ${avgRPE.toFixed(1)})`, "neg", 1, "load");
-    else if (avgRPE <= 6.5) add(`Recent sessions felt manageable (avg RPE ${avgRPE.toFixed(1)})`, "pos");
-  }
-
-  // ── Under-fuelling over the last few days ──
-  const calByDay = {};
-  (data.diet || []).filter(d => d.date >= daysAgo(2)).forEach(d => { calByDay[d.date] = (calByDay[d.date] || 0) + (d.calories || 0); });
-  const calDays = Object.values(calByDay);
-  if (calDays.length >= 2 && goals.calories) {
-    const avg = calDays.reduce((a, b) => a + b, 0) / calDays.length;
-    if (avg < goals.calories * 0.7) add(`Under-eating recently (~${Math.round(avg)} vs ${goals.calories} target) — under-fuelled recovery`, "neg", 1, "fuel");
-  }
-
-  // ── Protein adequacy (B1) & aggressive-deficit signal (A1) ──
-  const pdRec = computeProteinDistribution(data, goals);
-  if (pdRec && pdRec.confidence !== "Low" && pdRec.proteinGoal && pdRec.avgProtein < pdRec.proteinGoal * 0.8) {
-    add(`Protein's been low (~${pdRec.avgProtein}g vs ${pdRec.proteinGoal}g) — under-supports tissue repair`, "neg", 1, "fuel");
-  }
-  const wtRec = computeWeightTrend(data);
-  if (wtRec && wtRec.confidence !== "Low" && wtRec.pctBWPerWeek != null && wtRec.pctBWPerWeek <= -0.9) {
-    add(`Losing weight fast (trend ${wtRec.pctBWPerWeek}%BW/wk) — an aggressive deficit lowers recovery capacity`, "neg", 1, "fuel");
-  }
-
-  // ── Carbs vs a hard session (conservative placeholder until the C1 glycogen engine) ──
-  if (goals.carbs) {
-    const hardSession = (data.exercise || []).some(e => {
-      if (e.date !== today && e.date !== daysAgo(1)) return false;
-      const pr = e._parsed || parseWorkout(e.text || "");
-      return (pr.avgRPE != null && pr.avgRPE >= 8) || (pr.totalVolume != null && pr.totalVolume >= 12000);
-    }) || (data.sports || []).some(s => (s.date === today || s.date === daysAgo(1)) && (s.duration || 0) >= 60);
-    const carbsToday = (data.diet || []).filter(d => d.date === today).reduce((a, d) => a + (d.carbs || 0), 0);
-    if (hardSession && carbsToday > 0 && carbsToday < goals.carbs * 0.5) {
-      add(`Hard session but carbs are low today (~${Math.round(carbsToday)}g vs ${goals.carbs}g) — glycogen may be under-replenished`, "neg", 0.5, "carbs");
-    }
-  }
-
-  // ── Journal sentiment (light touch — only explicit fatigue words) ──
-  const recentJournal = (data.journal || []).filter(e => e.date >= daysAgo(2));
-  const fatigueWords = /\b(exhausted|drained|run down|rundown|burnt out|burned out|wrecked|sore|aching|tired|sick|ill|stressed|no energy|knackered)\b/i;
-  const flagged = recentJournal.find(e => fatigueWords.test(e.text));
-  if (flagged) add(`Your recent journal notes mention feeling run down`, "neg", 1, "stress");
-
-  // ── Nicotine load (only if notably high) ──
-  if ((data.nicotine || []).length) {
-    const ns = computeNicotineStats(data);
-    if (ns.avg7 > 0 && ns.today.count >= 5) add(`High nicotine intake today may blunt recovery`, "neg", 0.5, "stress");
-  }
-
-  // ── ROLL INTO VERDICT ──
-  // Heavy single signals (sleep<5.5h, 5+ consec days) already weighted 2.
-  let verdict;
-  if (negScore >= 4) verdict = "rest";
-  else if (negScore >= 2) verdict = "caution";
-  else verdict = "go";
-
-  // If sleep is unknown, don't confidently say "go" — soften to caution and flag.
-  let lowData = false;
-  if (verdict === "go" && unknown.includes("last night's sleep")) { verdict = "caution"; lowData = true; }
-
-  // Reconcile with the plan: note when the verdict and the plan disagree.
-  let reconcile = null;
-  if (verdict === "rest" && plannedToday) reconcile = `Your plan has ${todayLabel} today, but your recovery says rest. Consider swapping today with an upcoming rest day.`;
-  else if (verdict === "go" && !plannedToday) reconcile = `You're recovered, but today is a scheduled rest day. Extra rest never hurts — or move a session here if you're keen.`;
-  else if (verdict === "caution" && plannedToday) reconcile = `Plan says ${todayLabel}. You can train, but keep intensity in check and cut volume if it feels rough.`;
-
-  // ── LIMITER + READINESS ──
-  // The limiter is the category dragging recovery down the most — the single
-  // bottleneck to name instead of generic advice. Only surfaced once there's
-  // meaningful negative load (caution/rest); at "go" nothing is limiting.
-  const catLabels = { sleep: "Sleep", fuel: "Fuel / nutrition", carbs: "Carbs / glycogen", load: "Training load", stress: "Stress / lifestyle" };
-  let limiter = null;
-  const ranked = Object.entries(negByCat).sort((a, b) => b[1] - a[1]);
-  if (ranked.length && negScore >= 2) {
-    const [cat, w] = ranked[0];
-    const topReason = reasons.find(r => r.dir === "neg" && r.category === cat);
-    limiter = { category: cat, label: catLabels[cat] || cat, weight: w, topReason: topReason ? topReason.text : null };
-  }
-  const readiness = Math.max(0, Math.min(100, Math.round(100 - negScore * 14)));
-
-  return { verdict, reasons, unknown, lowData, plannedToday, todayLabel, reconcile, negScore, sleepTiming, limiter, readiness, negByCat };
-}
 
 // ─── SLEEP INTELLIGENCE ENGINE ──────────────────────────────────────────────
 // The smartest section in the tracker. Models sleep as THREE loosely-coupled
@@ -764,256 +308,10 @@ function computeRecovery(data, goals) {
 // screening language stays non-diagnostic; coupling = correlation, not proof.
 
 // True sleep time = time-in-bed − latency − wake-after-sleep-onset (when logged).
-function sleepTST(s) {
-  const tib = s.duration || 0;
-  return Math.max(0.5, tib - (s.latencyMin || 0) / 60 - (s.wakeMin || 0) / 60);
-}
 
 // Individual sleep need. Override wins; otherwise learn from the user's own
 // well-rated, unrestricted nights (median TST). Never assumes 8h as fact.
-function estimateSleepNeed(data, goals) {
-  const override = parseFloat(goals?.profile?.sleepNeedH);
-  if (override > 0) return { hours: Math.max(4, Math.min(12, override)), source: "override", confidence: "set", nGood: 0 };
-  const good = (data.sleep || []).filter(s => s && s.date >= daysAgo(59) && /^(Good|Great|Excellent)$/.test(s.quality || ""));
-  const tsts = good.map(sleepTST).sort((a, b) => a - b);
-  if (tsts.length >= 5) {
-    const m = tsts.length >> 1;
-    let need = tsts.length % 2 ? tsts[m] : (tsts[m - 1] + tsts[m]) / 2;
-    need = Math.max(6, Math.min(9.5, +need.toFixed(1)));
-    return { hours: need, source: "learned", confidence: tsts.length >= 10 ? "high" : "moderate", nGood: tsts.length };
-  }
-  return { hours: 8, source: "default", confidence: "low", nGood: tsts.length };
-}
 
-function computeSleep(data, goals) {
-  const sleep = (data.sleep || []).filter(s => s && s.date && s.duration != null);
-  if (sleep.length === 0) return null;
-  const today = getTodayStr();
-  const mins = t => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ""); return m ? +m[1] * 60 + +m[2] : null; };
-  const qScore = { Poor: 1, Fair: 2, Good: 3, Great: 4, Excellent: 5 };
-  const mean = a => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
-  const median = a => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
-  const fmtClock = m => m == null ? null : `${String(Math.floor((m % 1440) / 60)).padStart(2, "0")}:${String(Math.round(m) % 60).padStart(2, "0")}`;
-
-  const need = estimateSleepNeed(data, goals);
-
-  const enrich = s => {
-    const bed = mins(s.bedtime), wake = mins(s.wakeTime);
-    const tib = s.duration || 0;
-    const tst = sleepTST(s);
-    const eff = tib > 0 ? Math.round((tst / tib) * 100) : null;
-    const mid = bed != null ? (bed + tib * 30) % 1440 : null; // mid-sleep clock minute
-    return { date: s.date, tib, tst, eff, latency: s.latencyMin ?? null, waso: s.wakeMin ?? null, quality: s.quality, q: qScore[s.quality] ?? null, bed, wake, mid, hasEff: (s.latencyMin != null || s.wakeMin != null) };
-  };
-  const sorted = [...sleep].sort((a, b) => a.date.localeCompare(b.date));
-  const inWin = n => sorted.filter(s => s.date >= daysAgo(n - 1)).map(enrich);
-  const last7 = inWin(7), last14 = inWin(14), last21 = inWin(21);
-
-  // Circular-stats helpers (clock times wrap at midnight)
-  const circMean = arr => {
-    if (!arr.length) return null;
-    let sx = 0, sy = 0; arr.forEach(v => { const a = (v / 1440) * 2 * Math.PI; sx += Math.cos(a); sy += Math.sin(a); });
-    if (Math.abs(sx) < 1e-9 && Math.abs(sy) < 1e-9) return Math.round(arr.reduce((x, y) => x + y, 0) / arr.length);
-    let a = Math.atan2(sy, sx); if (a < 0) a += 2 * Math.PI; return Math.round(a / (2 * Math.PI) * 1440) % 1440;
-  };
-  const circSD = arr => {
-    if (arr.length < 2) return null;
-    let sx = 0, sy = 0; arr.forEach(v => { const a = (v / 1440) * 2 * Math.PI; sx += Math.cos(a); sy += Math.sin(a); });
-    const R = Math.sqrt(sx * sx + sy * sy) / arr.length;
-    if (R <= 0.0001) return 720;
-    return Math.round(Math.sqrt(-2 * Math.log(Math.min(1, R))) * 1440 / (2 * Math.PI));
-  };
-  const circDiff = (a, b) => { if (a == null || b == null) return null; let d = Math.abs(a - b) % 1440; return d > 720 ? 1440 - d : d; };
-
-  // ── AXIS 1 — QUANTITY (vs personal need) ──
-  const avgTST7 = last7.length ? +mean(last7.map(r => r.tst)).toFixed(1) : null;
-  const avgTST14 = last14.length ? +mean(last14.map(r => r.tst)).toFixed(1) : null;
-  const debt7 = +last7.reduce((d, r) => d + (need.hours - r.tst), 0).toFixed(1); // net vs need
-  let qStatus = "good", qLabel = "On target";
-  if (avgTST7 != null) {
-    const gap = avgTST7 - need.hours;
-    if (gap <= -1.5) { qStatus = "bad"; qLabel = "Significantly short"; }
-    else if (gap <= -0.5) { qStatus = "warn"; qLabel = "Running short"; }
-    else if (gap >= 1.2) { qStatus = "warn"; qLabel = "Oversleeping"; }
-  }
-
-  // ── AXIS 2 — TIMING / REGULARITY ──
-  const midVals = last14.map(r => r.mid).filter(v => v != null);
-  const wakeVals = last14.map(r => r.wake).filter(v => v != null);
-  const midSD = circSD(midVals);
-  const wakeSD = circSD(wakeVals);
-  let rStatus = null, rLabel = null;
-  if (midSD != null) {
-    if (midSD <= 30) { rStatus = "good"; rLabel = "Very regular"; }
-    else if (midSD <= 60) { rStatus = "good"; rLabel = "Fairly regular"; }
-    else if (midSD <= 90) { rStatus = "warn"; rLabel = "Irregular"; }
-    else { rStatus = "bad"; rLabel = "Highly irregular"; }
-  }
-  const isWknd = ds => { const wd = new Date(ds + "T00:00:00").getDay(); return wd === 0 || wd === 6; };
-  const wkdayMid = last21.filter(r => r.mid != null && !isWknd(r.date)).map(r => r.mid);
-  const wkendMid = last21.filter(r => r.mid != null && isWknd(r.date)).map(r => r.mid);
-  let socialJetlag = null;
-  if (wkdayMid.length >= 2 && wkendMid.length >= 1) socialJetlag = +(circDiff(circMean(wkendMid), circMean(wkdayMid)) / 60).toFixed(1);
-  const anchorWakeMin = wakeVals.length ? circMean(wakeVals) : null;
-  const typLatency = (() => { const ls = last14.map(r => r.latency).filter(v => v != null); return ls.length ? median(ls) : 15; })();
-  const bedTargetMin = anchorWakeMin != null ? ((anchorWakeMin - Math.round(need.hours * 60) - typLatency) % 1440 + 1440) % 1440 : null;
-
-  // ── AXIS 3 — CONTINUITY / QUALITY ──
-  const effNights = last14.filter(r => r.hasEff);
-  const avgEff = effNights.length ? Math.round(mean(effNights.map(r => r.eff))) : null;
-  const avgLatency = (() => { const v = last14.map(r => r.latency).filter(x => x != null); return v.length ? Math.round(mean(v)) : null; })();
-  const avgWaso = (() => { const v = last14.map(r => r.waso).filter(x => x != null); return v.length ? Math.round(mean(v)) : null; })();
-  const q7 = last7.map(r => r.q).filter(v => v != null);
-  const qOlder = last14.filter(r => r.date < daysAgo(6)).map(r => r.q).filter(v => v != null);
-  const avgQ7 = q7.length ? +mean(q7).toFixed(1) : null;
-  const qualityTrend = (avgQ7 != null && qOlder.length) ? +(avgQ7 - mean(qOlder)).toFixed(1) : null;
-  // Unrefreshing sleep: adequate duration but consistently poor quality — the
-  // single highest-leverage screening signal (possible OSA / fragmentation).
-  const unrefreshNights = last14.filter(r => r.q != null && r.q <= 2 && r.tst >= need.hours - 0.5);
-  const unrefreshing = last14.length >= 5 && unrefreshNights.length >= 3 && (unrefreshNights.length / last14.length) >= 0.4;
-  let cStatus = null, cLabel = null;
-  if (avgEff != null) {
-    if (avgEff >= 90) { cStatus = "good"; cLabel = "Solid & consolidated"; }
-    else if (avgEff >= 85) { cStatus = "warn"; cLabel = "Slightly fragmented"; }
-    else { cStatus = "bad"; cLabel = "Fragmented / inefficient"; }
-  } else if (avgQ7 != null) {
-    if (avgQ7 >= 3.5) { cStatus = "good"; cLabel = "Feels restful"; }
-    else if (avgQ7 >= 2.5) { cStatus = "warn"; cLabel = "Mediocre quality"; }
-    else { cStatus = "bad"; cLabel = "Poor quality"; }
-  }
-  if (unrefreshing && cStatus !== "bad") { cStatus = "warn"; cLabel = "Unrefreshing"; }
-
-  // ── COUPLING — sleep × the rest of the body (their own data only) ──
-  const coupling = [];
-  // 1) Partitioning: short sleep in a deficit burns muscle, not fat.
-  const wt = computeWeightTrend(data);
-  const phase = (goals?.strategy?.phase || "").toLowerCase();
-  const goal = (goals?.goal || "").toLowerCase();
-  const cutting = /cut|deficit|fat/.test(phase) || goal.includes("fat") || goal.includes("lose") || (wt && wt.confidence !== "Low" && wt.pctBWPerWeek != null && wt.pctBWPerWeek <= -0.3);
-  if (cutting && avgTST7 != null && avgTST7 < need.hours - 0.8) {
-    coupling.push({ key: "partitioning", severity: "critical", text: `You're in a deficit and averaging ${avgTST7}h (need ~${need.hours}h). At matched calories, short sleep makes more of your loss come from muscle, not fat — the scale moves the same, the mirror doesn't. Protecting sleep is your strongest muscle-retention lever while cutting.` });
-  }
-  // 2) RPE inflation: under-slept loads feel harder; you quietly cut volume.
-  const rpe7 = last7.length ? (() => {
-    const v = (data.exercise || []).filter(e => e.date >= daysAgo(6)).map(e => (e._parsed || parseWorkout(e.text || "")).avgRPE).filter(x => x != null);
-    return v.length ? +mean(v).toFixed(1) : null;
-  })() : null;
-  if (rpe7 != null && rpe7 >= 8 && debt7 >= 3) {
-    coupling.push({ key: "rpe", severity: "important", text: `Sessions are feeling hard (avg RPE ${rpe7}) and you're carrying ~${debt7}h of sleep debt. That's central fatigue inflating perceived effort — not lost strength. Hold your planned load; don't auto-cut volume.` });
-  }
-  // 3) APPETITE TAX — sleep → eating (Tasali 2022: sleep loss drives reward-seeking
-  // intake; mechanism is hedonic/endocannabinoid + more waking hours, NOT leptin/ghrelin
-  // which the evidence downgrades). We never estimate hormones — we measure the four
-  // behavioural fingerprints in the user's OWN logs: total kcal, eating occasions
-  // (snacking), late-night calories, and protein share (a proxy for drifting toward
-  // calorie-dense food). Same-day alignment: a night's short sleep shapes THAT day's eating.
-  let appetite = null;
-  {
-    const dietByDate = {};
-    (data.diet || []).forEach(d => { if (!d.date) return; (dietByDate[d.date] = dietByDate[d.date] || []).push(d); });
-    const win = sorted.filter(s => s.date >= daysAgo(29)).map(enrich);
-    const lateMin = 21 * 60; // 9pm
-    const dayMetrics = r => {
-      const ents = dietByDate[r.date];
-      if (!ents || !ents.length) return null;
-      const kcal = ents.reduce((a, e) => a + (e.calories || 0), 0);
-      if (kcal <= 0) return null;
-      const protein = ents.reduce((a, e) => a + (e.protein || 0), 0);
-      const occasions = clusterFeedings(ents).length;
-      const lateKcal = ents.filter(e => { const m = mins(e.time); return m != null && m >= lateMin; }).reduce((a, e) => a + (e.calories || 0), 0);
-      return { kcal, occasions, lateKcal, pShare: (protein * 4 / kcal) * 100 };
-    };
-    const shortM = win.filter(r => r.tst < need.hours - 1).map(dayMetrics).filter(Boolean);
-    const okM = win.filter(r => r.tst >= need.hours - 0.5).map(dayMetrics).filter(Boolean);
-    if (shortM.length >= 3 && okM.length >= 3) {
-      const avg = (arr, k) => mean(arr.map(x => x[k]).filter(v => v != null));
-      const kcalDelta = Math.round(avg(shortM, "kcal") - avg(okM, "kcal"));
-      const occDelta = +(avg(shortM, "occasions") - avg(okM, "occasions")).toFixed(1);
-      const lateDelta = Math.round(avg(shortM, "lateKcal") - avg(okM, "lateKcal"));
-      const ps = avg(shortM, "pShare"), po = avg(okM, "pShare");
-      const pShareDrop = (ps != null && po != null) ? +(po - ps).toFixed(1) : null;
-      const n = Math.min(shortM.length, okM.length);
-      const confidence = n >= 6 ? "High" : n >= 4 ? "Moderate" : "Low";
-      // Population expectation says intake rises — but defer to THEIR reality.
-      const responder = kcalDelta >= 120 || lateDelta >= 100 || (pShareDrop != null && pShareDrop >= 4);
-      const ph = (/cut|deficit|fat/.test(phase) || goal.includes("fat") || goal.includes("lose")) ? "cut"
-               : (/bulk|surplus|gain/.test(phase) || goal.includes("muscle")) ? "bulk" : "maintain";
-      appetite = { shortDays: shortM.length, okDays: okM.length, kcalDelta, occDelta, lateDelta, pShareDrop, responder, phase: ph, confidence };
-
-      // Surface it only when the user's OWN data shows the pattern (responder).
-      // Behavioural readout, externalised, never a restriction instruction.
-      if (responder) {
-        const bits = [];
-        if (kcalDelta >= 120) bits.push(`+${kcalDelta} kcal`);
-        if (occDelta >= 0.7) bits.push(`~${occDelta} more eating occasion${occDelta >= 1.5 ? "s" : ""}`);
-        if (lateDelta >= 100) bits.push(`+${lateDelta} kcal after 9pm`);
-        if (pShareDrop != null && pShareDrop >= 3) bits.push(`protein share down ~${pShareDrop}pts`);
-        const hasPart = coupling.some(c => c.key === "partitioning");
-        let tail, sev;
-        if (ph === "cut") {
-          tail = ` On a cut this is where the deficit quietly leaks${hasPart ? ", same root cause as the muscle-loss risk above" : ""} — the lever is upstream: protect sleep, and pre-plan tomorrow's food after a bad night rather than fighting it in the moment.`;
-          sev = "important";
-        } else if (ph === "bulk") {
-          tail = ` In a surplus that's a mild tailwind for hitting calories — just steer the extra toward protein and whole food, not late snacks.`;
-          sev = "notable";
-        } else {
-          tail = ` Pre-planning meals after a short night beats white-knuckling it in the moment.`;
-          sev = "notable";
-        }
-        const caveat = confidence === "Low" ? " (early read — only a few matched days so far)" : "";
-        coupling.push({ key: "appetite", severity: sev, text: `On your short-sleep days your eating shifts — ${bits.join(", ")} vs well-slept days${caveat}. That's the sleep→appetite drive (reward-seeking, not willpower).${tail}` });
-      }
-    }
-  }
-  // 4) Mood: poor sleep preceding low journal sentiment.
-  const fatigueRe = /\b(exhausted|drained|run down|rundown|burnt out|burned out|wrecked|tired|no energy|low|down|stressed|anxious|irritable|foggy)\b/i;
-  const poorThenLow = last14.filter(r => (r.q != null && r.q <= 2) || r.tst < need.hours - 1.5).filter(r => {
-    const next = daysAgoFrom(r.date, -1);
-    return (data.journal || []).some(j => (j.date === r.date || j.date === next) && fatigueRe.test(j.text || ""));
-  });
-  if (poorThenLow.length >= 2) {
-    coupling.push({ key: "mood", severity: "notable", text: `Your rougher nights tend to line up with lower-mood journal entries the next day. Sleep is upstream of mood as often as the reverse — protecting it may lift how you feel, not just how you train.` });
-  }
-
-  // ── INSIGHTS + biggest lever ──
-  const insights = [];
-  const push = (text, priority, axis) => insights.push({ text, priority, axis });
-  if (qStatus === "bad") push(`Averaging ${avgTST7}h vs your ~${need.hours}h need — a real shortfall that drags recovery, partitioning and mood.`, "critical", "quantity");
-  else if (qStatus === "warn" && qLabel === "Running short") push(`Running ~${(need.hours - avgTST7).toFixed(1)}h short of your ${need.hours}h need most nights — close the gap before adding training load.`, "important", "quantity");
-  if (rStatus === "bad" || (wakeSD != null && wakeSD > 75)) push(`Your wake time swings ~${Math.round((wakeSD ?? midSD) / 60 * 10) / 10}h night to night. Anchoring a fixed wake time (even weekends) is higher-leverage than adding hours.`, "important", "regularity");
-  else if (rStatus === "warn") push(`Sleep timing is a bit irregular (mid-sleep varies ~${midSD}min). Tightening it stabilises your whole circadian system.`, "notable", "regularity");
-  if (socialJetlag != null && socialJetlag >= 1.5) push(`Social jetlag ~${socialJetlag}h (weekend vs weekday) — like a mild self-inflicted timezone shift every week. Pull weekend timing closer to weekdays.`, "notable", "regularity");
-  if (unrefreshing) push(`You're logging enough hours but rating sleep poor on ${unrefreshNights.length} of ${last14.length} recent nights. Persistent unrefreshing sleep is the top signal worth raising with a clinician (e.g. screening for sleep apnea) — it can't be fixed by hygiene alone.`, "important", "continuity");
-  if (avgEff != null && avgEff < 85) push(`Sleep efficiency ~${avgEff}% (asleep ÷ in bed). Below ~85% usually means too much time in bed or fragmentation — spending less time in bed often consolidates it.`, "important", "continuity");
-  else if (avgLatency != null && avgLatency > 30) push(`Taking ~${avgLatency}min to fall asleep on average — long onset points to going to bed before you're sleepy or evening arousal.`, "notable", "continuity");
-  coupling.forEach(c => push(c.text, c.severity === "critical" ? "critical" : c.severity === "important" ? "important" : "notable", "coupling"));
-  if (qLabel === "Oversleeping" && qStatus === "warn") push(`Averaging ${avgTST7}h, above your ~${need.hours}h need. Long sleep is often a symptom (illness, low mood, debt repayment) rather than a goal — worth noting if it's new.`, "notable", "quantity");
-
-  const order = { critical: 0, important: 1, notable: 2 };
-  const ranked = [...insights].sort((a, b) => order[a.priority] - order[b.priority]);
-  const topLever = ranked[0] || null;
-
-  // ── Tonight read + sparkline series ──
-  const todayRec = last7.find(r => r.date === today) || null;
-  const series14 = sorted.filter(s => s.date >= daysAgo(13)).map(s => { const e = enrich(s); return e; });
-  const tstSeries = Array.from({ length: 14 }, (_, i) => { const d = daysAgo(13 - i); const r = series14.find(x => x.date === d); return { value: r ? +r.tst.toFixed(1) : null, label: d }; });
-  const qSeries = Array.from({ length: 14 }, (_, i) => { const d = daysAgo(13 - i); const r = series14.find(x => x.date === d); return { value: r ? r.q : null, label: d }; });
-
-  // Overall confidence from how much is logged
-  let confidence = "Low";
-  if (sleep.length >= 7) confidence = "Moderate";
-  if (sleep.length >= 14 && midVals.length >= 7) confidence = "High";
-
-  return {
-    need, nightsLogged: sleep.length, confidence,
-    quantity: { avgTST7, avgTST14, need: need.hours, debt7, status: qStatus, label: qLabel, loggedNights7: last7.length },
-    regularity: { midSD, wakeSD, socialJetlag, status: rStatus, label: rLabel, anchorWake: fmtClock(anchorWakeMin), bedTarget: fmtClock(bedTargetMin) },
-    continuity: { avgEff, avgLatency, avgWaso, qualityTrend, unrefreshing, unrefreshCount: unrefreshNights.length, recentNights: last14.length, status: cStatus, label: cLabel, hasEffData: effNights.length > 0 },
-    coupling, insights, topLever, appetite,
-    today: todayRec ? { tst: +todayRec.tst.toFixed(1), eff: todayRec.eff, quality: todayRec.quality } : null,
-    series: { tst: tstSeries, quality: qSeries },
-  };
-}
 
 // Add/subtract days from a YYYY-MM-DD string (delta in days; negative = future).
 
@@ -1098,747 +396,17 @@ async function fileToResizedBase64(file, maxDim = 1280, quality = 0.85) {
 // IMPACT (priority) × ACTIONABILITY (does it embed a concrete next step?), ranks
 // them, and dedupes by topic into a single headline focus list. Nothing is
 // dropped from the full list; dedupe only shapes the top-N.
-function insightCategory(text) {
-  const t = (text || "").toLowerCase();
-  if (/sleep|bedtime|rested|circadian|awake|deload|overtrain/.test(t)) return "sleep/recovery";
-  if (/protein|mps|feeding|leucine/.test(t)) return "protein";
-  if (/carb|glycogen/.test(t)) return "carbs";
-  if (/trend weight|%bw|lean-gain|gaining fast|losing fast|surplus|deficit|maintenance|calorie|kcal|under-eat|fuel/.test(t)) return "energy/weight";
-  if (/volume|rpe|days in a row|days straight|training/.test(t)) return "training";
-  if (/hydration|water/.test(t)) return "hydration";
-  return "other";
-}
 
-function prioritizeInsights(insights) {
-  const impactByPriority = { critical: 100, important: 60, notable: 30 };
-  const actionCue = /\b(shift|add|move|consider|recheck|aim|spread|reduce|increase|swap|deload|smaller|protect|raise|cut|keep|prioriti|eat)\b/i;
-  const scored = (insights || []).map((ins, idx) => {
-    let score = impactByPriority[ins.priority] ?? 20;
-    if (ins.text.includes("—") || ins.text.includes(" - ")) score += 8; // embeds a "what to do"
-    if (actionCue.test(ins.text)) score += 7;
-    return { ...ins, category: insightCategory(ins.text), score, _idx: idx };
-  });
-  const ranked = scored.slice().sort((a, b) => b.score - a.score || a._idx - b._idx);
-  // headline focus: highest-scored per category, up to 5 (keeps the top list diverse)
-  const seen = new Set();
-  const top = [];
-  for (const i of ranked) {
-    if (seen.has(i.category)) continue;
-    seen.add(i.category);
-    top.push(i);
-    if (top.length >= 5) break;
-  }
-  return { ranked, top };
-}
 
-function buildBrain(data, goals) {
-  const now = new Date();
-  const today = getTodayStr();
-  const yesterday = daysAgo(1);
-  const todayName = WEEKDAYS[(now.getDay() + 6) % 7];
-  const hour = now.getHours();
-  const minute = now.getMinutes();
-  const timeNow = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
-  const timeOfDay = hour < 5 ? "late night" : hour < 11 ? "morning" : hour < 14 ? "midday" : hour < 18 ? "afternoon" : hour < 22 ? "evening" : "night";
-  const isWeekend = todayName === "Sat" || todayName === "Sun";
-
-  // ── Time windows
-  const inWindow = (arr, days) => arr.filter(i => i.date >= daysAgo(days - 1));
-  const last7 = a => inWindow(a, 7);
-  const last14 = a => inWindow(a, 14);
-  const last30 = a => inWindow(a, 30);
-
-  // Helper: parse HH:MM into minutes since midnight, or null
-  const minsOf = t => { if (!t) return null; const m = /^(\d{1,2}):(\d{2})/.exec(t); return m ? +m[1] * 60 + +m[2] : null; };
-
-  // ── TODAY: nutrition + intake so far
-  const todayDiet = data.diet.filter(d => d.date === today);
-  const todayCal = todayDiet.reduce((a, m) => a + (m.calories || 0), 0);
-  const todayP = todayDiet.reduce((a, m) => a + (m.protein || 0), 0);
-  const todayC = todayDiet.reduce((a, m) => a + (m.carbs || 0), 0);
-  const todayF = todayDiet.reduce((a, m) => a + (m.fat || 0), 0);
-  const calRemaining = (goals.calories || 0) - todayCal;
-  const pRemaining = (goals.protein || 0) - todayP;
-  const cRemaining = (goals.carbs || 0) - todayC;
-  const fRemaining = (goals.fat || 0) - todayF;
-  const todayWaterMl = data.water.filter(w => w.date === today).reduce((a, w) => a + w.ml, 0);
-  const waterRemainingMl = (goals.waterGoalMl || 0) - todayWaterMl;
-  const todaySupps = data.supplements.filter(s => s.date === today);
-  const todaySleep = data.sleep.find(s => s.date === today);
-  const yestSleep = data.sleep.find(s => s.date === yesterday);
-  const todayWorkout = data.exercise.find(e => e.date === today);
-  const todaySport = data.sports.find(s => s.date === today);
-
-  // Time since last meal
-  const todayMealsWithTime = todayDiet.filter(m => m.time).sort((a, b) => (a.time || "").localeCompare(b.time || ""));
-  const lastMealTime = todayMealsWithTime.length ? todayMealsWithTime[todayMealsWithTime.length - 1].time : null;
-  const hoursSinceLastMeal = (() => {
-    if (!lastMealTime) return null;
-    const m = minsOf(lastMealTime);
-    const nowMins = hour * 60 + minute;
-    const diff = nowMins - m;
-    return diff >= 0 ? +(diff / 60).toFixed(1) : null;
-  })();
-
-  // ── PLAN
-  const plan = goals.plan || null;
-  const isTrainingDay = plan?.trainingDays?.includes(todayName) || false;
-  const todayPlanLabel = plan?.assignments?.[todayName] || (isTrainingDay ? "Training day" : "Rest day");
-  const tomorrowName = WEEKDAYS[(now.getDay() + 7) % 7];
-  const tomorrowPlanLabel = plan?.assignments?.[tomorrowName] || (plan?.trainingDays?.includes(tomorrowName) ? "Training" : "Rest");
-
-  // ── DAILY TIMELINES — chronological event list per day (last 7 days)
-  // This is the heart of "mapping everything out." Each day becomes a sequence:
-  //   08:15 Breakfast 450kcal P25g | 10:30 Workout (Push) | 13:00 Lunch 700kcal | ...
-  function buildTimeline(date) {
-    const events = [];
-    data.diet.filter(d => d.date === date).forEach(m => events.push({ t: m.time || "??:??", kind: "meal", text: `${m.meal} ${m.calories}kcal P${m.protein}g`, sortKey: minsOf(m.time) ?? 9999 }));
-    data.exercise.filter(e => e.date === date).forEach(e => {
-      const p = e._parsed || parseWorkout(e.text || "");
-      events.push({ t: e.time || "??:??", kind: "workout", text: `Workout: ${e.label}${p.totalVolume ? ` (${p.totalVolume}kg vol)` : ""}${e.prs?.length ? ` 🏆${e.prs.length}` : ""}`, sortKey: minsOf(e.time) ?? 9999 });
-    });
-    data.sports.filter(s => s.date === date).forEach(s => events.push({ t: s.time || "??:??", kind: "sport", text: `${s.sport} ${s.duration}min ${s.intensity}${s.calories ? ` ${s.calories}kcal` : ""}`, sortKey: minsOf(s.time) ?? 9999 }));
-    data.water.filter(w => w.date === date).forEach(w => {
-      const t = w.ts ? new Date(w.ts) : null;
-      const ts = t ? `${String(t.getHours()).padStart(2,"0")}:${String(t.getMinutes()).padStart(2,"0")}` : "??:??";
-      events.push({ t: ts, kind: "water", text: `Water ${w.ml}ml`, sortKey: t ? t.getHours() * 60 + t.getMinutes() : 9999 });
-    });
-    data.supplements.filter(s => s.date === date).forEach(s => {
-      const t = s.ts ? new Date(s.ts) : null;
-      const ts = t ? `${String(t.getHours()).padStart(2,"0")}:${String(t.getMinutes()).padStart(2,"0")}` : "??:??";
-      events.push({ t: ts, kind: "supp", text: `Supp: ${s.name}${s.dose ? ` ${s.dose}` : ""}`, sortKey: t ? t.getHours() * 60 + t.getMinutes() : 9999 });
-    });
-    const slp = data.sleep.find(s => s.date === date);
-    if (slp) events.push({ t: slp.bedtime || "??:??", kind: "sleep", text: `Slept ${slp.duration}h (${slp.quality}) until ${slp.wakeTime || "?"}`, sortKey: 0 });
-    return events.sort((a, b) => a.sortKey - b.sortKey);
-  }
-
-  // Aggregate water by day for compactness, since dozens of entries would bloat the timeline
-  function compactTimeline(events) {
-    const waters = events.filter(e => e.kind === "water");
-    const totalWater = waters.reduce((a, e) => { const m = /Water (\d+)ml/.exec(e.text); return a + (m ? +m[1] : 0); }, 0);
-    const out = events.filter(e => e.kind !== "water");
-    if (totalWater > 0) out.push({ t: "—", kind: "water", text: `Total water ${totalWater}ml`, sortKey: 9999 });
-    return out;
-  }
-
-  const timelines = Array.from({ length: 7 }, (_, i) => {
-    const d = daysAgo(6 - i);
-    const events = compactTimeline(buildTimeline(d));
-    return { date: d, dayName: WEEKDAYS[(new Date(d + "T00:00:00").getDay() + 6) % 7], events };
-  });
-
-  // ── 7-DAY NUTRITION
-  const last7Diet = last7(data.diet);
-  const dietByDay7 = {};
-  last7Diet.forEach(d => {
-    if (!dietByDay7[d.date]) dietByDay7[d.date] = { cal: 0, p: 0, c: 0, f: 0, meals: 0, firstMeal: null, lastMeal: null };
-    const day = dietByDay7[d.date];
-    day.cal += d.calories || 0;
-    day.p += d.protein || 0;
-    day.c += d.carbs || 0;
-    day.f += d.fat || 0;
-    day.meals++;
-    if (d.time) {
-      if (!day.firstMeal || d.time < day.firstMeal) day.firstMeal = d.time;
-      if (!day.lastMeal || d.time > day.lastMeal) day.lastMeal = d.time;
-    }
-  });
-  const dietDays7 = Object.values(dietByDay7);
-  const avgCal7 = dietDays7.length ? Math.round(dietDays7.reduce((a, d) => a + d.cal, 0) / dietDays7.length) : null;
-  const avgP7 = dietDays7.length ? Math.round(dietDays7.reduce((a, d) => a + d.p, 0) / dietDays7.length) : null;
-  const proteinHits7 = dietDays7.filter(d => d.p >= (goals.protein || 0)).length;
-  const calDeficit7 = avgCal7 != null ? (goals.calories || 0) - avgCal7 : null;
-  // Average first/last meal times across the week
-  const firstMealTimes = dietDays7.map(d => d.firstMeal).filter(Boolean);
-  const lastMealTimes = dietDays7.map(d => d.lastMeal).filter(Boolean);
-  const avgFirstMeal = firstMealTimes.length ? avgTimeHHMM(firstMealTimes) : null;
-  const avgLastMeal = lastMealTimes.length ? avgTimeHHMM(lastMealTimes) : null;
-
-  // ── 14-day calorie trend (rising/falling)
-  const last14Diet = last14(data.diet);
-  const trendBucket = (start, end) => {
-    const days = {};
-    last14Diet.filter(d => d.date >= start && d.date <= end).forEach(d => { days[d.date] = (days[d.date] || 0) + (d.calories || 0); });
-    const vs = Object.values(days);
-    return vs.length ? Math.round(vs.reduce((a, b) => a + b, 0) / vs.length) : null;
-  };
-  const recentHalf = trendBucket(daysAgo(6), today);
-  const olderHalf = trendBucket(daysAgo(13), daysAgo(7));
-  const calorieTrend = (recentHalf && olderHalf) ? (recentHalf - olderHalf) : null;
-
-  // ── SLEEP
-  const sleepIntel = computeSleep(data, goals);
-  const sleepNeed = (sleepIntel?.need?.hours) ?? estimateSleepNeed(data, goals).hours;
-  const last7Sleep = last7(data.sleep);
-  const avgSleep7 = last7Sleep.length ? +(last7Sleep.reduce((a, s) => a + s.duration, 0) / last7Sleep.length).toFixed(1) : null;
-  const sleepDebt7 = last7Sleep.reduce((d, s) => d + (sleepNeed - sleepTST(s)), 0);
-  const sleepPatternIssue = last7Sleep.length >= 3 && avgSleep7 != null && avgSleep7 < sleepNeed - 0.5;
-  // Average bedtime / wake time across the week
-  const bedtimes = last7Sleep.map(s => s.bedtime).filter(Boolean);
-  const wakeTimes = last7Sleep.map(s => s.wakeTime).filter(Boolean);
-  const avgBedtime = bedtimes.length ? avgTimeHHMM(bedtimes, true) : null;
-  const avgWakeTime = wakeTimes.length ? avgTimeHHMM(wakeTimes) : null;
-  // Weekend vs weekday sleep gap
-  const weekdaySleeps = last7Sleep.filter(s => { const wd = WEEKDAYS[(new Date(s.date + "T00:00:00").getDay() + 6) % 7]; return wd !== "Sat" && wd !== "Sun"; });
-  const weekendSleeps = last7Sleep.filter(s => { const wd = WEEKDAYS[(new Date(s.date + "T00:00:00").getDay() + 6) % 7]; return wd === "Sat" || wd === "Sun"; });
-  const wkdayAvgSleep = weekdaySleeps.length ? +(weekdaySleeps.reduce((a, s) => a + s.duration, 0) / weekdaySleeps.length).toFixed(1) : null;
-  const wkendAvgSleep = weekendSleeps.length ? +(weekendSleeps.reduce((a, s) => a + s.duration, 0) / weekendSleeps.length).toFixed(1) : null;
-
-  // ── TRAINING
-  const last7Lifts = last7(data.exercise);
-  const last7Sports = last7(data.sports);
-  const last14Lifts = last14(data.exercise);
-  const last7TotalSessions = last7Lifts.length + last7Sports.length;
-  const volume7 = last7Lifts.reduce((sum, e) => sum + ((e._parsed || parseWorkout(e.text || "")).totalVolume || 0), 0);
-  const volume7_olderHalf = inWindow(data.exercise, 14).filter(e => e.date < daysAgo(6)).reduce((sum, e) => sum + ((e._parsed || parseWorkout(e.text || "")).totalVolume || 0), 0);
-  const volumeTrend = (volume7 && volume7_olderHalf) ? volume7 - volume7_olderHalf : null;
-  // Average session RPE over last 7 days (from parsed Strong RPE), if logged
-  const rpe7vals = last7Lifts.map(e => (e._parsed || parseWorkout(e.text || "")).avgRPE).filter(v => v != null);
-  const avgRPE7 = rpe7vals.length ? +(rpe7vals.reduce((a, b) => a + b, 0) / rpe7vals.length).toFixed(1) : null;
-  const trainingDates = new Set([...data.exercise.map(e => e.date), ...data.sports.map(s => s.date)]);
-  let consecutiveTrained = 0;
-  {
-    let cur = new Date(); if (!trainingDates.has(getTodayStr())) cur.setDate(cur.getDate() - 1);
-    for (;;) { const ds = localDateStr(cur); if (trainingDates.has(ds)) { consecutiveTrained++; cur.setDate(cur.getDate() - 1); } else break; }
-  }
-  const daysSinceLastRest = (() => {
-    let c = 0; const cur = new Date();
-    for (let i = 0; i < 14; i++) {
-      const ds = localDateStr(cur);
-      if (trainingDates.has(ds)) c++; else return c;
-      cur.setDate(cur.getDate() - 1);
-    }
-    return c;
-  })();
-  const recentPRs = last14Lifts.flatMap(e => (e.prs || []).map(pr => ({ date: e.date, ...pr }))).slice(0, 5);
-
-  // ── WATER PATTERNS
-  const last7Water = last7(data.water);
-  const waterByDay7 = {};
-  last7Water.forEach(w => { waterByDay7[w.date] = (waterByDay7[w.date] || 0) + w.ml; });
-  const avgWaterMl7 = Object.values(waterByDay7).length ? Math.round(Object.values(waterByDay7).reduce((a, b) => a + b, 0) / Object.values(waterByDay7).length) : null;
-
-  // ── STREAK
-  const dayHas = {};
-  [...data.diet, ...data.sleep, ...data.exercise, ...data.sports, ...data.water, ...data.supplements].forEach(e => { if (e.date) dayHas[e.date] = true; });
-  let streak = 0;
-  {
-    let cur = new Date(); if (!dayHas[getTodayStr()]) cur.setDate(cur.getDate() - 1);
-    for (;;) { const ds = localDateStr(cur); if (dayHas[ds]) { streak++; cur.setDate(cur.getDate() - 1); } else break; }
-  }
-
-  // ── CROSS-CATEGORY PATTERNS
-  // Sleep-on-training-day vs rest-day
-  const trainNightSleep = last7Sleep.filter(s => trainingDates.has(s.date));
-  const restNightSleep = last7Sleep.filter(s => !trainingDates.has(s.date));
-  const trainNightAvg = trainNightSleep.length ? +(trainNightSleep.reduce((a, s) => a + s.duration, 0) / trainNightSleep.length).toFixed(1) : null;
-  const restNightAvg = restNightSleep.length ? +(restNightSleep.reduce((a, s) => a + s.duration, 0) / restNightSleep.length).toFixed(1) : null;
-
-  // ── WEIGHT TREND (A1 engine)
-  const weightTrend = computeWeightTrend(data);
-
-  // ── PROTEIN DISTRIBUTION / MPS (B1 engine)
-  const proteinDist = computeProteinDistribution(data, goals);
-
-  // ── RECOVERY (D1 engine — now fed to the Coach, not just the Plan card)
-  const recovery = computeRecovery(data, goals);
-
-  // ── ENERGY BALANCE / ADAPTIVE TDEE
-  const energy = computeEnergyBalance(data, goals);
-
-  // ── TRAINING INTELLIGENCE (per-lift progression + per-muscle volume)
-  const training = computeTraining(data, goals);
-
-  // ── EJAC (private metric — neutral data only, NO insights/judgments generated)
-  const ejacAll = data.ejac || [];
-  const ejac30 = ejacAll.filter(e => e.date >= daysAgo(29));
-  const ejacSummary = ejacAll.length ? {
-    last7: ejacAll.filter(e => e.date >= daysAgo(6)).length,
-    last30: ejac30.length,
-    avgPerDay30: +(ejac30.length / 30).toFixed(2),
-    pornPct30: ejac30.length ? Math.round(ejac30.filter(e => e.porn).length / ejac30.length * 100) : 0,
-    goonPct30: ejac30.length ? Math.round(ejac30.filter(e => e.gooning).length / ejac30.length * 100) : 0,
-  } : null;
-
-  // ── DERIVED INSIGHTS — high-signal flags
-  // Insights are now { text, priority: "critical" | "important" | "notable" }
-  // Critical = recovery is at risk or strategy is broken; Important = clear pattern worth acting on;
-  // Notable = mention only if the user's question is in that area.
-  const insights = [];
-  const wins = []; // things going well — used to reinforce positive behavior
-
-  // --- CRITICAL: recovery / safety / strategy breaks ---
-  if (consecutiveTrained >= 5) insights.push({ text: `Trained ${consecutiveTrained} days in a row with no rest — overtraining risk, deload strongly suggested`, priority: "critical" });
-  else if (consecutiveTrained >= 4) insights.push({ text: `Trained ${consecutiveTrained} days in a row with no rest — deload signal`, priority: "important" });
-  if (sleepDebt7 > 8) insights.push({ text: `Sleep debt accumulating fast: ${sleepDebt7.toFixed(1)}h short over last week — recovery compromised`, priority: "critical" });
-  else if (sleepDebt7 > 5) insights.push({ text: `Sleep debt: ${sleepDebt7.toFixed(1)}h short over last week`, priority: "important" });
-  if (sleepPatternIssue) insights.push({ text: `Avg sleep ${avgSleep7}h is below your ~${sleepNeed}h need — recovery limiter`, priority: avgSleep7 < sleepNeed - 1.5 ? "critical" : "important" });
-  // Sleep Intelligence Engine — fold in the NEW dimensions (regularity, continuity,
-  // disorder screening, cross-domain coupling) that the legacy sleep insights above
-  // don't cover. Quantity is already handled above, so skip those to avoid dupes.
-  if (sleepIntel) {
-    sleepIntel.insights.filter(i => i.axis !== "quantity").forEach(i => insights.push({ text: i.text, priority: i.priority }));
-  }
-  // Adaptive TDEE / energy-balance insights (real maintenance, deficit/surplus, plateau, under-logging)
-  if (energy && energy.ready) energy.insights.forEach(i => insights.push(i));
-  // Training intelligence insights (stalls, neglected muscles, imbalances, progress)
-  if (training) training.insights.forEach(i => insights.push(i));
-
-  // --- IMPORTANT: nutrition and trend issues ---
-  if (calDeficit7 != null && Math.abs(calDeficit7) > 400) {
-    insights.push({ text: `7-day avg calories ${avgCal7} is ${Math.abs(calDeficit7)}kcal ${calDeficit7 > 0 ? "BELOW" : "ABOVE"} target — large gap from plan`, priority: "important" });
-  } else if (calDeficit7 != null && Math.abs(calDeficit7) > 200) {
-    insights.push({ text: `7-day avg calories ${avgCal7} is ${Math.abs(calDeficit7)}kcal ${calDeficit7 > 0 ? "below" : "above"} target`, priority: "notable" });
-  }
-  if (avgP7 != null && goals.protein && avgP7 < goals.protein * 0.75) {
-    insights.push({ text: `Protein well below target: ${avgP7}g avg vs ${goals.protein}g target (${proteinHits7}/${dietDays7.length} days hit goal)`, priority: "important" });
-  } else if (avgP7 != null && goals.protein && avgP7 < goals.protein * 0.85) {
-    insights.push({ text: `Protein consistently a bit low: ${avgP7}g avg vs ${goals.protein}g target`, priority: "notable" });
-  }
-  if (calorieTrend != null && Math.abs(calorieTrend) > 300) {
-    insights.push({ text: `Calorie intake ${calorieTrend > 0 ? "rising" : "falling"} sharply: ${calorieTrend > 0 ? "+" : ""}${calorieTrend}kcal/day vs prev week`, priority: "important" });
-  }
-  if (volumeTrend != null && Math.abs(volumeTrend) > 2000) {
-    insights.push({ text: `Training volume ${volumeTrend > 0 ? "UP" : "DOWN"} ${Math.round(Math.abs(volumeTrend)).toLocaleString()}kg vs previous week`, priority: "important" });
-  }
-  if (last7TotalSessions === 0 && plan?.trainingDays?.length) {
-    insights.push({ text: `No training in 7 days despite ${plan.trainingDays.length}-day/week plan`, priority: "important" });
-  }
-  if (avgWaterMl7 != null && goals.waterGoalMl && avgWaterMl7 < goals.waterGoalMl * 0.6) {
-    insights.push({ text: `Hydration low: avg ${avgWaterMl7}ml/day vs ${goals.waterGoalMl}ml target`, priority: "important" });
-  }
-
-  // --- weight trend vs intent (only once there's enough signal) ---
-  if (weightTrend && weightTrend.confidence !== "Low" && weightTrend.ratePerWeekG != null) {
-    const pct = weightTrend.pctBWPerWeek;
-    const goalLower = (goals.goal || "").toLowerCase();
-    const phase = (goals.strategy?.phase || "").toLowerCase();
-    const wantGain = goalLower.includes("muscle") || /bulk|surplus|gain/.test(phase);
-    const wantLose = goalLower.includes("fat") || goalLower.includes("lose") || /cut|deficit/.test(phase);
-    const rateStr = `${weightTrend.ratePerWeekG > 0 ? "+" : ""}${weightTrend.ratePerWeekG}g/wk`;
-    if (wantGain && weightTrend.direction !== "gaining") {
-      insights.push({ text: `Goal is to build muscle but trend weight is ${weightTrend.direction} (${rateStr}) — not the surplus the plan assumes; recheck intake vs true maintenance`, priority: "important" });
-    } else if (wantLose && weightTrend.direction !== "losing") {
-      insights.push({ text: `Goal is fat loss but trend weight is ${weightTrend.direction} (${rateStr}) — the intended deficit isn't translating to weight change`, priority: "important" });
-    }
-    if (pct != null && pct > 1.0) insights.push({ text: `Gaining fast: trend +${pct}%BW/wk, above the ~0.25–0.5%/wk lean-gain range — more of this is likely fat than muscle`, priority: "notable" });
-    if (pct != null && pct < -1.2) insights.push({ text: `Losing fast: trend ${pct}%BW/wk — aggressive enough to risk muscle loss; a smaller deficit may protect lean mass`, priority: "notable" });
-  }
-
-  // --- protein distribution / MPS (B1 — no new data needed) ---
-  if (proteinDist && proteinDist.confidence !== "Low") {
-    const pd = proteinDist;
-    const hittingTotal = pd.proteinGoal && pd.avgProtein >= pd.proteinGoal * 0.9;
-    if (hittingTotal && pd.avgEffective < 3) {
-      insights.push({ text: `Protein TOTAL is on point (${pd.avgProtein}g/day) but distribution isn't: only ${pd.avgEffective} of your meals/day cross the ~${pd.perMeal}g MPS threshold (aim 3–5). Same protein, more growth stimulus if you shift some earlier.`, priority: "important" });
-    } else if (pd.avgEffective < 3 && pd.daysWithMeals >= 4) {
-      insights.push({ text: `Few MPS-effective protein feedings: ${pd.avgEffective}/day cross ~${pd.perMeal}g (aim 3–5)`, priority: "notable" });
-    }
-    if (pd.avgSkew != null && pd.avgSkew >= 50) insights.push({ text: `Protein skewed: ~${pd.avgSkew}% of the day's protein lands in one meal — spreading it raises total daily MPS`, priority: "notable" });
-    if (pd.avgLargestGap != null && pd.avgLargestGap >= 6) insights.push({ text: `Long protein gaps: ~${pd.avgLargestGap}h between feedings on average — a mid-gap feeding keeps MPS elevated`, priority: "notable" });
-    if (pd.preEligibleDays >= 3 && pd.preOKDays / pd.preEligibleDays < 0.4) insights.push({ text: `Rarely a protein feeding near bedtime (${pd.preOKDays}/${pd.preEligibleDays} nights) — a ~30–40g pre-sleep dose may support overnight recovery`, priority: "notable" });
-  }
-
-  // --- NOTABLE: contextual patterns the AI should mention if relevant ---
-  if (avgLastMeal && minsOf(avgLastMeal) > 21 * 60) insights.push({ text: `Eating late: avg last meal at ${avgLastMeal} — may affect sleep quality`, priority: "notable" });
-  if (trainNightAvg != null && restNightAvg != null && Math.abs(trainNightAvg - restNightAvg) > 0.8) {
-    insights.push({ text: `Sleep ${trainNightAvg > restNightAvg ? "BETTER" : "WORSE"} on training nights (${trainNightAvg}h vs ${restNightAvg}h on rest nights)`, priority: "notable" });
-  }
-  if (wkdayAvgSleep != null && wkendAvgSleep != null && Math.abs(wkdayAvgSleep - wkendAvgSleep) > 1.5) {
-    insights.push({ text: `Weekend sleep ${wkendAvgSleep > wkdayAvgSleep ? "much longer" : "much shorter"} than weekdays (${wkdayAvgSleep}h vs ${wkendAvgSleep}h) — circadian disruption`, priority: "notable" });
-  }
-
-  // --- WINS: reinforce what's working ---
-  if (avgP7 != null && goals.protein && avgP7 >= goals.protein * 0.95 && dietDays7.length >= 4) wins.push(`Protein dialed in: ${avgP7}g/day avg vs ${goals.protein}g target, ${proteinHits7}/${dietDays7.length} days on goal`);
-  if (avgSleep7 != null && avgSleep7 >= 7.5) wins.push(`Sleep solid: ${avgSleep7}h/day avg`);
-  if (last7TotalSessions >= (plan?.trainingDays?.length || 3) && plan?.trainingDays?.length) wins.push(`Training consistent: ${last7TotalSessions} sessions in the last 7 days`);
-  if (recentPRs.length > 0) wins.push(`${recentPRs.length} recent PR${recentPRs.length === 1 ? "" : "s"}: ${recentPRs.slice(0, 2).map(p => `${p.name} ${p.weight}${p.unit}×${p.reps}`).join(", ")}`);
-  if (streak >= 7) wins.push(`${streak}-day logging streak`);
-  if (avgWaterMl7 != null && goals.waterGoalMl && avgWaterMl7 >= goals.waterGoalMl * 0.9) wins.push(`Hydration consistent: ${avgWaterMl7}ml/day avg`);
-  if (weightTrend && weightTrend.confidence !== "Low" && weightTrend.pctBWPerWeek != null) {
-    const pct = weightTrend.pctBWPerWeek, gl = (goals.goal || "").toLowerCase();
-    if (gl.includes("muscle") && pct >= 0.15 && pct <= 0.6) wins.push(`Lean-gain pace dialed in: trend +${pct}%BW/wk`);
-    if ((gl.includes("fat") || gl.includes("lose")) && pct <= -0.4 && pct >= -1.0) wins.push(`Fat-loss pace dialed in: trend ${pct}%BW/wk`);
-  }
-  if (proteinDist && proteinDist.confidence !== "Low" && proteinDist.avgEffective >= 3.5 && proteinDist.daysWithMeals >= 4) {
-    wins.push(`Protein distribution dialed: ~${proteinDist.avgEffective} MPS-effective feedings/day`);
-  }
-
-  return {
-    // Real-time awareness
-    now: { iso: now.toISOString(), date: today, dayName: todayName, time: timeNow, hour, timeOfDay, isWeekend },
-    goal: goals.goal,
-    targets: { calories: goals.calories, protein: goals.protein, carbs: goals.carbs, fat: goals.fat, waterMl: goals.waterGoalMl },
-    todayProgress: {
-      cal: todayCal, protein: todayP, carbs: todayC, fat: todayF,
-      calRemaining, pRemaining, cRemaining, fRemaining,
-      waterMl: todayWaterMl, waterRemainingMl,
-      supplements: todaySupps.map(s => `${s.name}${s.dose ? ` (${s.dose})` : ""}`),
-      sleep: todaySleep ? { duration: todaySleep.duration, quality: todaySleep.quality, bedtime: todaySleep.bedtime, wakeTime: todaySleep.wakeTime } : null,
-      yesterdaySleep: yestSleep ? { duration: yestSleep.duration, quality: yestSleep.quality, bedtime: yestSleep.bedtime, wakeTime: yestSleep.wakeTime } : null,
-      workoutLogged: !!todayWorkout, sportLogged: !!todaySport,
-      meals: todayDiet.map(d => ({ time: d.time, meal: d.meal, food: d.food, cal: d.calories, p: d.protein })),
-      lastMealTime, hoursSinceLastMeal,
-    },
-    plan: plan ? { split: plan.split, todayLabel: todayPlanLabel, tomorrowLabel: tomorrowPlanLabel, trainingDays: plan.trainingDays, isTrainingDay, tomorrowName } : null,
-    timelines, // chronological event sequence for each of the last 7 days
-    week: {
-      avgCal: avgCal7, avgProtein: avgP7, proteinHitDays: proteinHits7, daysLogged: dietDays7.length,
-      avgSleep: avgSleep7, sleepDebt: +sleepDebt7.toFixed(1),
-      avgBedtime, avgWakeTime, wkdayAvgSleep, wkendAvgSleep,
-      avgFirstMeal, avgLastMeal,
-      sessions: last7TotalSessions, volumeKg: Math.round(volume7), volumeTrend, calorieTrend, avgRPE: avgRPE7,
-      consecutiveTrained, daysSinceLastRest,
-      recentPRs, streak,
-      avgWaterMl: avgWaterMl7,
-      trainNightSleep: trainNightAvg, restNightSleep: restNightAvg,
-    },
-    insights,
-    topInsights: prioritizeInsights(insights).top,
-    wins,
-    weight: weightTrend,
-    proteinDist,
-    sleepIntel,
-    sleepScreen: goals.sleepScreen || null,
-    energy,
-    training,
-    recovery: {
-      verdict: recovery.verdict,
-      readiness: recovery.readiness,
-      limiter: recovery.limiter,
-      plannedToday: recovery.plannedToday,
-      todayLabel: recovery.todayLabel,
-      topNeg: recovery.reasons.filter(r => r.dir === "neg").slice(0, 4).map(r => r.text),
-    },
-    ejac: ejacSummary,
-    profile: goals.profile || {},
-    strategy: goals.strategy || {},
-    nicotine: (() => {
-      if (!data.nicotine || data.nicotine.length === 0) return null;
-      const ns = computeNicotineStats(data);
-      const plans = (data.nicotinePlans || []).filter(p => p.when && new Date(p.when) >= new Date(Date.now() - 3600000))
-        .sort((a, b) => a.when.localeCompare(b.when)).slice(0, 3);
-      return {
-        today: ns.today.count, avg7: ns.avgCount7, mg7: ns.avg7, mg30: ns.avg30,
-        last7: ns.w7.count, last30: ns.w30.count,
-        types: ns.typeTotals, topContexts: ns.topContexts.map(([c]) => c),
-        plannedSessions: plans.map(p => ({ when: p.when, label: p.label })),
-      };
-    })(),
-    journal: (() => {
-      const j = (data.journal || []).filter(e => e.date >= daysAgo(13)).sort((a, b) => (b.ts || 0) - (a.ts || 0));
-      if (!j.length) return null;
-      // Keep it bounded: most recent ~8 entries, trimmed.
-      return j.slice(0, 8).map(e => ({ date: e.date, text: e.text.length > 280 ? e.text.slice(0, 280) + "…" : e.text }));
-    })(),
-  };
-}
 
 // Helpers for time math. avgTimeHHMM averages a list of "HH:MM" strings.
 // `wrapPM` handles bedtime (treating 00:00–05:00 as the same night, after midnight, by adding 24h).
 
 // Turns the brain object into a tight text block every AI prompt gets.
 // Pre-digested signals at the top so the model immediately knows what matters.
-function formatBrainText(brain) {
-  const tp = brain.todayProgress;
-  const w = brain.week;
-  const n = brain.now;
-  const lines = [];
-
-  // ─── RIGHT NOW ────────────────────────────────────────────────────────────
-  // The model is trained to hedge about real-time access by default. Tell it
-  // explicitly that this block is authoritative.
-  lines.push(`== RIGHT NOW (current real-time clock from user's device — this is authoritative; never claim you don't know what time/day it is) ==`);
-  lines.push(`Date: ${n.date} (${n.dayName}${n.isWeekend ? ", weekend" : ""}) | Time: ${n.time} (${n.timeOfDay}) | Local ISO: ${n.iso}`);
-  lines.push(`Goal: ${brain.goal}`);
-  lines.push(`Targets — ${brain.targets.calories}kcal | P${brain.targets.protein}g C${brain.targets.carbs}g F${brain.targets.fat}g | water ${brain.targets.waterMl}ml`);
-  if (brain.plan) {
-    lines.push(`Plan: ${brain.plan.split} | Today: ${brain.plan.todayLabel} | Tomorrow (${brain.plan.tomorrowName}): ${brain.plan.tomorrowLabel} | Training days: ${brain.plan.trainingDays.join(", ")}`);
-  }
-
-  // ─── ABOUT THE USER (profile + strategy) ─────────────────────────────────
-  // These are facts the user has explicitly told their coach. Reference and respect them.
-  const p = brain.profile || {};
-  const s = brain.strategy || {};
-  const profileBits = [];
-  if (p.sex) profileBits.push(p.sex);
-  if (p.age) profileBits.push(`${p.age}y`);
-  if (p.heightCm) profileBits.push(`${p.heightCm}cm`);
-  if (p.weightKg) profileBits.push(`${p.weightKg}kg`);
-  if (p.trainingExp) profileBits.push(`${p.trainingExp} lifter`);
-  const hasProfile = profileBits.length || p.injuries || p.allergies || p.equipment || p.preferences || p.lifeContext || p.liftingBackground;
-  if (hasProfile) {
-    lines.push("");
-    lines.push("== ABOUT THE USER ==");
-    if (profileBits.length) lines.push(`Body: ${profileBits.join(", ")}`);
-    if (p.liftingBackground) lines.push(`Lifting background (historical, not current strategy):\n${p.liftingBackground}`);
-    if (p.injuries) lines.push(`Injuries / limitations: ${p.injuries}  ← respect these. Avoid suggesting movements that conflict.`);
-    if (p.allergies) lines.push(`Food allergies / restrictions: ${p.allergies}  ← never recommend foods on this list.`);
-    if (p.equipment) lines.push(`Equipment access: ${p.equipment}`);
-    if (p.preferences) lines.push(`Preferences: ${p.preferences}`);
-    if (p.lifeContext) lines.push(`Current life context: ${p.lifeContext}  ← factor this into expectations and advice.`);
-  }
-  const hasStrategy = s.phase || s.focus || s.blockStarted || s.notes;
-  if (hasStrategy) {
-    lines.push("");
-    lines.push("== CURRENT STRATEGY ==");
-    const bits = [];
-    if (s.phase) bits.push(`Phase: ${s.phase}`);
-    if (s.focus) bits.push(`Focus: ${s.focus}`);
-    if (s.blockStarted && s.blockWeeks) {
-      // Compute which week of the block we're in
-      const startMs = new Date(s.blockStarted + "T00:00:00").getTime();
-      const weeksIn = Math.max(1, Math.floor((Date.now() - startMs) / (7 * 86400000)) + 1);
-      bits.push(`Block: week ${weeksIn} of ${s.blockWeeks}`);
-    } else if (s.blockStarted) {
-      bits.push(`Block started: ${s.blockStarted}`);
-    }
-    if (bits.length) lines.push(bits.join(" | "));
-    if (s.notes) lines.push(`Strategy notes: ${s.notes}`);
-    lines.push(`Evaluate progress AGAINST this strategy — not in a vacuum.`);
-  }
-
-  // ─── TODAY SO FAR ─────────────────────────────────────────────────────────
-  lines.push("");
-  lines.push(`== TODAY SO FAR (${n.date} only — counts ONLY events dated ${n.date}, never yesterday) ==`);
-  lines.push(`Nutrition consumed today: ${tp.cal}/${brain.targets.calories} kcal (${tp.calRemaining >= 0 ? tp.calRemaining + " remaining today" : Math.abs(tp.calRemaining) + " OVER today's target"}) | P ${tp.protein}/${brain.targets.protein}g (${tp.pRemaining > 0 ? tp.pRemaining + "g to go" : "hit"}) | C ${tp.carbs}g | F ${tp.fat}g`);
-  lines.push(`Water today: ${tp.waterMl}/${brain.targets.waterMl}ml (${tp.waterRemainingMl > 0 ? tp.waterRemainingMl + "ml to go" : "hit"})`);
-  if (tp.supplements.length) lines.push(`Supplements today: ${tp.supplements.join(", ")}`);
-  if (tp.sleep) lines.push(`Slept last night: ${tp.sleep.duration}h (${tp.sleep.quality})${tp.sleep.bedtime ? `, ${tp.sleep.bedtime}→${tp.sleep.wakeTime}` : ""}`);
-  else if (tp.yesterdaySleep) lines.push(`Most recent sleep log: ${tp.yesterdaySleep.duration}h (${tp.yesterdaySleep.quality}) — note: nothing logged for last night yet`);
-  if (tp.workoutLogged) lines.push(`✓ Workout logged today`);
-  if (tp.sportLogged) lines.push(`✓ Sport logged today`);
-  if (tp.lastMealTime) lines.push(`Last meal today: ${tp.lastMealTime}${tp.hoursSinceLastMeal != null ? ` (${tp.hoursSinceLastMeal}h ago)` : ""}`);
-  else lines.push(`No meals logged for today yet.`);
-
-  // ─── KEY SIGNALS — ranked top priorities, then the rest grouped by tier ─────
-  const topInsights = brain.topInsights || [];
-  const topTexts = new Set(topInsights.map(i => i.text));
-  const rest = brain.insights.filter(i => !topTexts.has(i.text));
-  const critical = rest.filter(i => i.priority === "critical");
-  const important = rest.filter(i => i.priority === "important");
-  const notable = rest.filter(i => i.priority === "notable");
-  if (topInsights.length || critical.length || important.length || notable.length) {
-    lines.push("");
-    lines.push("== KEY SIGNALS ==");
-    if (topInsights.length) {
-      lines.push("TOP PRIORITIES (ranked highest-leverage first — lead with #1 unless the user asks about something else):");
-      topInsights.forEach((i, n) => lines.push(`  ${n + 1}. ${i.text}`));
-    }
-    if (critical.length) {
-      lines.push("Other CRITICAL (address even if not asked):");
-      critical.forEach(i => lines.push("  • " + i.text));
-    }
-    if (important.length) {
-      lines.push("Other IMPORTANT (lead with if relevant):");
-      important.forEach(i => lines.push("  • " + i.text));
-    }
-    if (notable.length) {
-      lines.push("Notable (mention if the user's question is in this area):");
-      notable.forEach(i => lines.push("  • " + i.text));
-    }
-  }
-
-  // ─── WINS — what's going well, reinforce when natural ────────────────────
-  if (brain.wins?.length) {
-    lines.push("");
-    lines.push("== WINS (acknowledge briefly when relevant, don't force) ==");
-    brain.wins.forEach(w => lines.push("  ✓ " + w));
-  }
-
-  // ─── 7-DAY OVERVIEW ───────────────────────────────────────────────────────
-  lines.push("");
-  lines.push("== 7-DAY OVERVIEW ==");
-  lines.push(`Calories: ${w.avgCal ?? "—"} avg (target ${brain.targets.calories}) across ${w.daysLogged} logged days${w.calorieTrend != null ? ` | trend vs prev wk: ${w.calorieTrend > 0 ? "+" : ""}${w.calorieTrend}kcal/day` : ""}`);
-  lines.push(`Protein: ${w.avgProtein ?? "—"}g avg, hit goal ${w.proteinHitDays}/${w.daysLogged} days`);
-  lines.push(`Sleep: ${w.avgSleep ?? "—"}h avg, debt ${w.sleepDebt}h${w.avgBedtime ? ` | avg bedtime ${w.avgBedtime}, wake ${w.avgWakeTime}` : ""}`);
-  if (w.wkdayAvgSleep != null && w.wkendAvgSleep != null) {
-    lines.push(`  Weekday sleep ${w.wkdayAvgSleep}h vs weekend ${w.wkendAvgSleep}h`);
-  }
-  if (w.trainNightSleep != null && w.restNightSleep != null) {
-    lines.push(`  Sleep on training nights ${w.trainNightSleep}h vs rest nights ${w.restNightSleep}h`);
-  }
-  if (w.avgFirstMeal && w.avgLastMeal) {
-    lines.push(`Meal timing: avg first meal ${w.avgFirstMeal}, avg last meal ${w.avgLastMeal} (eating window ~${meanGap(w.avgFirstMeal, w.avgLastMeal)}h)`);
-  }
-  lines.push(`Training: ${w.sessions} sessions | ${w.volumeKg.toLocaleString()}kg volume${w.volumeTrend != null ? ` (${w.volumeTrend > 0 ? "+" : ""}${w.volumeTrend.toLocaleString()}kg vs prev wk)` : ""} | ${w.consecutiveTrained}-day streak | ${w.daysSinceLastRest} days since rest`);
-  if (w.avgRPE != null) lines.push(`Avg session RPE (last 7d): ${w.avgRPE}/10`);
-  if (w.avgWaterMl != null) lines.push(`Water: ${w.avgWaterMl}ml/day avg`);
-  if (w.recentPRs.length) lines.push(`Recent PRs: ${w.recentPRs.slice(0, 3).map(p => `${p.name} ${p.weight}${p.unit}×${p.reps} on ${p.date}`).join("; ")}`);
-  lines.push(`Logging streak: ${w.streak} day${w.streak === 1 ? "" : "s"}`);
-
-  // ─── BODYWEIGHT ───────────────────────────────────────────────────────────
-  if (brain.weight) {
-    const wt = brain.weight;
-    lines.push("");
-    lines.push("== BODYWEIGHT (trend weight is the smoothed line — it reflects real tissue change; the raw daily number is mostly water/glycogen/gut) ==");
-    const rateStr = wt.ratePerWeekG != null
-      ? `${wt.ratePerWeekG > 0 ? "+" : ""}${wt.ratePerWeekG}g/wk${wt.pctBWPerWeek != null ? ` (${wt.pctBWPerWeek > 0 ? "+" : ""}${wt.pctBWPerWeek}%BW/wk)` : ""}`
-      : "rate not yet estimable";
-    lines.push(`Trend weight: ${wt.current}kg | latest scale: ${wt.latestRaw}kg (${wt.latestDate}) | ${wt.nDays} weigh-ins over ${wt.spanDays}d | confidence: ${wt.confidence}`);
-    lines.push(`Direction: ${wt.direction} — ${rateStr}`);
-    if (Math.abs(wt.divergence) >= 0.6) {
-      lines.push(`Note: latest scale reading is ${wt.divergence > 0 ? "above" : "below"} the trend by ${Math.abs(wt.divergence)}kg — likely water/glycogen, not real tissue change. Judge progress by the trend, not the daily number.`);
-    }
-    lines.push(`Use the TREND weight + rate for any energy-balance reasoning.${wt.confidence === "Low" ? " Confidence is Low (few weigh-ins) — treat the rate as provisional and avoid strong conclusions." : ""}`);
-  }
-
-  // ─── PROTEIN DISTRIBUTION (MPS) ───────────────────────────────────────────
-  if (brain.proteinDist) {
-    const pd = brain.proteinDist;
-    lines.push("");
-    lines.push("== PROTEIN DISTRIBUTION / MPS (distribution is a SEPARATE lever from daily total — 3–5 feedings each crossing the per-meal threshold beats the same protein skewed into 1–2 meals) ==");
-    lines.push(`Per-meal MPS threshold: ~${pd.perMeal}g (${pd.bw ? `0.4g/kg × ${pd.bw}kg` : "default — no bodyweight set"}) | avg effective feedings/day: ${pd.avgEffective} (target 3–5) | avg daily protein: ${pd.avgProtein}g${pd.proteinGoal ? ` (goal ${pd.proteinGoal}g, hit ${pd.goalHitDays}/${pd.daysWithMeals}d)` : ""} | confidence: ${pd.confidence}`);
-    if (pd.avgSkew != null) lines.push(`Skew: ~${pd.avgSkew}% of daily protein in the single biggest meal${pd.avgLargestGap != null ? ` | avg largest gap between feedings: ${pd.avgLargestGap}h` : ""}`);
-    if (pd.preEligibleDays >= 1) lines.push(`Pre-sleep protein: ${pd.preOKDays}/${pd.preEligibleDays} nights had a ≥20g feeding within 3h of bedtime`);
-    lines.push(`When advising on protein, treat DISTRIBUTION (per-meal dose + timing) separately from total grams — if the total is already met, the lever is spreading it, not "eat more protein".${pd.confidence === "Low" ? " Confidence Low (few logged days) — keep it gentle." : ""}`);
-  }
-
-  // ─── RECOVERY ─────────────────────────────────────────────────────────────
-  if (brain.recovery) {
-    const rc = brain.recovery;
-    const vlabel = rc.verdict === "go" ? "good to train" : rc.verdict === "caution" ? "train with caution" : "rest";
-    lines.push("");
-    lines.push("== RECOVERY (today's training readiness) ==");
-    lines.push(`Verdict: ${vlabel} | readiness: ${rc.readiness}/100 | plan today: ${rc.plannedToday ? rc.todayLabel : "rest day"}`);
-    if (rc.limiter) {
-      lines.push(`#1 LIMITER right now: ${rc.limiter.label}${rc.limiter.topReason ? ` — ${rc.limiter.topReason}` : ""}. If recovery comes up, name THIS specific bottleneck rather than generic "rest more" advice.`);
-      const others = (rc.topNeg || []).filter(t => t !== rc.limiter.topReason).slice(0, 3);
-      if (others.length) lines.push(`Other drags on recovery: ${others.join("; ")}`);
-    } else {
-      lines.push(`Nothing is meaningfully limiting recovery right now — fine to train as planned.`);
-    }
-  }
-
-  // ─── SLEEP (the intelligence engine — three axes + cross-domain coupling) ──
-  if (brain.sleepIntel) {
-    const sl = brain.sleepIntel;
-    const q = sl.quantity, r = sl.regularity, c = sl.continuity;
-    lines.push("");
-    lines.push("== SLEEP (modelled as 3 separate problems: quantity vs the user's OWN need, regularity/timing, and continuity/quality — never assume 8h is their target) ==");
-    lines.push(`Personal sleep need: ${sl.need.hours}h (${sl.need.source}${sl.need.source === "learned" ? `, from ${sl.need.nGood} best nights` : ""}) | overall confidence: ${sl.confidence}`);
-    lines.push(`Quantity: avg ${q.avgTST7 ?? "—"}h asleep/night (7d) vs ${q.need}h need — ${q.label}${q.debt7 > 0.5 ? `, ~${q.debt7}h debt this week` : ""}`);
-    if (r.status) lines.push(`Regularity: ${r.label} (mid-sleep varies ±${r.midSD}min${r.socialJetlag != null ? `, social jetlag ${r.socialJetlag}h` : ""})${r.anchorWake ? ` | their anchor wake time ≈ ${r.anchorWake}` : ""}`);
-    if (c.status) lines.push(`Continuity/quality: ${c.label}${c.avgEff != null ? ` (efficiency ${c.avgEff}%)` : ""}${c.avgLatency != null ? `, ~${c.avgLatency}min to fall asleep` : ""}${c.unrefreshing ? " — UNREFRESHING-SLEEP flag (enough hours, poor quality; possible disorder — encourage a clinician check, do NOT diagnose)" : ""}`);
-    if (sl.coupling.length) {
-      lines.push(`How sleep is shaping the rest of their body (correlations from their own data — never state as proven causation):`);
-      sl.coupling.forEach(co => lines.push(`  • ${co.text}`));
-    }
-    if (sl.topLever) lines.push(`Biggest sleep lever right now: ${sl.topLever.text}`);
-    if (brain.sleepScreen?.risk && brain.sleepScreen.risk.band !== "low") {
-      const sk = brain.sleepScreen.risk;
-      lines.push(`Sleep screen flagged: ${sk.osaCluster ? "possible OSA cluster; " : ""}${sk.insomniaCluster ? "insomnia pattern (CBT-I-treatable); " : ""}${sk.rls ? "restless-legs symptoms; " : ""}worth a clinician conversation. Reference supportively if sleep comes up; never diagnose.`);
-    }
-    lines.push(`SLEEP COACHING RULES: Treat the three axes as separate levers. If total sleep is fine but timing is irregular, the fix is regularity, not "sleep more". Anchor a fixed wake time as the #1 move. Do not chase sleep-stage/deep-sleep numbers (unreliable). Under a deficit, frame sleep as a muscle-retention tool.`);
-  }
-
-  // ─── ENERGY BALANCE / ADAPTIVE TDEE ───────────────────────────────────────
-  if (brain.energy) {
-    const en = brain.energy;
-    lines.push("");
-    if (!en.ready) {
-      lines.push("== ENERGY BALANCE / TDEE ==");
-      lines.push(`Not enough data to measure maintenance yet: ${en.reason} Do NOT estimate their TDEE from a formula or guess — say it's still being measured from their logs.`);
-    } else {
-      lines.push("== ENERGY BALANCE / TDEE (measured from their OWN intake + weight trend — this is real, not a Mifflin estimate) ==");
-      lines.push(`Measured maintenance: ~${en.tdee} kcal/day | confidence: ${en.confidence} (${en.loggedDays} logged days, ${Math.round(en.completeness * 100)}% complete) | their target: ${en.currentTarget ?? "—"}`);
-      lines.push(`At ~${en.meanIntake} kcal/day they're in a real ${en.realDelta < 0 ? `deficit of ~${Math.abs(en.realDelta)}` : en.realDelta > 0 ? `surplus of ~${en.realDelta}` : "neutral balance"}/day | trend weight ${en.weightRateKgWk > 0 ? "+" : ""}${en.weightRateKgWk}kg/wk | suggested intake for ${en.intent}: ~${en.recommendedIntake}`);
-      if (en.underLogging) lines.push(`⚠ UNDER-LOGGING SUSPECTED: measured maintenance is implausibly low — their food logs are probably incomplete. Gently flag this; don't trust the deficit until logging tightens.`);
-      if (en.plateau) lines.push(`PLATEAU: fat loss has stalled despite an apparent deficit — adaptation or under-logging. Reference this if they ask why the scale isn't moving.`);
-      lines.push(`Use the MEASURED maintenance (not formulas) for any calorie-target advice. If their target and measured maintenance disagree, trust the measured number. Confidence ${en.confidence} — ${en.confidence === "Low" ? "treat as provisional and say so" : "solid enough to act on"}.`);
-    }
-  }
-
-  // ─── TRAINING INTELLIGENCE (per-lift progression + per-muscle weekly volume) ─
-  if (brain.training) {
-    const tr = brain.training;
-    lines.push("");
-    lines.push("== TRAINING (progression = est-1RM trend per lift; volume = working sets/muscle/week. Progressive overload + weekly volume are the two evidence-based drivers. MEV/MAV/MRV landmark numbers are soft heuristics — guide with them, don't dictate) ==");
-    if (tr.progression.lifts.length) {
-      lines.push(`Lift progression (8wk): ${tr.progression.lifts.map(l => `${l.name} ${l.status}${l.status === "progressing" ? ` +${l.slopePct}%/wk` : ""} (~${l.e1rmNow}kg)`).join("; ")}`);
-      if (tr.progression.stalls.length) lines.push(`STALLED/REGRESSING — needs a variable changed: ${tr.progression.stalls.map(l => l.name).join(", ")}. Suggest concrete fixes (add a set, change rep range + load, or deload), not generic "push harder".`);
-    } else {
-      lines.push(`Not enough repeated sessions yet to trend any single lift (need a lift logged 3+ times over 2+ weeks).`);
-    }
-    if (tr.week.trained.length) {
-      lines.push(`This week's volume (working sets, fractional for secondary): ${tr.week.sortedVol.map(m => `${m.label} ${m.sets}`).join(", ")} — ${tr.week.sessions} sessions.`);
-      if (tr.week.neglected.length) lines.push(`Under-trained majors (<6 sets): ${tr.week.neglected.join(", ")}.`);
-      if (tr.week.imbalances.length) lines.push(`Imbalance: ${tr.week.imbalances[0]}.`);
-    }
-    if (tr.week.unmapped.length) lines.push(`Couldn't map these lifts to muscles (name didn't match): ${tr.week.unmapped.slice(0, 5).join(", ")} — their volume isn't counted, so don't claim total-body volume is complete.`);
-    lines.push(`TRAINING COACHING RULES: For a stall, the fix is a changed variable, not more effort. ~10–20 hard sets/muscle/week is the rough productive range for growth; treat it as guidance, not law. Volume landmarks are individual.`);
-  }
-
-  // ─── PERSONAL METRIC (EJAC) — neutral data only, with guardrails ──────────
-  if (brain.ejac) {
-    const e = brain.ejac;
-    lines.push("");
-    lines.push("== PERSONAL METRIC (EJAC) — private behavioral tracker ==");
-    lines.push(`Last 7d: ${e.last7} sessions | last 30d: ${e.last30} (avg ${e.avgPerDay30}/day) | porn ${e.pornPct30}% | gooning ${e.goonPct30}%`);
-    lines.push(`GUARDRAILS: This is a neutral self-tracked metric. Only discuss it if the user explicitly raises it. Do NOT moralize, pathologize, judge, congratulate, shame, or give unsolicited health/behavioral advice about it. If the user asks, report the numbers factually and matter-of-factly.`);
-  }
-
-  // ─── NICOTINE ─────────────────────────────────────────────────────────────
-  if (brain.nicotine) {
-    const nic = brain.nicotine;
-    lines.push("");
-    lines.push("== NICOTINE ==");
-    lines.push(`Today: ${nic.today} entries | 7-day: ${nic.last7} entries (${nic.avg7}/day) | 30-day: ${nic.last30} entries`);
-    lines.push(`Est. nicotine load: ${nic.mg7}mg/day (7d), ${nic.mg30}mg/day (30d)`);
-    const typeBits = Object.entries(nic.types).filter(([, v]) => v > 0).map(([t, v]) => `${t} ${v}`);
-    if (typeBits.length) lines.push(`Type mix (30d): ${typeBits.join(", ")}`);
-    if (nic.topContexts.length) lines.push(`Common triggers: ${nic.topContexts.join(", ")}`);
-    if (nic.plannedSessions.length) {
-      lines.push(`PLANNED sessions (user told you in advance — treat as EXPECTED, do NOT nag about these; instead help protect training/sleep around them):`);
-      nic.plannedSessions.forEach(p => {
-        const d = new Date(p.when);
-        lines.push(`  • ${p.label} — ${d.toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`);
-      });
-    }
-    lines.push(`NICOTINE COACHING RULES: The user is NOT trying to quit (maybe reduce). Do not lecture or push abstinence. Your job is timing guidance — help them keep intake away from the ~1-2h before training, the post-workout recovery window, and the 1-2h before sleep, since those are when it most blunts gains and recovery. When you cite effects on their data, be honest these are correlations not proven causation. Never invent precise figures like "X% of gains lost".`);
-  }
-
-  // ─── JOURNAL — the user's own words, the context behind the numbers ───
-  if (brain.journal?.length) {
-    lines.push("");
-    lines.push("== JOURNAL (recent notes in the user's own words — use these for context; reference them naturally when relevant, e.g. how they've been feeling, life stress, injuries, what they tried) ==");
-    brain.journal.forEach(e => lines.push(`[${e.date}] ${e.text}`));
-    lines.push(`(These are personal reflections. Weigh them alongside the data — if they wrote they're stressed or hurt, factor that into recovery expectations. Don't quote them back verbatim unless it helps; weave the context in.)`);
-  }
-
-
-  // ─── DAY-BY-DAY TIMELINES — the chronological "map" the user asked for ───
-  // For each of the last 7 days, list every event in order. Lets the model
-  // see meal-to-workout gaps, late dinners, training-after-poor-sleep, etc.
-  if (brain.timelines?.length) {
-    lines.push("");
-    lines.push("== DAY-BY-DAY TIMELINE (last 7 days, chronological) ==");
-    lines.push("Each day shows events as they happened. Look for cross-category patterns: meal timing vs sleep, training vs energy intake, water gaps, etc.");
-    brain.timelines.forEach(day => {
-      if (!day.events.length) {
-        lines.push(`${day.date} (${day.dayName}): no logs`);
-        return;
-      }
-      lines.push(`${day.date} (${day.dayName}):`);
-      day.events.forEach(e => {
-        lines.push(`  ${e.t}  ${e.text}`);
-      });
-    });
-  }
-
-  return lines.join("\n");
-}
 
 // Compute hours between two HH:MM times (last minus first), wrapping over midnight is not an issue here
 // since first/last meal of a day are by definition same-day.
-function meanGap(first, last) {
-  const m1 = /^(\d{1,2}):(\d{2})/.exec(first);
-  const m2 = /^(\d{1,2}):(\d{2})/.exec(last);
-  if (!m1 || !m2) return "?";
-  const mins = (+m2[1] * 60 + +m2[2]) - (+m1[1] * 60 + +m1[2]);
-  return Math.max(0, +(mins / 60).toFixed(1));
-}
 
 // ─── COACHING PRINCIPLES ──────────────────────────────────────────────────────
 // The opinionated philosophy injected into every AI system prompt. This is what
@@ -5718,6 +4286,265 @@ function Onboarding({ onDone }) {
   );
 }
 
+// ─── SKIN INTELLIGENCE SECTION ──────────────────────────────────────────────
+const SKIN_CONDITION = [{ v: 1, l: "Poor" }, { v: 2, l: "Fair" }, { v: 3, l: "OK" }, { v: 4, l: "Good" }, { v: 5, l: "Great" }];
+const SKIN_PHOTO_KEY = "fitlog_skin_photos"; // local-only, never synced to the cloud blob (face photos are sensitive)
+
+function SkinLogForm({ onAdd, recent }) {
+  const [form, setForm] = useState({ date: getTodayStr(), condition: 4, breakouts: "", concern: "", notes: "" });
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  function save() {
+    onAdd({ date: form.date, condition: form.condition, breakouts: form.breakouts === "" ? 0 : Math.max(0, parseInt(form.breakouts) || 0), concern: form.concern.trim(), notes: form.notes.trim(), id: Date.now() });
+    toast("✦ Skin logged");
+    setForm(f => ({ ...f, breakouts: "", notes: "" }));
+  }
+  return (
+    <>
+      <Card title="Log skin" action={<input type="date" className="sleep-date" value={form.date} onChange={e => set("date", e.target.value)} />}>
+        <div className="sleep-field-label">How's your skin today?</div>
+        <div className="sleep-q-chips">
+          {SKIN_CONDITION.map(c => (
+            <button key={c.v} className={`sleep-q-chip ${form.condition === c.v ? "on" : ""}`} onClick={() => { set("condition", c.v); haptic(8); }}>{c.l}</button>
+          ))}
+        </div>
+        <div className="field-grid" style={{ marginTop: 14 }}>
+          <label>Active breakouts<input type="number" inputMode="numeric" value={form.breakouts} onChange={e => set("breakouts", e.target.value)} placeholder="e.g. 2" /></label>
+          <label>Main concern<input type="text" value={form.concern} onChange={e => set("concern", e.target.value)} placeholder="jawline, redness…" /></label>
+        </div>
+        <label>Notes<textarea value={form.notes} onChange={e => set("notes", e.target.value)} placeholder="Anything notable — new product, flare, period…" rows={2} /></label>
+        <button className="btn full" onClick={save}>Save skin log</button>
+      </Card>
+      <RecentList entries={recent} render={s => <><span className="ra-main">{(SKIN_CONDITION.find(c => c.v === s.condition) || {}).l || s.condition}{s.breakouts ? ` · ${s.breakouts} breakout${s.breakouts > 1 ? "s" : ""}` : ""}</span><span className="ra-date">{formatShortDate(s.date)}</span></>} />
+    </>
+  );
+}
+
+function SkinRoutineCard({ goals, onSaveGoals, conflicts }) {
+  const routine = goals.skinRoutine || { am: [], pm: [] };
+  const [adding, setAdding] = useState(null); // "am" | "pm" | null
+  const [val, setVal] = useState("");
+  function addStep(slot) {
+    if (!val.trim()) return;
+    const next = { ...routine, [slot]: [...(routine[slot] || []), { product: val.trim() }] };
+    onSaveGoals({ ...goals, skinRoutine: next });
+    setVal(""); setAdding(null); haptic(8);
+  }
+  function removeStep(slot, i) {
+    const next = { ...routine, [slot]: routine[slot].filter((_, idx) => idx !== i) };
+    onSaveGoals({ ...goals, skinRoutine: next });
+  }
+  const Col = ({ slot, label }) => (
+    <div className="skin-routine-col">
+      <div className="skin-routine-head">{label}</div>
+      {(routine[slot] || []).map((s, i) => (
+        <div key={i} className="skin-routine-step"><span>{s.product}</span><button className="skin-x" onClick={() => removeStep(slot, i)}>×</button></div>
+      ))}
+      {adding === slot ? (
+        <div className="row" style={{ marginTop: 6 }}>
+          <input autoFocus value={val} onChange={e => setVal(e.target.value)} onKeyDown={e => e.key === "Enter" && addStep(slot)} placeholder="Product name" />
+          <button className="btn" onClick={() => addStep(slot)}>Add</button>
+        </div>
+      ) : (
+        <button className="skin-add-step" onClick={() => { setAdding(slot); setVal(""); }}>+ Add product</button>
+      )}
+    </div>
+  );
+  return (
+    <Card title="Routine" sub="Tag products so FitLog can flag conflicts">
+      <div className="skin-routine-grid"><Col slot="am" label="☀ AM" /><Col slot="pm" label="☾ PM" /></div>
+      {conflicts.length > 0 && (
+        <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+          {conflicts.map((c, i) => <div key={i} className="sleep-flag">⚠ {c}</div>)}
+        </div>
+      )}
+      {conflicts.length === 0 && (routine.am.length + routine.pm.length > 0) && <p className="muted small" style={{ marginTop: 10 }}>No conflicts detected in your current actives.</p>}
+    </Card>
+  );
+}
+
+function SkinExperimentCard({ data, goals, onSaveGoals }) {
+  const exp = goals.skinExperiment;
+  const skin = useMemo(() => computeSkin(data, goals), [data, goals]);
+  function start(name) {
+    onSaveGoals({ ...goals, skinExperiment: { name: name || "New product", startDate: getTodayStr(), weeks: 8, baseline: skin?.avgCond14 ?? null } });
+    toast("🧪 Skin experiment started");
+  }
+  function end() { onSaveGoals({ ...goals, skinExperiment: null }); toast("Experiment ended"); }
+  const [name, setName] = useState("");
+  if (!exp) {
+    return (
+      <Card title="🧪 Run a skin experiment" sub="One variable, 8–12 weeks — skin is slow, so isolate the change">
+        <div className="row">
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="What are you testing? (e.g. azelaic acid)" />
+          <button className="btn" onClick={() => start(name)}>Start</button>
+        </div>
+        <p className="muted small" style={{ marginTop: 8, lineHeight: 1.5 }}>FitLog snapshots your current skin rating as a baseline, tracks physiology alongside (so a win isn't just a good-sleep month), and tells you to hold everything else steady. Give it the full window — cell turnover is ~6–8 weeks.</p>
+      </Card>
+    );
+  }
+  const daysIn = Math.max(0, Math.round((Date.now() - new Date(exp.startDate + "T00:00:00").getTime()) / 86400000));
+  const now = skin?.avgCond14 ?? null;
+  const delta = (now != null && exp.baseline != null) ? +(now - exp.baseline).toFixed(1) : null;
+  return (
+    <Card title={`🧪 Testing: ${exp.name}`} sub={`Day ${daysIn} of ~${exp.weeks * 7} · hold everything else steady`}>
+      <div className="rt-bar" style={{ margin: "4px 0 12px" }}><div className="rt-bar-fill" style={{ width: `${Math.min(100, (daysIn / (exp.weeks * 7)) * 100)}%` }} /></div>
+      <div className="eb-grid">
+        <div className="eb-cell"><span className="eb-l">Baseline</span><span className="eb-v">{exp.baseline ?? "—"}</span></div>
+        <div className="eb-cell"><span className="eb-l">Now</span><span className="eb-v">{now ?? "—"}{delta != null ? <span className={delta >= 0 ? "good" : "bad"} style={{ fontSize: 12 }}> {delta >= 0 ? "+" : ""}{delta}</span> : ""}</span></div>
+        <div className="eb-cell"><span className="eb-l">Weeks left</span><span className="eb-v">{Math.max(0, exp.weeks - Math.floor(daysIn / 7))}</span></div>
+      </div>
+      <p className="muted small" style={{ marginTop: 10, lineHeight: 1.5 }}>{daysIn < exp.weeks * 7 - 14 ? "Too early to judge — keep going and don't change anything else." : "Enough time has passed to read the result."}</p>
+      <button className="btn-ghost full" style={{ marginTop: 8 }} onClick={end}>End experiment</button>
+    </Card>
+  );
+}
+
+function SkinResearchStore({ data, addEntry, deleteEntry }) {
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ title: "", text: "", tags: "" });
+  const research = (data.skinResearch || []).slice().reverse();
+  function save() {
+    if (!form.title.trim() && !form.text.trim()) return;
+    addEntry("skinResearch")({ id: Date.now(), date: getTodayStr(), title: form.title.trim(), text: form.text.trim(), tags: form.tags.split(",").map(t => t.trim()).filter(Boolean) });
+    setForm({ title: "", text: "", tags: "" }); setOpen(false); toast("✦ Research saved");
+  }
+  return (
+    <Card title="Research notes" sub="Paste studies & findings — the coach reads these">
+      {open ? (
+        <div className="stack">
+          <input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} placeholder="Title (e.g. Azelaic acid for PIH)" />
+          <textarea value={form.text} onChange={e => setForm(f => ({ ...f, text: e.target.value }))} placeholder="Key finding / notes…" rows={3} />
+          <input value={form.tags} onChange={e => setForm(f => ({ ...f, tags: e.target.value }))} placeholder="tags, comma separated (acne, retinoid…)" />
+          <div className="row"><button className="btn-ghost flex" onClick={() => setOpen(false)}>Cancel</button><button className="btn flex" onClick={save}>Save</button></div>
+        </div>
+      ) : (
+        <button className="btn full" onClick={() => setOpen(true)}>+ Add research note</button>
+      )}
+      {research.length > 0 && (
+        <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+          {research.map(r => (
+            <div key={r.id} className="skin-research-item">
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600, fontSize: ".9rem" }}>{r.title || "Untitled"}</div>
+                {r.text && <div className="muted small" style={{ marginTop: 2, lineHeight: 1.4 }}>{r.text.length > 140 ? r.text.slice(0, 140) + "…" : r.text}</div>}
+                {r.tags?.length > 0 && <div className="skin-tags">{r.tags.map((t, i) => <span key={i} className="skin-tag">{t}</span>)}</div>}
+              </div>
+              <button className="skin-x" onClick={() => deleteEntry("skinResearch")(r.id)}>×</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function SkinPhotos() {
+  const [photos, setPhotos] = useState([]);
+  const [compare, setCompare] = useState(false);
+  useEffect(() => {
+    try { const raw = localStorage.getItem(SKIN_PHOTO_KEY); if (raw) setPhotos(JSON.parse(raw)); } catch { /* ignore */ }
+  }, []);
+  function persist(next) { setPhotos(next); try { localStorage.setItem(SKIN_PHOTO_KEY, JSON.stringify(next)); } catch { toast("Couldn't save photo (storage full)"); } }
+  async function onFile(e) {
+    const file = e.target.files?.[0]; if (!file) return;
+    try {
+      const { base64, mediaType } = await fileToResizedBase64(file, 900, 0.8);
+      const next = [...photos, { id: Date.now(), date: getTodayStr(), url: `data:${mediaType};base64,${base64}` }];
+      persist(next); toast("✦ Photo saved (stays on this device)");
+    } catch { toast("Couldn't process that image"); }
+    e.target.value = "";
+  }
+  function remove(id) { persist(photos.filter(p => p.id !== id)); }
+  const sorted = [...photos].sort((a, b) => a.date.localeCompare(b.date));
+  return (
+    <Card title="Progress photos" sub="Side-by-side over time — stays on this device only" action={sorted.length >= 2 ? <button className="link-btn" onClick={() => setCompare(c => !c)}>{compare ? "Grid" : "Compare"}</button> : null}>
+      {compare && sorted.length >= 2 ? (
+        <div className="skin-compare">
+          <div className="skin-compare-cell"><img src={sorted[0].url} alt="earliest" /><span className="muted small">{formatShortDate(sorted[0].date)}</span></div>
+          <div className="skin-compare-cell"><img src={sorted[sorted.length - 1].url} alt="latest" /><span className="muted small">{formatShortDate(sorted[sorted.length - 1].date)}</span></div>
+        </div>
+      ) : (
+        <div className="skin-photo-grid">
+          {sorted.map(p => (
+            <div key={p.id} className="skin-photo">
+              <img src={p.url} alt={p.date} />
+              <span className="skin-photo-date">{formatShortDate(p.date)}</span>
+              <button className="skin-photo-x" onClick={() => remove(p.id)}>×</button>
+            </div>
+          ))}
+        </div>
+      )}
+      <label className="btn full" style={{ marginTop: 12, textAlign: "center", cursor: "pointer" }}>
+        + Add photo
+        <input type="file" accept="image/*" capture="user" onChange={onFile} style={{ display: "none" }} />
+      </label>
+      <p className="muted small" style={{ marginTop: 8, lineHeight: 1.45 }}>For useful comparisons: same spot, same light, no makeup, same time of day. FitLog shows the photos honestly — it won't invent "pore counts" or a skin score.</p>
+    </Card>
+  );
+}
+
+function SkinSection({ data, goals, addEntry, deleteEntry, onSaveGoals }) {
+  const skin = useMemo(() => computeSkin(data, goals), [data, goals]);
+  const conflicts = useMemo(() => detectRoutineConflicts(goals.skinRoutine), [goals.skinRoutine]);
+  const log = <SkinLogForm onAdd={addEntry("skin")} recent={data.skin} />;
+
+  return (
+    <div className="skin-scope stack">
+      {log}
+
+      {skin ? (
+        <>
+          <Card>
+            <div className="sleep-need-row">
+              <div>
+                <div className="muted small">Skin condition (14-day avg)</div>
+                <div className="sleep-need-v">{skin.avgCond14 ?? "—"}<span>/5</span></div>
+                <div className="muted small" style={{ marginTop: 2 }}>{skin.condTrend == null ? "building a trend" : skin.condTrend > 0.2 ? "↑ improving" : skin.condTrend < -0.2 ? "↓ slipping" : "→ steady"}{skin.breakouts14 != null ? ` · ~${skin.breakouts14} breakouts/log` : ""}</div>
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <div className="muted small">Confidence</div>
+                <div style={{ fontWeight: 600 }}>{skin.confidence}</div>
+              </div>
+            </div>
+          </Card>
+
+          {skin.topLever && (
+            <Card title="Your biggest skin lever" className="sleep-lever-card">
+              <p className="sleep-lever-text">{skin.topLever.text}</p>
+            </Card>
+          )}
+
+          {skin.correlations.length > 0 && (
+            <Card title="How your body is affecting your skin" sub="patterns from your own data — correlation, not proof">
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                {skin.correlations.map((c, i) => (
+                  <div key={i} className="sleep-couple-row">
+                    <span className="sleep-couple-dot" style={{ background: c.evidence === "strong" ? "var(--good)" : "#f9c97e" }} />
+                    <span className="small" style={{ lineHeight: 1.5 }}>{c.text}</span>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+        </>
+      ) : (
+        <Card title="Skin intelligence">
+          <Empty icon="✦" title="Log your skin for a couple of weeks" hint="Once there's a week or two of entries, FitLog learns how your sleep, nicotine, diet, and stress move your skin — the part no skincare app can see." />
+        </Card>
+      )}
+
+      <SkinRoutineCard goals={goals} onSaveGoals={onSaveGoals} conflicts={conflicts} />
+      <SkinPhotos />
+      <SkinExperimentCard data={data} goals={goals} onSaveGoals={onSaveGoals} />
+      <SkinResearchStore data={data} addEntry={addEntry} deleteEntry={deleteEntry} />
+
+      <p className="muted small" style={{ textAlign: "center", lineHeight: 1.5, padding: "4px 12px" }}>
+        FitLog's skin tools track, correlate, and experiment — they don't diagnose. For persistent acne, suspicious spots, prescription actives, or procedures, see a dermatologist.
+      </p>
+    </div>
+  );
+}
+
 // ─── LOG HUB OVERLAY (the center ＋) ─────────────────────────────────────────
 // Full-screen sheet launched by the raised ＋. Shows logging options grouped by
 // intent; tapping one opens that existing form. Reuses every form component.
@@ -5743,6 +4570,9 @@ function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, setData, 
     { title: "Reflect", items: [
       { key: "journal", label: "Journal", icon: "✎", color: "#9aa8e8" },
     ] },
+    { title: "Skin", items: [
+      { key: "skin", label: "Skin", icon: "✦", color: "#e89ab0" },
+    ] },
   ];
   const labelFor = k => { for (const g of groups) for (const it of g.items) if (it.key === k) return it.label; return "Log"; };
 
@@ -5758,6 +4588,7 @@ function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, setData, 
       case "sleep": return <SleepSection data={data} goals={goals} addEntry={addEntry} onSaveGoals={onSaveGoals} />;
       case "nicotine": return <NicotineTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />;
       case "journal": return <JournalTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} setData={setData} />;
+      case "skin": return <SkinSection data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} onSaveGoals={onSaveGoals} />;
       default: return null;
     }
   };

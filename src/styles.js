@@ -1078,4 +1078,25 @@ input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
 .train-vol-track { height: 8px; background: var(--surface-2); border-radius: 999px; overflow: hidden; }
 .train-vol-fill { height: 100%; border-radius: 999px; transition: width .3s; }
 .train-vol-sets { font-size: .85rem; font-weight: 700; text-align: right; }
+
+/* ─── SKIN INTELLIGENCE SECTION (own visual identity: softer rose accent) ───── */
+.skin-scope { --accent: #e0879f; --accent-dim: rgba(224,135,159,.14); }
+.skin-routine-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.skin-routine-col { background: var(--surface-2); border-radius: 12px; padding: 12px; }
+.skin-routine-head { font-size: .8rem; font-weight: 700; color: var(--text-2); margin-bottom: 8px; }
+.skin-routine-step { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px; background: var(--surface); border-radius: 8px; margin-bottom: 6px; font-size: .82rem; }
+.skin-x { background: none; border: none; color: var(--muted); font-size: 1.1rem; line-height: 1; cursor: pointer; flex: 0 0 auto; padding: 0 2px; }
+.skin-x:active { color: var(--bad); }
+.skin-add-step { background: none; border: 1px dashed var(--border-strong); color: var(--accent); border-radius: 8px; padding: 7px; width: 100%; font-size: .8rem; cursor: pointer; margin-top: 2px; }
+.skin-research-item { display: flex; gap: 10px; align-items: flex-start; background: var(--surface-2); border-radius: 10px; padding: 10px 12px; }
+.skin-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.skin-tag { font-size: .68rem; padding: 2px 8px; border-radius: 999px; background: var(--accent-dim); color: var(--accent); }
+.skin-photo-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.skin-photo { position: relative; aspect-ratio: 3/4; border-radius: 10px; overflow: hidden; background: var(--surface-2); }
+.skin-photo img { width: 100%; height: 100%; object-fit: cover; }
+.skin-photo-date { position: absolute; bottom: 0; left: 0; right: 0; font-size: .62rem; padding: 3px 6px; background: linear-gradient(transparent, rgba(0,0,0,.7)); color: #fff; }
+.skin-photo-x { position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; border-radius: 50%; border: none; background: rgba(0,0,0,.55); color: #fff; font-size: .9rem; line-height: 1; cursor: pointer; }
+.skin-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.skin-compare-cell { display: flex; flex-direction: column; gap: 4px; align-items: center; }
+.skin-compare-cell img { width: 100%; aspect-ratio: 3/4; object-fit: cover; border-radius: 10px; }
 `;
