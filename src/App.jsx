@@ -20,7 +20,7 @@ import { computeRecovery } from "./engines/recovery";
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const TABS = ["Home", "Log", "History", "Coach", "Journal", "Settings", "Ejac"];
 const STORAGE_KEY = "fitlog_v5";
-const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], nicotine: [], nicotinePlans: [], journal: [], weight: [], ejac: [], skin: [], skinResearch: [], skinProcedures: [], plannedSessions: [] };
+const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], nicotine: [], nicotinePlans: [], journal: [], weight: [], ejac: [], skin: [], skinResearch: [], skinProcedures: [], plannedSessions: [], skinRoutineLogs: [], skinProductIntros: [] };
 const defaultProfile = {
   // Body
   sex: "", age: "", heightCm: "", weightKg: "",
@@ -4686,46 +4686,93 @@ function SkinPhotos() {
   );
 }
 
-const SKIN_PROCEDURES = ["Microneedling", "PRP", "Chemical peel", "Laser", "Botox", "Filler", "Facial", "Extraction", "LED therapy", "Other"];
+const SKIN_PROCEDURES = ["Microneedling", "Subcision", "PRP", "Chemical peel", "Laser", "Botox", "Filler", "Facial", "Extraction", "LED therapy", "Other"];
+
+// Educational recovery/prep guidance per procedure. Defers specifics to the provider.
+const PROC_RECOVERY = {
+  Microneedling: { down: "3–5 days", expect: "Redness/flushing 1–2 days, light flaking", avoid: "retinoids, AHA/BHA acids, vitamin C, exfoliation and direct sun for ~3–5 days; no makeup 24h", tip: "Gentle cleanser, bland moisturizer, strict SPF once healed." },
+  Subcision: { down: "1–2 weeks", expect: "Bruising and swelling 1–2 weeks; lumpiness can persist a while", avoid: "actives and harsh products; don't massage unless your provider tells you to", tip: "This is a medical procedure — follow your provider's aftercare exactly. Nicotine slows healing." },
+  PRP: { down: "3–5 days", expect: "Redness, mild swelling/bruising", avoid: "actives and sun ~3–5 days; no vigorous exercise 24–48h", tip: "Gentle care only; follow provider aftercare." },
+  "Chemical peel": { down: "3–7 days (depth-dependent)", expect: "Peeling/flaking days 2–5", avoid: "actives, scrubs, picking the peeling skin, and sun", tip: "Moisturize and let it shed naturally; SPF is critical." },
+  Laser: { down: "5–7 days", expect: "Redness/swelling, possible darkening then peeling", avoid: "actives, heat, sun; strict SPF for weeks", tip: "Follow provider aftercare closely; nicotine impairs healing." },
+  Botox: { down: "~1 day", expect: "Tiny bumps that settle fast; results in 3–7 days", avoid: "lying down/exercise 4h; rubbing the area 24h", tip: "Don't massage the treated muscles." },
+  Filler: { down: "2–5 days", expect: "Swelling/bruising a few days", avoid: "exercise/heat 24–48h; massaging the area", tip: "Follow provider aftercare." },
+  Facial: { down: "~1 day", expect: "Mild redness, especially after extractions", avoid: "actives 24h if extractions were done", tip: "Keep the routine simple right after." },
+  Extraction: { down: "1–2 days", expect: "Redness/marks briefly", avoid: "picking and actives 24h", tip: "Spot-treat; don't squeeze more at home." },
+  "LED therapy": { down: "none", expect: "No downtime", avoid: "nothing major", tip: "Consistency beats intensity here." },
+  Other: { down: "varies", expect: "Depends on the treatment", avoid: "ask your provider what to pause", tip: "Follow the aftercare you were given." },
+};
+
+function ProcGuidance({ type, mode }) {
+  const g = PROC_RECOVERY[type] || PROC_RECOVERY.Other;
+  return (
+    <div className="proc-guide" data-mode={mode}>
+      <div className="proc-guide-h">{mode === "prep" ? "Prep & what to expect" : "Recovery"} · downtime {g.down}</div>
+      <div className="muted small" style={{ lineHeight: 1.5 }}><b>Expect:</b> {g.expect}.<br /><b>Avoid:</b> {g.avoid}.<br /><b>Tip:</b> {g.tip}</div>
+    </div>
+  );
+}
 
 function SkinProceduresCard({ data, addEntry, deleteEntry }) {
   const [type, setType] = useState(null);
   const [form, setForm] = useState({ date: getTodayStr(), provider: "", notes: "" });
-  const procs = (data.skinProcedures || []).slice().sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  const today = getTodayStr();
+  const all = (data.skinProcedures || []).slice().sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  const upcoming = all.filter(p => (p.date || "") > today).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+  const past = all.filter(p => (p.date || "") <= today);
+  const recentDate = daysAgo(10);
   function save() {
     if (!type) return;
     addEntry("skinProcedures")({ id: Date.now(), date: form.date, type, provider: form.provider.trim(), notes: form.notes.trim() });
-    setType(null); setForm({ date: getTodayStr(), provider: "", notes: "" }); toast("✦ Procedure logged");
+    setType(null); setForm({ date: getTodayStr(), provider: "", notes: "" }); toast("✦ Procedure saved");
   }
   return (
-    <Card title="Procedures" sub="Track treatments — the coach can talk you through them">
+    <Card title="Procedures" sub="Log past treatments or plan ahead — pick a future date to plan">
       <div className="skin-proc-chips">
         {SKIN_PROCEDURES.map(p => <button key={p} className={`skin-proc-chip ${type === p ? "on" : ""}`} onClick={() => { setType(t => t === p ? null : p); haptic(8); }}>{p}</button>)}
       </div>
       {type && (
         <div className="stack" style={{ marginTop: 12 }}>
           <div className="field-grid">
-            <label>Date<input type="date" value={form.date} onChange={e => setForm(f => ({ ...f, date: e.target.value }))} /></label>
+            <label>Date (future = planned)<input type="date" value={form.date} onChange={e => setForm(f => ({ ...f, date: e.target.value }))} /></label>
             <label>Provider / clinic<input value={form.provider} onChange={e => setForm(f => ({ ...f, provider: e.target.value }))} placeholder="optional" /></label>
           </div>
           <textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="What was done, settings if you know, how your skin reacted…" rows={2} />
-          <button className="btn full" onClick={save}>Log {type}</button>
+          <button className="btn full" onClick={save}>Save {type}</button>
         </div>
       )}
-      {procs.length > 0 && (
-        <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-          {procs.map(p => (
-            <div key={p.id} className="skin-proc-item">
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 600, fontSize: ".9rem" }}>{p.type}{p.provider ? ` · ${p.provider}` : ""}</div>
-                <div className="muted small">{formatShortDate(p.date)}{p.notes ? ` — ${p.notes}` : ""}</div>
+
+      {upcoming.length > 0 && (
+        <div style={{ marginTop: 14 }}>
+          <div className="skin-section-h">Planned</div>
+          {upcoming.map(p => (
+            <div key={p.id} className="skin-proc-block">
+              <div className="skin-proc-item">
+                <div style={{ flex: 1 }}><div style={{ fontWeight: 600, fontSize: ".9rem" }}>{p.type}{p.provider ? ` · ${p.provider}` : ""}</div><div className="muted small">{formatShortDate(p.date)} · in {Math.max(0, Math.round((new Date(p.date + "T00:00:00") - Date.now()) / 86400000))} days</div></div>
+                <button className="skin-x" onClick={() => deleteEntry("skinProcedures")(p.id)}>×</button>
               </div>
-              <button className="skin-x" onClick={() => deleteEntry("skinProcedures")(p.id)}>×</button>
+              <ProcGuidance type={p.type} mode="prep" />
             </div>
           ))}
         </div>
       )}
-      <p className="muted small" style={{ marginTop: 10, lineHeight: 1.45 }}>FitLog tracks and explains procedures and flags interactions (healing slowed by nicotine, microneedling over an irritated retinoid barrier, etc.). It won't prescribe settings or replace your provider's judgment.</p>
+
+      {past.length > 0 && (
+        <div style={{ marginTop: 14 }}>
+          <div className="skin-section-h">Done</div>
+          {past.map(p => (
+            <div key={p.id} className="skin-proc-block">
+              <div className="skin-proc-item">
+                <div style={{ flex: 1 }}><div style={{ fontWeight: 600, fontSize: ".9rem" }}>{p.type}{p.provider ? ` · ${p.provider}` : ""}</div><div className="muted small">{formatShortDate(p.date)}{p.notes ? ` — ${p.notes}` : ""}</div></div>
+                <button className="skin-x" onClick={() => deleteEntry("skinProcedures")(p.id)}>×</button>
+              </div>
+              {p.date >= recentDate && <ProcGuidance type={p.type} mode="recovery" />}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <p className="muted small" style={{ marginTop: 12, lineHeight: 1.45 }}>Recovery guidance is general and educational — it won't replace your provider's aftercare. Anything that looks off (signs of infection, lasting reactions) goes to your provider.</p>
     </Card>
   );
 }
@@ -4785,15 +4832,100 @@ function SkinCoach({ data, goals }) {
   );
 }
 
-function SkinSection({ data, goals, addEntry, deleteEntry, onSaveGoals }) {
-  const skin = useMemo(() => computeSkin(data, goals), [data, goals]);
-  const conflicts = useMemo(() => detectRoutineConflicts(goals.skinRoutine), [goals.skinRoutine]);
-  const log = <SkinLogForm onAdd={addEntry("skin")} recent={data.skin} />;
+// ─── SKIN TAB COMPONENTS ────────────────────────────────────────────────────
+const PRODUCT_KINDS = [
+  { k: "retinoid", label: "Retinoid" },
+  { k: "acid", label: "Exfoliating acid" },
+  { k: "vitc", label: "Vitamin C" },
+  { k: "other", label: "Other active" },
+];
+const PRODUCT_RAMP = {
+  retinoid: ["Patch test 48h behind the ear", "Weeks 1–2: 2 nights/week, pea-size, buffer with moisturizer", "Weeks 3–4: every other night if no irritation", "Week 5+: nightly as tolerated", "Never the same night as exfoliating acids; always AM SPF"],
+  acid: ["Patch test 48h", "Weeks 1–2: 1–2×/week", "Weeks 3–4: alternate days if tolerated", "Don't stack with a retinoid the same night", "AM SPF is non-negotiable"],
+  vitc: ["Patch test 48h", "Start every other morning", "Build to daily AM use", "Keep separate from benzoyl peroxide", "Store away from light and air"],
+  other: ["Patch test 48h behind the ear", "Introduce just this one product at a time", "Start every other day, watch for irritation", "Give it 4–6 weeks before judging it"],
+};
 
+function skinRoutineAdherence(data) {
+  const days = 14; let am = 0, pm = 0;
+  for (let i = 0; i < days; i++) { const d = daysAgo(i); const l = (data.skinRoutineLogs || []).filter(x => x.date === d); if (l.some(x => x.slot === "am")) am++; if (l.some(x => x.slot === "pm")) pm++; }
+  return { amPct: Math.round((am / days) * 100), pmPct: Math.round((pm / days) * 100) };
+}
+function skinLogStreak(entries) {
+  const has = d => (entries || []).some(e => e.date === d);
+  let s = 0; let i = has(getTodayStr()) ? 0 : 1;
+  for (; i < 90; i++) { if (has(daysAgo(i))) s++; else break; }
+  return s;
+}
+
+function SkinLevers({ data, goals }) {
+  const today = getTodayStr();
+  const lastSleep = (data.sleep || []).filter(s => s.date === today || s.date === daysAgo(1)).sort((a, b) => (b.date || "").localeCompare(a.date || ""))[0];
+  const need = estimateSleepNeed(data, goals).hours;
+  const slept = lastSleep ? sleepTST(lastSleep) : null;
+  const nic = (data.nicotine || []).filter(n => n.date === today).length;
+  const gl = dayGlycemicLoad((data.diet || []).filter(d => d.date === today));
+  const items = [
+    { l: "Sleep", v: slept != null ? `${slept.toFixed(1)}h` : "—", warn: slept != null && slept < need - 1, ok: slept == null || slept >= need - 0.5 },
+    { l: "Nicotine", v: nic === 0 ? "none" : `${nic}×`, warn: nic > 0, ok: nic === 0 },
+    { l: "Glycemic", v: gl.hasData ? gl.band : "—", warn: gl.band === "high", ok: !gl.hasData || gl.band !== "high" },
+  ];
   return (
-    <div className="skin-scope stack">
-      {log}
+    <Card title="Today's skin levers" sub="the controllables — surfaced before they show up in your skin">
+      <div className="lever-grid">
+        {items.map((it, i) => (
+          <div key={i} className="lever" data-tone={it.warn ? "warn" : it.ok ? "ok" : "neutral"}>
+            <span className="lever-v">{it.v}</span><span className="lever-l">{it.l}</span>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
 
+function RoutineCheck({ data, addEntry, deleteEntry, compact }) {
+  const today = getTodayStr();
+  const logs = (data.skinRoutineLogs || []).filter(l => l.date === today);
+  const done = slot => logs.some(l => l.slot === slot);
+  const toggle = slot => {
+    const ex = logs.find(l => l.slot === slot);
+    if (ex) deleteEntry("skinRoutineLogs")(ex.id);
+    else addEntry("skinRoutineLogs")({ id: Date.now(), date: today, slot });
+    haptic(8);
+  };
+  const adh = skinRoutineAdherence(data);
+  return (
+    <div>
+      <div className="routine-check">
+        <button className={`routine-toggle ${done("am") ? "on" : ""}`} onClick={() => toggle("am")}>{done("am") ? "✓" : "○"} AM routine</button>
+        <button className={`routine-toggle ${done("pm") ? "on" : ""}`} onClick={() => toggle("pm")}>{done("pm") ? "✓" : "○"} PM routine</button>
+      </div>
+      {!compact && <div className="muted small" style={{ marginTop: 8, lineHeight: 1.5 }}>Last 14 days: AM {adh.amPct}% · PM {adh.pmPct}%. Consistency is what makes any routine actually work.</div>}
+    </div>
+  );
+}
+
+function QuickConditionLog({ data, addEntry }) {
+  const today = getTodayStr();
+  const loggedToday = (data.skin || []).some(s => s.date === today);
+  function quick(v) { addEntry("skin")({ id: Date.now(), date: today, condition: v, breakouts: 0, concern: "", notes: "" }); toast("✦ Skin logged"); haptic(8); }
+  return (
+    <div>
+      <div className="muted small" style={{ marginBottom: 6 }}>{loggedToday ? "Logged today ✓ — tap to update" : "How's your skin today?"}</div>
+      <div className="sleep-q-chips">{SKIN_CONDITION.map(c => <button key={c.v} className="sleep-q-chip" onClick={() => quick(c.v)}>{c.l}</button>)}</div>
+    </div>
+  );
+}
+
+function SkinDashboard({ data, goals, skin, addEntry, deleteEntry }) {
+  const streak = skinLogStreak(data.skin);
+  return (
+    <>
+      <SkinLevers data={data} goals={goals} />
+      <Card title="Quick log">
+        <QuickConditionLog data={data} addEntry={addEntry} />
+        <div style={{ marginTop: 14 }}><RoutineCheck data={data} addEntry={addEntry} deleteEntry={deleteEntry} compact /></div>
+      </Card>
       {skin ? (
         <>
           <Card>
@@ -4801,51 +4933,132 @@ function SkinSection({ data, goals, addEntry, deleteEntry, onSaveGoals }) {
               <div>
                 <div className="muted small">Skin condition (14-day avg)</div>
                 <div className="sleep-need-v">{skin.avgCond14 ?? "—"}<span>/5</span></div>
-                <div className="muted small" style={{ marginTop: 2 }}>{skin.condTrend == null ? "building a trend" : skin.condTrend > 0.2 ? "↑ improving" : skin.condTrend < -0.2 ? "↓ slipping" : "→ steady"}{skin.breakouts14 != null ? ` · ~${skin.breakouts14} breakouts/log` : ""}</div>
+                <div className="muted small" style={{ marginTop: 2 }}>{skin.condTrend == null ? "building a trend" : skin.condTrend > 0.2 ? "↑ improving" : skin.condTrend < -0.2 ? "↓ slipping" : "→ steady"} · {streak}-day log streak</div>
               </div>
-              <div style={{ textAlign: "right" }}>
-                <div className="muted small">Confidence</div>
-                <div style={{ fontWeight: 600 }}>{skin.confidence}</div>
-              </div>
+              <div style={{ textAlign: "right" }}><div className="muted small">Confidence</div><div style={{ fontWeight: 600 }}>{skin.confidence}</div></div>
             </div>
           </Card>
-
-          {skin.topLever && (
-            <Card title="Your biggest skin lever" className="sleep-lever-card">
-              <p className="sleep-lever-text">{skin.topLever.text}</p>
-            </Card>
-          )}
-
-          {skin.correlations.length > 0 && (
-            <Card title="How your body is affecting your skin" sub="patterns from your own data — correlation, not proof">
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                {skin.correlations.map((c, i) => (
-                  <div key={i} className="sleep-couple-row">
-                    <span className="sleep-couple-dot" style={{ background: c.evidence === "strong" ? "var(--good)" : "#f9c97e" }} />
-                    <span className="small" style={{ lineHeight: 1.5 }}>{c.text}</span>
-                  </div>
-                ))}
-              </div>
-            </Card>
-          )}
+          {skin.topLever && <Card title="Your biggest skin lever" className="sleep-lever-card"><p className="sleep-lever-text">{skin.topLever.text}</p></Card>}
         </>
       ) : (
-        <Card title="Skin intelligence">
-          <Empty icon="✦" title="Log your skin for a couple of weeks" hint="Once there's a week or two of entries, FitLog learns how your sleep, nicotine, diet, and stress move your skin — the part no skincare app can see." />
-        </Card>
+        <Card title="Skin intelligence"><Empty icon="✦" title="Log your skin for a couple of weeks" hint="Once there's a week or two of entries, FitLog learns how your sleep, nicotine, diet and stress move your skin." /></Card>
+      )}
+    </>
+  );
+}
+
+function SkinAdviceCard({ skin, conflicts }) {
+  let action, why, tone = "ok";
+  const leverName = { sleep: "protecting your sleep", nicotine: "cutting nicotine", dairy: "a 4-week dairy test", glycemic: "lowering your glycemic load", stress: "managing stress load" };
+  if (conflicts && conflicts.length) { action = "Fix your routine conflict first"; why = conflicts[0]; tone = "warn"; }
+  else if (skin && skin.topLever) { action = `Focus on ${leverName[skin.topLever.key] || "your top lever"}`; why = skin.topLever.text; }
+  else if (skin && skin.condTrend != null && skin.condTrend <= -0.6) { action = "Find what changed"; why = "Your skin trended down recently — review new products, sleep, stress and diet over the last two weeks."; tone = "warn"; }
+  else if (!skin || skin.confidence === "Low") { action = "Keep logging daily"; why = "A week or two of consistent logs unlocks your personal correlations — then the advice gets specific to you."; }
+  else { action = "Hold steady"; why = "Things look stable — don't change several variables at once. Let your current routine keep working."; }
+  return (
+    <Card title="Best next step" sub="the single highest-value thing right now">
+      <p className="advice-action" data-tone={tone}>{action}</p>
+      <p className="muted small" style={{ lineHeight: 1.5, marginTop: 4 }}>{why}</p>
+    </Card>
+  );
+}
+
+function ProductIntroCard({ data, addEntry, deleteEntry }) {
+  const [kind, setKind] = useState(null);
+  const [name, setName] = useState("");
+  const intros = (data.skinProductIntros || []).slice().sort((a, b) => (b.startDate || "").localeCompare(a.startDate || ""));
+  function start() { if (!kind || !name.trim()) return; addEntry("skinProductIntros")({ id: Date.now(), name: name.trim(), kind, startDate: getTodayStr() }); setKind(null); setName(""); toast("✦ Introduction plan added"); }
+  return (
+    <Card title="Introduce a new product" sub="add one active at a time, the safe way">
+      <input value={name} onChange={e => setName(e.target.value)} placeholder="Product name (e.g. Tretinoin 0.025%)" />
+      <div className="skin-proc-chips" style={{ marginTop: 8 }}>
+        {PRODUCT_KINDS.map(p => <button key={p.k} className={`skin-proc-chip ${kind === p.k ? "on" : ""}`} onClick={() => setKind(p.k)}>{p.label}</button>)}
+      </div>
+      <button className="btn full" style={{ marginTop: 10 }} onClick={start} disabled={!kind || !name.trim()}>Build ramp plan</button>
+      {intros.length > 0 && (
+        <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 12 }}>
+          {intros.map(it => (
+            <div key={it.id} className="intro-block">
+              <div className="skin-proc-item"><div style={{ flex: 1 }}><div style={{ fontWeight: 600, fontSize: ".9rem" }}>{it.name}</div><div className="muted small">started {formatShortDate(it.startDate)}</div></div><button className="skin-x" onClick={() => deleteEntry("skinProductIntros")(it.id)}>×</button></div>
+              <ol className="intro-steps">{(PRODUCT_RAMP[it.kind] || PRODUCT_RAMP.other).map((s, i) => <li key={i}>{s}</li>)}</ol>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+const SKIN_TABS = [
+  { k: "dash", label: "Dashboard" },
+  { k: "log", label: "Log" },
+  { k: "insights", label: "Insights" },
+  { k: "plan", label: "Plan" },
+  { k: "coach", label: "Coach" },
+  { k: "research", label: "Research" },
+];
+
+function SkinSection({ data, goals, addEntry, deleteEntry, onSaveGoals }) {
+  const [tab, setTab] = useState("dash");
+  const skin = useMemo(() => computeSkin(data, goals), [data, goals]);
+  const conflicts = useMemo(() => detectRoutineConflicts(goals.skinRoutine), [goals.skinRoutine]);
+  return (
+    <div className="skin-scope stack">
+      <div className="skin-tabs">
+        {SKIN_TABS.map(t => <button key={t.k} className={`skin-tab ${tab === t.k ? "on" : ""}`} onClick={() => { setTab(t.k); haptic(6); }}>{t.label}</button>)}
+      </div>
+
+      {tab === "dash" && <SkinDashboard data={data} goals={goals} skin={skin} addEntry={addEntry} deleteEntry={deleteEntry} />}
+
+      {tab === "log" && (
+        <>
+          <SkinLogForm onAdd={addEntry("skin")} recent={data.skin} />
+          <Card title="Routine check-off" sub="mark today's routine to build a consistency record"><RoutineCheck data={data} addEntry={addEntry} deleteEntry={deleteEntry} /></Card>
+          <SkinRoutineCard goals={goals} onSaveGoals={onSaveGoals} conflicts={conflicts} />
+          <SkinPhotos />
+        </>
       )}
 
-      <SkinCoach data={data} goals={goals} />
+      {tab === "insights" && (
+        <>
+          {skin ? (
+            <>
+              <Card>
+                <div className="sleep-need-row">
+                  <div><div className="muted small">Skin condition (14-day avg)</div><div className="sleep-need-v">{skin.avgCond14 ?? "—"}<span>/5</span></div><div className="muted small" style={{ marginTop: 2 }}>{skin.condTrend == null ? "building a trend" : skin.condTrend > 0.2 ? "↑ improving" : skin.condTrend < -0.2 ? "↓ slipping" : "→ steady"}{skin.breakouts14 != null ? ` · ~${skin.breakouts14} breakouts/log` : ""}</div></div>
+                  <div style={{ textAlign: "right" }}><div className="muted small">Confidence</div><div style={{ fontWeight: 600 }}>{skin.confidence}</div></div>
+                </div>
+                {skin.series && <div className="cond-spark">{skin.series.map((s, i) => <span key={i} className="cond-bar" style={{ height: `${s.value ? s.value * 7 + 6 : 3}px`, opacity: s.value ? 1 : 0.25 }} title={s.label} />)}</div>}
+              </Card>
+              <SkinAdviceCard skin={skin} conflicts={conflicts} />
+              {skin.correlations.length > 0 && (
+                <Card title="How your body affects your skin" sub="patterns from your own data — correlation, not proof">
+                  <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>{skin.correlations.map((c, i) => <div key={i} className="sleep-couple-row"><span className="sleep-couple-dot" style={{ background: c.evidence === "strong" ? "var(--good)" : "#f9c97e" }} /><span className="small" style={{ lineHeight: 1.5 }}>{c.text}</span></div>)}</div>
+                </Card>
+              )}
+              <SkinExperimentCard data={data} goals={goals} onSaveGoals={onSaveGoals} />
+            </>
+          ) : (
+            <>
+              <Card title="Insights"><Empty icon="✦" title="Not enough data yet" hint="Log your skin daily for a week or two and your trends, correlations and progress show up here." /></Card>
+              <SkinAdviceCard skin={skin} conflicts={conflicts} />
+            </>
+          )}
+        </>
+      )}
 
-      <SkinRoutineCard goals={goals} onSaveGoals={onSaveGoals} conflicts={conflicts} />
-      <SkinProceduresCard data={data} addEntry={addEntry} deleteEntry={deleteEntry} />
-      <SkinPhotos />
-      <SkinExperimentCard data={data} goals={goals} onSaveGoals={onSaveGoals} />
-      <SkinResearchStore data={data} addEntry={addEntry} deleteEntry={deleteEntry} />
+      {tab === "plan" && (
+        <>
+          <SkinProceduresCard data={data} addEntry={addEntry} deleteEntry={deleteEntry} />
+          <ProductIntroCard data={data} addEntry={addEntry} deleteEntry={deleteEntry} />
+        </>
+      )}
 
-      <p className="muted small" style={{ textAlign: "center", lineHeight: 1.5, padding: "4px 12px" }}>
-        FitLog's skin tools track, correlate, experiment, and explain — they don't diagnose or prescribe. For persistent acne, suspicious spots, prescription actives, or the decision to get a procedure, see a dermatologist.
-      </p>
+      {tab === "coach" && <SkinCoach data={data} goals={goals} />}
+
+      {tab === "research" && <SkinResearchStore data={data} addEntry={addEntry} deleteEntry={deleteEntry} />}
+
+      <p className="muted small" style={{ textAlign: "center", lineHeight: 1.5, padding: "4px 12px" }}>FitLog's skin tools track, correlate, experiment and explain — they don't diagnose or prescribe. For persistent acne, suspicious spots, prescription actives, or the decision to get a procedure, see a dermatologist.</p>
     </div>
   );
 }

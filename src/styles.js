@@ -1140,6 +1140,31 @@ input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
 .skin-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .skin-compare-cell { display: flex; flex-direction: column; gap: 4px; align-items: center; }
 .skin-compare-cell img { width: 100%; aspect-ratio: 3/4; object-fit: cover; border-radius: 10px; }
+/* skin tabs + new tab content */
+.skin-tabs { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; -ms-overflow-style: none; scrollbar-width: none; }
+.skin-tabs::-webkit-scrollbar { display: none; }
+.skin-tab { flex: 0 0 auto; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--text-2); font-size: .82rem; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.skin-tab.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.lever-grid { display: flex; gap: 8px; }
+.lever { flex: 1; background: var(--surface-2); border-radius: 12px; padding: 12px 8px; text-align: center; border: 1px solid transparent; }
+.lever[data-tone="warn"] { border-color: rgba(224,162,60,.5); }
+.lever[data-tone="ok"] { border-color: rgba(95,141,87,.4); }
+.lever-v { display: block; font-size: 1.15rem; font-weight: 700; line-height: 1; text-transform: capitalize; }
+.lever-l { display: block; font-size: .68rem; color: var(--muted); margin-top: 5px; }
+.routine-check { display: flex; gap: 8px; }
+.routine-toggle { flex: 1; padding: 11px; border-radius: 12px; border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text-2); font-size: .86rem; font-weight: 600; cursor: pointer; }
+.routine-toggle.on { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); }
+.advice-action { font-size: 1.05rem; font-weight: 700; color: var(--accent); }
+.advice-action[data-tone="warn"] { color: #d98a3c; }
+.intro-block { background: var(--surface-2); border-radius: 12px; padding: 12px; }
+.intro-steps { margin: 8px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 5px; font-size: .82rem; line-height: 1.4; }
+.proc-guide { margin-top: 8px; background: var(--surface-2); border-radius: 10px; padding: 10px 12px; border-left: 3px solid var(--accent); }
+.proc-guide[data-mode="prep"] { border-left-color: #6ee7f7; }
+.proc-guide-h { font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; color: var(--accent); font-weight: 700; margin-bottom: 5px; }
+.skin-section-h { font-size: .74rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 700; margin-bottom: 8px; }
+.skin-proc-block { margin-bottom: 10px; }
+.cond-spark { display: flex; align-items: flex-end; gap: 2px; height: 46px; margin-top: 12px; }
+.cond-bar { flex: 1; background: var(--accent); border-radius: 2px; min-height: 3px; }
 
 /* ─── GLYCEMIC LOAD PILL ───────────────────────────────────────────────────── */
 .gl-pill { display: inline-flex; align-items: center; font-size: .62rem; font-weight: 800; letter-spacing: .03em; text-transform: uppercase; padding: 2px 7px; border-radius: 999px; border: 1px solid; vertical-align: middle; white-space: nowrap; }
