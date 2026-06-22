@@ -15,7 +15,7 @@ import { computeSkin, detectRoutineConflicts } from "../src/engines/skin.js";
 import { estimateGlycemicLoad, dayGlycemicLoad } from "../src/engines/glycemic.js";
 import { lookupGI } from "../src/engines/gi-database.js";
 import { computeCarbTiming } from "../src/engines/carbtiming.js";
-import { planFueling, reconcileFueling } from "../src/engines/fueling.js";
+import { planFueling, reconcileFueling, sleepWindow } from "../src/engines/fueling.js";
 import { buildBrain, formatBrainText } from "../src/brain/brain.js";
 
 let pass = 0, fail = 0;
@@ -113,6 +113,20 @@ ok("GI db: known food flagged source=database", estimateGlycemicLoad({ food: "oa
   ok("reconcile: flags upcoming pre-session fuel", /Fuel up for Basketball/.test(rec.status), rec.status);
   ok("reconcile: computes carbs left + add suggestion", rec.carbsLeft > 0 && rec.addPhrase.length > 0, rec.addPhrase);
   ok("reconcile: topped up when target met", reconcileFueling({ plan: rplan, meals: [{ time: "08:00", carbs: rplan.dailyCarbs, protein: rplan.dailyProtein }], nowMin: 23 * 60 }).status === "Topped up", 1);
+
+  // sleep-aware scheduling
+  const sw = sleepWindow({ sleep: [{ wakeTime: "06:30", bedtime: "23:30" }, { wakeTime: "06:30", bedtime: "23:30" }] });
+  ok("sleepWindow: averages wake", sw.wakeMin === 390, sw.wakeMin);
+  ok("sleepWindow: handles after-midnight-ish bedtime", sw.sleepMin === 1410 && sw.hasData, sw.sleepMin);
+  ok("sleepWindow: defaults when empty", (() => { const d = sleepWindow({ sleep: [] }); return d.wakeMin === 420 && d.sleepMin === 1380 && !d.hasData; })(), 1);
+  const early = planFueling({ sessions: [{ type: "gym", time: "17:00", durationMin: 60, intensity: "moderate" }], weightKg: 80, goals: { protein: 160 }, wakeMin: 390, sleepMin: 1410 });
+  const firstMeal = early.blocks.find(b => b.kind === "meal");
+  const mins = t => +t.split(":")[0] * 60 + +t.split(":")[1];
+  ok("fuel: first meal lands just after wake", firstMeal && Math.abs(mins(firstMeal.time) - (390 + 45)) < 30, firstMeal && firstMeal.time);
+  ok("fuel: plan returns wake/sleep window", early.wakeMin === 390 && early.sleepMin === 1410, `${early.wakeMin}/${early.sleepMin}`);
+  const lateWake = planFueling({ sessions: [{ type: "gym", time: "17:00", durationMin: 60, intensity: "moderate" }], weightKg: 80, goals: { protein: 160 }, wakeMin: 600, sleepMin: 1440 });
+  const lwFirst = lateWake.blocks.find(b => b.kind === "meal");
+  ok("fuel: meal schedule shifts with later wake", lwFirst && mins(lwFirst.time) > (firstMeal ? mins(firstMeal.time) : 0), lwFirst && lwFirst.time);
 }
 
 // ── brain (wires everything) ──

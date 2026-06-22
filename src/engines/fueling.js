@@ -19,7 +19,7 @@ export const SESSION_TYPES = {
 };
 const INTENSITY = { light: 0.8, moderate: 1.0, hard: 1.3 };
 
-export function planFueling({ sessions, weightKg, goals }) {
+export function planFueling({ sessions, weightKg, goals, wakeMin = 420, sleepMin = 1380 }) {
   if (!weightKg || weightKg <= 0) return { needWeight: true };
   if (!sessions || !sessions.length) return null;
   const w = weightKg;
@@ -43,7 +43,7 @@ export function planFueling({ sessions, weightKg, goals }) {
 
   const blocks = [];
   S.forEach((s, i) => {
-    const early = s.start < 7 * 60;
+    const early = s.start < wakeMin + 60;
     // PRE
     if (early) {
       blocks.push({ at: s.start - 45, kind: "pre", label: `Pre: ${s.t.label}`, carbsG: Math.round(0.5 * w), proteinG: Math.round(0.2 * w), note: "Early session — a small quick carb (banana, dates, toast) 30–45 min before, or train as-is if your stomach can't handle food that early." });
@@ -65,7 +65,12 @@ export function planFueling({ sessions, weightKg, goals }) {
   // Distribute the rest of the carb budget across normal meal slots not near a session.
   const anchored = blocks.reduce((a, b) => a + b.carbsG, 0);
   const remaining = Math.max(0, dailyCarbs - anchored);
-  const slots = [8 * 60, 13 * 60, 19 * 60 + 30].filter(t => !blocks.some(b => Math.abs(b.at - t) < 90));
+  // Meal slots scheduled inside the user's actual waking window (first meal a bit
+  // after wake, last meal a few hours before bed), not fixed clock times.
+  const dayStart = wakeMin + 45;
+  const dayEnd = Math.max(dayStart + 120, Math.min(sleepMin, 1410) - 120);
+  const slotTimes = [0, 0.5, 1].map(f => Math.round(dayStart + (dayEnd - dayStart) * f));
+  const slots = slotTimes.filter(t => !blocks.some(b => Math.abs(b.at - t) < 90));
   if (slots.length && remaining > 0) {
     const per = Math.round(remaining / slots.length);
     slots.forEach(t => blocks.push({ at: t, kind: "meal", label: "Meal", carbsG: per, proteinG: 0, note: "Fills your daily carb target around the sessions." }));
@@ -98,8 +103,22 @@ export function planFueling({ sessions, weightKg, goals }) {
     loadLevel, gPerKg: +gPerKg.toFixed(1), dailyCarbs, dailyProtein, dailyFat, dailyCalories,
     planCarbs, planProtein, weightKg: w,
     sessions: S.map(s => ({ label: s.t.label, time: fmt(s.start), durMin: s.durMin, intensity: s.intensity })),
-    blocks, notes,
+    blocks, notes, wakeMin, sleepMin,
   };
+}
+
+// Derive a typical waking window from logged sleep (avg wake & bedtime, last 14
+// nights), so the planner can schedule meals at the right times. Defaults if empty.
+export function sleepWindow(data) {
+  const mof = t => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ""); return m ? +m[1] * 60 + +m[2] : null; };
+  const recent = (data.sleep || []).slice(-14);
+  const wakes = [], beds = [];
+  recent.forEach(s => {
+    const w = mof(s.wakeTime); if (w != null) wakes.push(w);
+    let b = mof(s.bedtime); if (b != null) { if (b < 720) b += 1440; beds.push(b); }
+  });
+  const avg = a => (a.length ? Math.round(a.reduce((x, y) => x + y, 0) / a.length) : null);
+  return { wakeMin: avg(wakes) ?? 420, sleepMin: avg(beds) ?? 1380, hasData: wakes.length > 0 || beds.length > 0 };
 }
 
 // Rough carb-food reference for "what to add" suggestions (grams per portion).

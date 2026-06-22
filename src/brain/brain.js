@@ -13,7 +13,7 @@ import { computeRecovery } from "../engines/recovery.js";
 import { computeNicotineStats } from "../engines/nicotine.js";
 import { computeSkin } from "../engines/skin.js";
 import { computeCarbTiming } from "../engines/carbtiming.js";
-import { planFueling, reconcileFueling } from "../engines/fueling.js";
+import { planFueling, reconcileFueling, sleepWindow } from "../engines/fueling.js";
 
 export function insightCategory(text) {
   const t = (text || "").toLowerCase();
@@ -270,7 +270,8 @@ export function buildBrain(data, goals) {
   // ── SKIN INTELLIGENCE (separate lens — kept out of the physiology insight pool)
   const skin = computeSkin(data, goals);
   const carbTiming = computeCarbTiming(data, goals);
-  const fuelPlan = planFueling({ sessions: (data.plannedSessions || []).filter(s => s.date === getTodayStr()), weightKg: goals && goals.profile && goals.profile.weightKg, goals });
+  const _sw = sleepWindow(data);
+  const fuelPlan = planFueling({ sessions: (data.plannedSessions || []).filter(s => s.date === getTodayStr()), weightKg: goals && goals.profile && goals.profile.weightKg, goals, wakeMin: _sw.wakeMin, sleepMin: _sw.sleepMin });
   const fuelStatus = (fuelPlan && fuelPlan.blocks) ? reconcileFueling({ plan: fuelPlan, meals: (data.diet || []).filter(d => d.date === getTodayStr()), nowMin: new Date().getHours() * 60 + new Date().getMinutes() }) : null;
 
   // ── EJAC (private metric — neutral data only, NO insights/judgments generated)

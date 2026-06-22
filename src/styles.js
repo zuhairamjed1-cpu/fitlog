@@ -1165,6 +1165,13 @@ input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
 .skin-proc-block { margin-bottom: 10px; }
 .cond-spark { display: flex; align-items: flex-end; gap: 2px; height: 46px; margin-top: 12px; }
 .cond-bar { flex: 1; background: var(--accent); border-radius: 2px; min-height: 3px; }
+/* stylish log-meal card + embedded energy check + done meal blocks */
+.log-meal-card { position: relative; overflow: hidden; border: 1px solid var(--border-strong); background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 7%, var(--surface)) 0%, var(--surface) 64%); }
+.log-meal-card::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: linear-gradient(90deg, #f9c97e, #f47e6e, #b4a8e8); }
+.log-meal-card .seg-btn.active { box-shadow: 0 1px 6px rgba(0,0,0,.18); }
+.es-embed { margin: 4px 0 12px; padding: 12px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--border); }
+.fuel-block.done { opacity: .5; }
+.fuel-block.done .fuel-time::after { content: " ✓"; color: var(--good); }
 
 /* ─── GLYCEMIC LOAD PILL ───────────────────────────────────────────────────── */
 .gl-pill { display: inline-flex; align-items: center; font-size: .62rem; font-weight: 800; letter-spacing: .03em; text-transform: uppercase; padding: 2px 7px; border-radius: 999px; border: 1px solid; vertical-align: middle; white-space: nowrap; }
