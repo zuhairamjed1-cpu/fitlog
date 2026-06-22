@@ -19,7 +19,7 @@ import { computeRecovery } from "./engines/recovery";
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const TABS = ["Home", "Log", "History", "Coach", "Journal", "Settings", "Ejac"];
 const STORAGE_KEY = "fitlog_v5";
-const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], nicotine: [], nicotinePlans: [], journal: [], weight: [], ejac: [], skin: [], skinResearch: [], skinProcedures: [], plannedSessions: [], skinRoutineLogs: [], skinProductIntros: [], skinRoutineChanges: [] };
+const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], nicotine: [], nicotinePlans: [], journal: [], weight: [], ejac: [], skin: [], skinResearch: [], skinProcedures: [], plannedSessions: [], skinRoutineLogs: [], skinProductIntros: [], skinRoutineChanges: [], skinCoachPlans: [] };
 const defaultProfile = {
   // Body
   sex: "", age: "", heightCm: "", weightKg: "",
@@ -4799,24 +4799,83 @@ function SkinProceduresCard({ data, addEntry, deleteEntry }) {
   );
 }
 
-const SKIN_COACH_SYSTEM = `You are SkinLog's skin coach. The user's full physiology + skin data is provided below. You are warm, concrete, and honest.
+const SKIN_COACH_SYSTEM = `You are SkinLog's skin coach. You ONLY help with SKIN. The data below is skin-relevant only.
 
-YOUR EDGE: you can see how this person's sleep, nicotine, diet, training and stress move their skin — use those cross-domain links, no generic skincare app has them. Lead with the highest-evidence lever for THIS person.
+SCOPE — THIS IS A HARD BOUNDARY:
+- You help with skin: condition, breakouts, skincare routine (AM/PM products), procedures, and the lifestyle factors that affect skin — sleep, nicotine, diet (dairy/sugar/glycemic load), hydration, and stress.
+- You have NO data about and must NOT discuss: training, workouts, lifting, gym splits, sports, bodyweight, strength, fuelling, or macros for muscle. None of that is your job.
+- If the user asks about any of that, do NOT answer it. Say one line like "That's outside what I track here — I'm just your skin coach" and steer back to skin.
+- "Routine" ALWAYS means their SKINCARE routine (AM/PM products) — NEVER a workout or training split. If they ask you to "build a routine," build a SKINCARE routine from their products and skin needs.
+
+YOUR EDGE: you can see how this person's sleep, nicotine, diet, hydration and stress move their skin — use those links. Lead with the highest-evidence lever for THIS person.
 
 RULES:
 - Be specific and personal — cite their actual numbers and logged patterns. No generic listicles.
 - Frame correlations as personal patterns, not proven cause.
 - Evidence order: not smoking + daily SPF (strong) > dairy/glycemic load, sleep, stress (moderate) > hydration/"detox" (weak — don't oversell water).
 - Prefer one-variable experiments over changing everything at once. Skin is slow (~6–8 weeks) — set that expectation.
-- PROCEDURES (microneedling, PRP, peels, lasers): you may EDUCATE — what it does, rough evidence, recovery/aftercare, how it interacts with their actives and physiology, and what to ask a provider. Do NOT prescribe protocols, depths or settings, or replace an in-person assessment. Send them to a qualified provider/dermatologist for the actual decision and anything medical (cystic/persistent acne, suspicious lesions, prescription actives).
+- PROCEDURES (microneedling, PRP, peels, lasers): you may EDUCATE — what it does, rough evidence, recovery/aftercare, how it interacts with their actives, and what to ask a provider. Do NOT prescribe protocols, depths or settings, or replace an in-person assessment. Send them to a dermatologist for the decision and anything medical (cystic/persistent acne, suspicious lesions, prescription actives).
 - Keep replies tight: a short answer plus the one next action. No walls of text.`;
 
-const SKIN_PROMPTS = ["Why am I breaking out?", "What's my biggest skin lever?", "Is microneedling worth it for me?", "Build me a simple routine"];
+const SKIN_PROMPTS = ["Why am I breaking out?", "What's my biggest skin lever?", "Is microneedling worth it for me?", "Build me a simple skincare routine"];
 
-function SkinCoach({ data, goals }) {
+// Skin-ONLY context. Deliberately excludes training, sports, fuel, weight, strength,
+// macros and strategy — the coach can't leak what it never receives.
+function buildSkinContext(data, goals) {
+  const today = getTodayStr();
+  const skin = computeSkin(data, goals);
+  const L = [];
+  if (skin) L.push(`SKIN CONDITION: 14-day avg ${skin.avgCond14 ?? "—"}/5, trend ${skin.condTrend == null ? "n/a" : skin.condTrend > 0.2 ? "improving" : skin.condTrend < -0.2 ? "worsening" : "steady"}, ${skinLogStreak(data.skin)}-day log streak, confidence ${skin.confidence}.${skin.breakouts14 != null ? ` ~${skin.breakouts14} breakouts/log.` : ""}`);
+  else L.push("SKIN CONDITION: not enough logs yet for trends.");
+  const recent = (data.skin || []).slice().sort((a, b) => (b.date || "").localeCompare(a.date || "")).slice(0, 10);
+  if (recent.length) L.push("Recent skin logs: " + recent.map(s => `${s.date} ${s.condition}/5${s.breakouts ? ` ${s.breakouts}br` : ""}${s.concern ? ` (${s.concern})` : ""}${s.notes ? ` "${s.notes}"` : ""}`).join(" | "));
+
+  const lastSleep = (data.sleep || []).filter(s => s.date === today || s.date === daysAgo(1)).sort((a, b) => (b.date || "").localeCompare(a.date || ""))[0];
+  const slept = lastSleep ? sleepTST(lastSleep) : null;
+  const need = estimateSleepNeed(data, goals).hours;
+  const waterMl = (data.water || []).filter(w => w.date === today).reduce((a, w) => a + (w.ml || 0), 0);
+  const nic = (data.nicotine || []).filter(n => n.date === today).length;
+  const td = (data.diet || []).filter(d => d.date === today);
+  const gl = dayGlycemicLoad(td);
+  const dairy = td.some(d => DAIRY_LEVER_RE.test(`${d.name || ""} ${d.food || ""} ${d.notes || ""}`));
+  const rl = (data.skinRoutineLogs || []).filter(l => l.date === today);
+  const adh = skinRoutineAdherence(data);
+  L.push(`TODAY'S SKIN LEVERS: sleep ${slept != null ? slept.toFixed(1) + "h" : "—"} (need ~${need}h); water ${(waterMl / 1000).toFixed(1)}L/${(((goals && goals.waterGoalMl) || 2500) / 1000)}L; nicotine ${nic === 0 ? "none" : nic + "x"}; diet ${gl.hasData ? gl.band + " glycemic load" : "unlogged"}${dairy ? " + dairy today" : ""}; routine done today: AM ${rl.some(l => l.slot === "am") ? "yes" : "no"}, PM ${rl.some(l => l.slot === "pm") ? "yes" : "no"}. Routine adherence 14d: AM ${adh.amPct}%, PM ${adh.pmPct}%.`);
+
+  if (skin && skin.correlations && skin.correlations.length) L.push("SKIN CORRELATIONS (this person's patterns — correlation, not proof): " + skin.correlations.map(c => c.text).join(" | "));
+  if (skin && skin.topLever) L.push("Biggest lever: " + skin.topLever.text);
+
+  const r = (goals && goals.skinRoutine) || { am: [], pm: [] };
+  L.push(`SKINCARE ROUTINE — AM: ${(r.am || []).map(s => s.product).join(", ") || "(empty)"} | PM: ${(r.pm || []).map(s => s.product).join(", ") || "(empty)"}.`);
+
+  const intros = data.skinProductIntros || [], changes = data.skinRoutineChanges || [];
+  if (intros.length || changes.length) L.push("PRODUCT HISTORY: " + [...intros.map(p => `introduced ${p.name} ${p.startDate}`), ...changes.map(c => `${c.action} ${c.product} (${c.slot}) ${c.date}`)].join("; "));
+
+  const procs = data.skinProcedures || [];
+  if (procs.length) {
+    const up = procs.filter(p => (p.date || "") > today), past = procs.filter(p => (p.date || "") <= today);
+    L.push("PROCEDURES: " + [...up.map(p => `PLANNED ${p.type} ${p.date}${p.notes ? ` (${p.notes})` : ""}`), ...past.map(p => `past ${p.type} ${p.date}`)].join("; "));
+  }
+  if (goals && goals.skinExperiment) { const e = goals.skinExperiment; L.push(`SKIN EXPERIMENT running: ${e.variable || e.name || "active"}${e.startDate || e.start ? ` since ${e.startDate || e.start}` : ""}.`); }
+  if ((data.skinResearch || []).length) L.push("Saved skin research: " + (data.skinResearch || []).map(x => x.title).filter(Boolean).join("; "));
+
+  const days = Array.from({ length: 14 }, (_, i) => daysAgo(i));
+  const sleeps = (data.sleep || []).filter(s => days.includes(s.date)).map(s => sleepTST(s)).filter(x => x != null);
+  const avgSleep = sleeps.length ? (sleeps.reduce((a, b) => a + b, 0) / sleeps.length).toFixed(1) : null;
+  const nicDays = days.filter(d => (data.nicotine || []).some(n => n.date === d)).length;
+  const dairyDays = days.filter(d => (data.diet || []).some(x => x.date === d && DAIRY_LEVER_RE.test(`${x.name || ""} ${x.food || ""} ${x.notes || ""}`))).length;
+  L.push(`LIFESTYLE INPUTS THAT AFFECT SKIN (14d): avg sleep ${avgSleep ?? "?"}h; nicotine on ${nicDays}/14 days; dairy on ${dairyDays}/14 days.`);
+  const moods = (data.journal || []).filter(j => days.includes(j.date) && (j.mood != null || j.stress != null));
+  if (moods.length) L.push(`Mood/stress noted on ${moods.length}/14 days (stress can flare skin).`);
+
+  return L.join("\n");
+}
+
+function SkinCoach({ data, goals, addEntry }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [concluding, setConcluding] = useState(false);
   const endRef = useRef(null);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }); }, [messages, loading]);
   async function ask(text) {
@@ -4824,7 +4883,7 @@ function SkinCoach({ data, goals }) {
     const next = [...messages, { role: "user", content: q }];
     setMessages(next); setInput(""); setLoading(true);
     try {
-      const system = SKIN_COACH_SYSTEM + "\n\n=== USER DATA ===\n" + formatBrainText(buildBrain(data, goals));
+      const system = SKIN_COACH_SYSTEM + "\n\n=== YOUR SKIN DATA (skin-relevant only) ===\n" + buildSkinContext(data, goals);
       const reply = await callClaude({ system, conversationMessages: next, maxTokens: 1100 });
       setMessages(m => [...m, { role: "assistant", content: reply || "I didn't catch that — try rephrasing?" }]);
     } catch {
@@ -4832,16 +4891,37 @@ function SkinCoach({ data, goals }) {
     }
     setLoading(false);
   }
+  async function conclude() {
+    if (!messages.length || concluding || loading) return;
+    setConcluding(true);
+    try {
+      const sys = "You turn a skin coaching chat into a short action plan. Output ONLY 2–5 concrete skin actions, one per line, each starting with '- ', each under ~16 words. Skin only — no training/diet-for-muscle. No preamble, headers, or bold.";
+      const convo = messages.map(m => `${m.role === "user" ? "User" : "Coach"}: ${m.content}`).join("\n");
+      const raw = await callClaude({ system: sys, conversationMessages: [{ role: "user", content: `Conversation:\n${convo}\n\nWrite the action plan.` }], maxTokens: 400 });
+      let items = (raw || "").split("\n").map(l => l.replace(/^[-*•\d.)\s]+/, "").trim()).filter(Boolean).slice(0, 5).map(text => ({ text, done: false }));
+      if (!items.length) items = [{ text: (raw || "Reviewed skin plan with coach.").trim().slice(0, 160), done: false }];
+      const summary = (messages.find(m => m.role === "user")?.content || "Skin coach session").slice(0, 80);
+      addEntry("skinCoachPlans")({ id: Date.now(), date: getTodayStr(), summary, items, messages });
+      setMessages([]); setInput("");
+      toast("✦ Saved to your Plan");
+    } catch {
+      toast("Couldn't save — try again");
+    }
+    setConcluding(false);
+  }
   return (
-    <Card title="Ask your skin coach" sub="Reads your skin + sleep, nicotine, diet & stress">
+    <Card title="Ask your skin coach" sub="Skin only — reads your skin + sleep, nicotine, diet, hydration & stress">
       {messages.length === 0 ? (
-        <p className="muted small" style={{ lineHeight: 1.5, marginBottom: 10 }}>Ask anything about your skin. The coach reads your logged patterns and your physiology — so the answers are about you, not generic advice.</p>
+        <p className="muted small" style={{ lineHeight: 1.5, marginBottom: 10 }}>Ask anything about your skin. The coach reads only your skin-relevant patterns — your routine, condition, and the lifestyle factors that move skin. It won't touch your training.</p>
       ) : (
         <div className="skin-chat">
           {messages.map((m, i) => <div key={i} className={`skin-msg ${m.role === "user" ? "user" : "ai"}`}>{m.content}</div>)}
           {loading && <div className="skin-msg ai typing"><span /><span /><span /></div>}
           <div ref={endRef} />
         </div>
+      )}
+      {messages.length > 0 && (
+        <button className="btn-ghost coach-conclude" onClick={conclude} disabled={concluding || loading}>{concluding ? "Saving…" : "✓ Conclude — save & add to Plan"}</button>
       )}
       <div className="skin-coach-chips">
         {SKIN_PROMPTS.map(p => <button key={p} className="skin-coach-chip" onClick={() => ask(p)} disabled={loading}>{p}</button>)}
@@ -5097,6 +5177,32 @@ function RoutineSuggestCard({ goals, conflicts }) {
   );
 }
 
+function CoachPlanCard({ data, updateEntry, deleteEntry }) {
+  const plans = (data.skinCoachPlans || []).slice().sort((a, b) => (b.date || "").localeCompare(a.date || "") || b.id - a.id);
+  if (!plans.length) return null;
+  const toggle = (plan, i) => {
+    const items = (plan.items || []).map((it, idx) => idx === i ? { ...it, done: !it.done } : it);
+    updateEntry("skinCoachPlans")(plan.id, { items });
+    haptic(6);
+  };
+  return (
+    <Card title="From your coach" sub="action items you saved by concluding a coach chat">
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {plans.map(p => (
+          <div key={p.id} className="coach-plan">
+            <div className="coach-plan-h"><span className="muted small">{formatShortDate(p.date)}{p.summary ? ` · ${p.summary}` : ""}</span><button className="skin-x" onClick={() => deleteEntry("skinCoachPlans")(p.id)}>×</button></div>
+            {(p.items || []).map((it, i) => (
+              <button key={i} className={`coach-plan-item ${it.done ? "done" : ""}`} onClick={() => toggle(p, i)}>
+                <span className="cpi-box">{it.done ? "✓" : "○"}</span><span className="cpi-text">{it.text}</span>
+              </button>
+            ))}
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
 const SKIN_TABS = [
   { k: "dash", label: "Dashboard" },
   { k: "log", label: "Log" },
@@ -5106,7 +5212,7 @@ const SKIN_TABS = [
   { k: "research", label: "Research" },
 ];
 
-function SkinSection({ data, goals, addEntry, deleteEntry, onSaveGoals }) {
+function SkinSection({ data, goals, addEntry, deleteEntry, updateEntry, onSaveGoals }) {
   const [tab, setTab] = useState("dash");
   const skin = useMemo(() => computeSkin(data, goals), [data, goals]);
   const conflicts = useMemo(() => detectRoutineConflicts(goals.skinRoutine), [goals.skinRoutine]);
@@ -5164,13 +5270,14 @@ function SkinSection({ data, goals, addEntry, deleteEntry, onSaveGoals }) {
 
       {tab === "plan" && (
         <>
+          <CoachPlanCard data={data} updateEntry={updateEntry} deleteEntry={deleteEntry} />
           <SkinProceduresCard data={data} addEntry={addEntry} deleteEntry={deleteEntry} />
           <RoutineSuggestCard goals={goals} conflicts={conflicts} />
           <ProductIntroCard data={data} addEntry={addEntry} deleteEntry={deleteEntry} />
         </>
       )}
 
-      {tab === "coach" && <SkinCoach data={data} goals={goals} />}
+      {tab === "coach" && <SkinCoach data={data} goals={goals} addEntry={addEntry} />}
 
       {tab === "research" && <SkinResearchStore data={data} addEntry={addEntry} deleteEntry={deleteEntry} />}
 
@@ -5183,6 +5290,7 @@ function SkinSection({ data, goals, addEntry, deleteEntry, onSaveGoals }) {
 // Full-screen sheet launched by the raised ＋. Shows logging options grouped by
 // intent; tapping one opens that existing form. Reuses every form component.
 function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, setData, initial, onClose }) {
+  const updateEntry = type => (id, patch) => setData(d => ({ ...d, [type]: (d[type] || []).map(e => e.id === id ? { ...e, ...patch } : e) }));
   const [view, setView] = useState(initial || null);
   const today = getTodayStr();
   const groups = [
@@ -5222,7 +5330,7 @@ function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, setData, 
       case "sleep": return <SleepSection data={data} goals={goals} addEntry={addEntry} onSaveGoals={onSaveGoals} />;
       case "nicotine": return <NicotineTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />;
       case "journal": return <JournalTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} setData={setData} />;
-      case "skin": return <SkinSection data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} onSaveGoals={onSaveGoals} />;
+      case "skin": return <SkinSection data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} updateEntry={updateEntry} onSaveGoals={onSaveGoals} />;
       default: return null;
     }
   };
