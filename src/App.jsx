@@ -2119,7 +2119,7 @@ function FuelCard({ data, goals, addEntry, deleteEntry }) {
                   <span className="fuel-time">{b.time}</span>
                   <div className="fuel-bd">
                     <div className="fuel-label">{b.isNext ? "→ " : ""}{b.label} <span className="fuel-macros">{b.carbsG}g C{b.proteinG ? ` · ${b.proteinG}g P` : ""}</span>{b.carbType ? <span className={`carb-chip ${b.carbType}`}>{b.carbType}</span> : null}</div>
-                    <div className="muted small" style={{ lineHeight: 1.4, marginTop: 2 }}>{b.done ? "Logged." : `${b.typeNote || b.baseNote || b.note || ""}${b.foodIdea ? ` — e.g. ${b.foodIdea}.` : ""}`}</div>
+                    <div className="muted small" style={{ lineHeight: 1.4, marginTop: 2 }}>{b.done ? (b.foodsLine || "Logged.") : `${b.typeNote || b.baseNote || b.note || ""}${b.foodIdea ? ` — e.g. ${b.foodIdea}.` : ""}`}</div>
                   </div>
                 </div>
               )
