@@ -1233,4 +1233,70 @@ input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
 .es-up-time { font-weight: 700; width: 44px; flex: 0 0 auto; }
 .es-up-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .es-up-carbs { white-space: nowrap; font-weight: 600; color: var(--accent); }
+
+/* ─── SkinLog ambient theme (calm leafy background, dark text) ─── */
+.log-overlay.skinlog-active {
+  background: linear-gradient(160deg, #e8efe2 0%, #f3eee3 45%, #ece2d1 100%);
+  --text: #2f3b30; --text-2: #54615a; --muted: #8a958c; --accent: #5f8d57; --accent-dim: #e3ecde;
+  --border: #ddd6c6; --border-strong: #cfc7b4; --surface: #fbf8f1; --surface-2: #f1ece0; --good: #5f8d57; --bg: #eef1e8;
+}
+.log-overlay.skinlog-active .log-overlay-head { position: relative; z-index: 2; background: rgba(248,244,236,.72); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border-bottom-color: rgba(0,0,0,.06); }
+.log-overlay.skinlog-active .log-overlay-body { position: relative; z-index: 1; }
+.skinlog-bg { position: fixed; inset: 0; z-index: -1; pointer-events: none; overflow: hidden; }
+.sl-bloom { position: absolute; border-radius: 50%; filter: blur(44px); }
+.sl-bloom.b1 { width: 340px; height: 340px; background: radial-gradient(circle, rgba(180,210,160,.55), transparent 70%); top: 6%; left: -8%; animation: sl-drift1 28s ease-in-out infinite; }
+.sl-bloom.b2 { width: 280px; height: 280px; background: radial-gradient(circle, rgba(238,224,188,.55), transparent 70%); bottom: 4%; right: -6%; animation: sl-drift2 34s ease-in-out infinite; }
+.sl-bloom.b3 { width: 240px; height: 240px; background: radial-gradient(circle, rgba(200,224,190,.45), transparent 70%); top: 44%; left: 58%; animation: sl-drift1 31s ease-in-out infinite reverse; }
+@keyframes sl-drift1 { 0%,100% { transform: translate(0,0); } 50% { transform: translate(26px,32px); } }
+@keyframes sl-drift2 { 0%,100% { transform: translate(0,0); } 50% { transform: translate(-32px,-24px); } }
+.sl-leaf { position: absolute; width: 26px; height: 26px; background: linear-gradient(135deg, #7da874, #5f8d57); opacity: .14; border-radius: 0 100% 0 100%; box-shadow: inset -1px 1px 0 rgba(255,255,255,.25); }
+.sl-leaf.l1 { left: 10%; animation: sl-fall 20s linear infinite; }
+.sl-leaf.l2 { left: 34%; width: 20px; height: 20px; animation: sl-fall 25s linear infinite 3s; }
+.sl-leaf.l3 { left: 66%; width: 31px; height: 31px; animation: sl-fall 23s linear infinite 6s; }
+.sl-leaf.l4 { left: 82%; animation: sl-fall 28s linear infinite 2s; }
+.sl-leaf.l5 { left: 50%; width: 18px; height: 18px; animation: sl-fall 21s linear infinite 9s; }
+.sl-leaf.l6 { left: 22%; width: 24px; height: 24px; animation: sl-fall 31s linear infinite 5s; }
+@keyframes sl-fall {
+  0% { transform: translateY(-12vh) rotate(0deg); opacity: 0; }
+  12% { opacity: .15; }
+  88% { opacity: .15; }
+  100% { transform: translateY(112vh) rotate(230deg); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) { .sl-leaf, .sl-bloom { animation: none !important; } }
+
+.skinlog-brand { display: flex; align-items: center; gap: 9px; font-family: 'DM Serif Display', serif; font-size: 1.55rem; color: var(--accent); margin: 0 0 2px; }
+.skinlog-mark { width: 18px; height: 18px; background: linear-gradient(135deg, #7da874, #5f8d57); border-radius: 0 100% 0 100%; display: inline-block; }
+
+/* lever readability + wrap for 5 tiles */
+.lever-grid { display: flex; gap: 8px; flex-wrap: wrap; }
+.lever { flex: 1 1 84px; min-width: 84px; }
+.lever-v { color: var(--text); font-size: .98rem; line-height: 1.2; }
+.lever-l { color: var(--text-2); }
+
+/* dashboard procedure countdown */
+.proc-countdown { border-left: 3px solid var(--accent); }
+
+/* procedure science timeline */
+.proc-timeline { margin-top: 8px; background: var(--surface-2); border-radius: 12px; padding: 12px 14px; }
+.proc-timeline[data-medical="1"] { border-left: 3px solid #d98a3c; }
+.proc-tl-head { font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; color: var(--accent); font-weight: 700; margin-bottom: 10px; }
+.proc-tl-row { display: flex; gap: 12px; padding: 7px 0 7px 14px; margin-left: 4px; border-left: 2px solid var(--border); position: relative; }
+.proc-tl-row::before { content: ""; position: absolute; left: -6px; top: 11px; width: 9px; height: 9px; border-radius: 50%; background: var(--border-strong); }
+.proc-tl-row.past { opacity: .48; }
+.proc-tl-row.now { border-left-color: var(--accent); }
+.proc-tl-row.now::before { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
+.proc-tl-when { flex: 0 0 50px; font-weight: 700; font-size: .8rem; color: var(--text); display: flex; flex-direction: column; }
+.proc-tl-when small { font-weight: 500; color: var(--muted); font-size: .64rem; }
+.proc-tl-body { flex: 1; }
+.proc-tl-act { font-size: .86rem; font-weight: 600; line-height: 1.35; }
+
+/* product effects (before/after) */
+.prod-effect { background: var(--surface-2); border-radius: 10px; padding: 10px 12px; }
+.prod-effect-h { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+
+/* routine suggestions */
+.rs-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; background: var(--surface-2); border-radius: 10px; padding: 10px 12px; border-left: 3px solid var(--border); }
+.rs-row[data-tone="warn"] { border-left-color: #d98a3c; }
+.rs-row[data-tone="ok"] { border-left-color: var(--good); }
+.rs-ev { flex: 0 0 auto; font-size: .6rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; }
 `;

@@ -19,7 +19,7 @@ import { computeRecovery } from "./engines/recovery";
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const TABS = ["Home", "Log", "History", "Coach", "Journal", "Settings", "Ejac"];
 const STORAGE_KEY = "fitlog_v5";
-const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], nicotine: [], nicotinePlans: [], journal: [], weight: [], ejac: [], skin: [], skinResearch: [], skinProcedures: [], plannedSessions: [], skinRoutineLogs: [], skinProductIntros: [] };
+const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], nicotine: [], nicotinePlans: [], journal: [], weight: [], ejac: [], skin: [], skinResearch: [], skinProcedures: [], plannedSessions: [], skinRoutineLogs: [], skinProductIntros: [], skinRoutineChanges: [] };
 const defaultProfile = {
   // Body
   sex: "", age: "", heightCm: "", weightKg: "",
@@ -4461,19 +4461,23 @@ function SkinLogForm({ onAdd, recent }) {
   );
 }
 
-function SkinRoutineCard({ goals, onSaveGoals, conflicts }) {
+function SkinRoutineCard({ goals, onSaveGoals, conflicts, addEntry }) {
   const routine = goals.skinRoutine || { am: [], pm: [] };
   const [adding, setAdding] = useState(null); // "am" | "pm" | null
   const [val, setVal] = useState("");
+  const logChange = (slot, action, product) => { if (addEntry) addEntry("skinRoutineChanges")({ id: Date.now(), date: getTodayStr(), slot, action, product }); };
   function addStep(slot) {
     if (!val.trim()) return;
     const next = { ...routine, [slot]: [...(routine[slot] || []), { product: val.trim() }] };
     onSaveGoals({ ...goals, skinRoutine: next });
+    logChange(slot, "added", val.trim());
     setVal(""); setAdding(null); haptic(8);
   }
   function removeStep(slot, i) {
+    const removed = routine[slot][i];
     const next = { ...routine, [slot]: routine[slot].filter((_, idx) => idx !== i) };
     onSaveGoals({ ...goals, skinRoutine: next });
+    if (removed) logChange(slot, "removed", removed.product);
   }
   const Col = ({ slot, label }) => (
     <div className="skin-routine-col">
@@ -4492,7 +4496,7 @@ function SkinRoutineCard({ goals, onSaveGoals, conflicts }) {
     </div>
   );
   return (
-    <Card title="Routine" sub="Tag products so FitLog can flag conflicts">
+    <Card title="Routine" sub="Tag products so SkinLog can flag conflicts">
       <div className="skin-routine-grid"><Col slot="am" label="☀ AM" /><Col slot="pm" label="☾ PM" /></div>
       {conflicts.length > 0 && (
         <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
@@ -4520,7 +4524,7 @@ function SkinExperimentCard({ data, goals, onSaveGoals }) {
           <input value={name} onChange={e => setName(e.target.value)} placeholder="What are you testing? (e.g. azelaic acid)" />
           <button className="btn" onClick={() => start(name)}>Start</button>
         </div>
-        <p className="muted small" style={{ marginTop: 8, lineHeight: 1.5 }}>FitLog snapshots your current skin rating as a baseline, tracks physiology alongside (so a win isn't just a good-sleep month), and tells you to hold everything else steady. Give it the full window — cell turnover is ~6–8 weeks.</p>
+        <p className="muted small" style={{ marginTop: 8, lineHeight: 1.5 }}>SkinLog snapshots your current skin rating as a baseline, tracks physiology alongside (so a win isn't just a good-sleep month), and tells you to hold everything else steady. Give it the full window — cell turnover is ~6–8 weeks.</p>
       </Card>
     );
   }
@@ -4620,7 +4624,7 @@ function SkinPhotos() {
         + Add photo
         <input type="file" accept="image/*" capture="user" onChange={onFile} style={{ display: "none" }} />
       </label>
-      <p className="muted small" style={{ marginTop: 8, lineHeight: 1.45 }}>For useful comparisons: same spot, same light, no makeup, same time of day. FitLog shows the photos honestly — it won't invent "pore counts" or a skin score.</p>
+      <p className="muted small" style={{ marginTop: 8, lineHeight: 1.45 }}>For useful comparisons: same spot, same light, no makeup, same time of day. SkinLog shows the photos honestly — it won't invent "pore counts" or a skin score.</p>
     </Card>
   );
 }
@@ -4628,26 +4632,97 @@ function SkinPhotos() {
 const SKIN_PROCEDURES = ["Microneedling", "Subcision", "PRP", "Chemical peel", "Laser", "Botox", "Filler", "Facial", "Extraction", "LED therapy", "Other"];
 
 // Educational recovery/prep guidance per procedure. Defers specifics to the provider.
-const PROC_RECOVERY = {
-  Microneedling: { down: "3–5 days", expect: "Redness/flushing 1–2 days, light flaking", avoid: "retinoids, AHA/BHA acids, vitamin C, exfoliation and direct sun for ~3–5 days; no makeup 24h", tip: "Gentle cleanser, bland moisturizer, strict SPF once healed." },
-  Subcision: { down: "1–2 weeks", expect: "Bruising and swelling 1–2 weeks; lumpiness can persist a while", avoid: "actives and harsh products; don't massage unless your provider tells you to", tip: "This is a medical procedure — follow your provider's aftercare exactly. Nicotine slows healing." },
-  PRP: { down: "3–5 days", expect: "Redness, mild swelling/bruising", avoid: "actives and sun ~3–5 days; no vigorous exercise 24–48h", tip: "Gentle care only; follow provider aftercare." },
-  "Chemical peel": { down: "3–7 days (depth-dependent)", expect: "Peeling/flaking days 2–5", avoid: "actives, scrubs, picking the peeling skin, and sun", tip: "Moisturize and let it shed naturally; SPF is critical." },
-  Laser: { down: "5–7 days", expect: "Redness/swelling, possible darkening then peeling", avoid: "actives, heat, sun; strict SPF for weeks", tip: "Follow provider aftercare closely; nicotine impairs healing." },
-  Botox: { down: "~1 day", expect: "Tiny bumps that settle fast; results in 3–7 days", avoid: "lying down/exercise 4h; rubbing the area 24h", tip: "Don't massage the treated muscles." },
-  Filler: { down: "2–5 days", expect: "Swelling/bruising a few days", avoid: "exercise/heat 24–48h; massaging the area", tip: "Follow provider aftercare." },
-  Facial: { down: "~1 day", expect: "Mild redness, especially after extractions", avoid: "actives 24h if extractions were done", tip: "Keep the routine simple right after." },
-  Extraction: { down: "1–2 days", expect: "Redness/marks briefly", avoid: "picking and actives 24h", tip: "Spot-treat; don't squeeze more at home." },
-  "LED therapy": { down: "none", expect: "No downtime", avoid: "nothing major", tip: "Consistency beats intensity here." },
-  Other: { down: "varies", expect: "Depends on the treatment", avoid: "ask your provider what to pause", tip: "Follow the aftercare you were given." },
+const PROC_PLAN = {
+  Microneedling: { down: "3–5 days", steps: [
+    { d: -14, t: "Pause retinoids & strong actives (if your provider agrees)", why: "lowers irritation on the day" },
+    { d: -3, t: "Stop exfoliating acids and scrubs; avoid sunburn and tanning", why: "compromised skin reacts worse" },
+    { d: -1, t: "Hydrate well; plan to arrive with clean, bare skin", why: "better tolerance, lower infection risk" },
+    { d: 0, t: "Gentle cleanse, hyaluronic + bland moisturizer; no makeup 24h", why: "the barrier is briefly open" },
+    { d: 1, t: "Expect redness/flushing; SPF even indoors; no actives", why: "skin is raw and photosensitive" },
+    { d: 3, t: "Light flaking is normal — keep it simple, don't pick", why: "picking causes marks/scarring" },
+    { d: 7, t: "Reintroduce actives slowly if calm (confirm with provider)", why: "barrier has recovered" },
+  ] },
+  Subcision: { down: "1–2 weeks", medical: true, steps: [
+    { d: -7, t: "Ask your provider about pausing blood thinners / alcohol", why: "reduces bruising — medical, provider decides" },
+    { d: -1, t: "Arrive with clean skin and clear your calendar", why: "visible bruising and swelling are expected" },
+    { d: 0, t: "Cold compress as directed; gentle care only", why: "controls swelling early" },
+    { d: 2, t: "Bruising/swelling peaks; don't massage unless told to", why: "can disrupt healing tissue" },
+    { d: 7, t: "Most bruising fading; keep actives off the area", why: "tissue is still remodeling" },
+    { d: 14, t: "Firmness/lumps can persist — attend your provider review", why: "remodeling takes weeks" },
+  ] },
+  PRP: { down: "3–5 days", steps: [
+    { d: -3, t: "Stay hydrated; pause strong actives if advised", why: "calmer baseline skin" },
+    { d: 0, t: "Gentle care only; no makeup that day", why: "injection sites are fresh" },
+    { d: 1, t: "Expect redness and mild swelling; SPF; skip workouts 24–48h", why: "limits flushing/swelling" },
+    { d: 3, t: "Resume gentle routine; still no harsh actives", why: "skin settling" },
+    { d: 5, t: "Reintroduce actives slowly if calm", why: "recovered enough" },
+  ] },
+  "Chemical peel": { down: "3–7 days", steps: [
+    { d: -7, t: "Stop retinoids/acids per your provider; no waxing", why: "avoids over-exfoliation" },
+    { d: -1, t: "No sunburn; arrive bare-skinned", why: "peels need intact skin" },
+    { d: 0, t: "Follow neutralise/aftercare exactly; bland moisturizer", why: "depth-specific steps matter" },
+    { d: 2, t: "Peeling/flaking begins — do NOT pick or pull", why: "picking scars and pigments" },
+    { d: 5, t: "Keep moisturising; strict SPF", why: "new skin burns easily" },
+    { d: 7, t: "Reintroduce actives once peeling fully stops", why: "barrier restored" },
+  ] },
+  Laser: { down: "5–7 days", steps: [
+    { d: -14, t: "Strict sun avoidance; no self-tan; pause actives as advised", why: "tanned skin raises burn/pigment risk" },
+    { d: -1, t: "Arrive clean, no makeup/products", why: "clear field for treatment" },
+    { d: 0, t: "Cool compresses, bland moisturizer; follow aftercare", why: "skin is heat-stressed" },
+    { d: 2, t: "Redness/swelling, possible darkening; SPF is non-negotiable", why: "photosensitive and fragile" },
+    { d: 5, t: "Light peeling/sloughing may happen — let it shed", why: "picking marks the skin" },
+    { d: 14, t: "Reintroduce actives slowly; keep sun protection up for weeks", why: "pigment risk lingers" },
+  ] },
+  Botox: { down: "~1 day", steps: [
+    { d: 0, t: "Stay upright 4h; no exercise or rubbing the area 24h", why: "keeps product where intended" },
+    { d: 1, t: "Normal routine; avoid facials/massage on the area a few days", why: "avoids migration" },
+    { d: 4, t: "Effect appears over 3–7 days; review if uneven at 2 weeks", why: "it takes time to settle" },
+  ] },
+  Filler: { down: "2–5 days", steps: [
+    { d: -3, t: "Ask about pausing alcohol/blood thinners", why: "less bruising — provider decides" },
+    { d: 0, t: "Ice gently; no exercise/heat 24–48h; don't massage", why: "limits swelling and migration" },
+    { d: 2, t: "Swelling/bruising peak then fade; avoid facials a couple weeks", why: "let it integrate" },
+    { d: 14, t: "Final result; review with provider if needed", why: "swelling fully gone" },
+  ] },
+  Facial: { down: "~1 day", steps: [
+    { d: 0, t: "Skip actives that night if extractions were done", why: "skin is briefly sensitised" },
+    { d: 1, t: "Back to normal; SPF as always", why: "no real downtime" },
+  ] },
+  Extraction: { down: "1–2 days", steps: [
+    { d: 0, t: "Spot-treat gently; don't squeeze more at home", why: "DIY squeezing scars" },
+    { d: 1, t: "Marks fade; keep actives light 24h", why: "pores are open" },
+  ] },
+  "LED therapy": { down: "none", steps: [
+    { d: 0, t: "No downtime — resume everything", why: "non-ablative" },
+    { d: 1, t: "Consistency beats intensity — schedule regular sessions", why: "effects are cumulative" },
+  ] },
+  Other: { down: "varies", steps: [
+    { d: -3, t: "Ask your provider what to pause beforehand", why: "every treatment differs" },
+    { d: 0, t: "Follow the aftercare you were given exactly", why: "provider knows the specifics" },
+    { d: 3, t: "Reintroduce actives once your provider clears you", why: "avoid irritating healing skin" },
+  ] },
 };
 
-function ProcGuidance({ type, mode }) {
-  const g = PROC_RECOVERY[type] || PROC_RECOVERY.Other;
+function ProcTimeline({ type, procDate }) {
+  const plan = PROC_PLAN[type] || PROC_PLAN.Other;
+  const today = getTodayStr();
+  const base = new Date(procDate + "T00:00:00");
+  const dayN = Math.round((new Date(today + "T00:00:00") - base) / 86400000);
+  const fmt = off => { const dt = new Date(base.getTime() + off * 86400000); return `${dt.getMonth() + 1}/${dt.getDate()}`; };
+  const nowIdx = plan.steps.findIndex(s => s.d >= dayN);
   return (
-    <div className="proc-guide" data-mode={mode}>
-      <div className="proc-guide-h">{mode === "prep" ? "Prep & what to expect" : "Recovery"} · downtime {g.down}</div>
-      <div className="muted small" style={{ lineHeight: 1.5 }}><b>Expect:</b> {g.expect}.<br /><b>Avoid:</b> {g.avoid}.<br /><b>Tip:</b> {g.tip}</div>
+    <div className="proc-timeline" data-medical={plan.medical ? "1" : "0"}>
+      <div className="proc-tl-head">Science-based plan · downtime {plan.down}</div>
+      {plan.steps.map((s, i) => {
+        const state = nowIdx === -1 ? "past" : i < nowIdx ? "past" : i === nowIdx ? "now" : "future";
+        return (
+          <div key={i} className={`proc-tl-row ${state}`}>
+            <span className="proc-tl-when">{s.d === 0 ? "Day 0" : s.d < 0 ? `${s.d}d` : `+${s.d}d`}<small>{fmt(s.d)}</small></span>
+            <div className="proc-tl-body"><div className="proc-tl-act">{s.t}</div><div className="muted small">{s.why}</div></div>
+          </div>
+        );
+      })}
+      <p className="muted small" style={{ marginTop: 8, lineHeight: 1.45 }}>{plan.medical ? "This is a medical procedure — your provider's instructions override everything here." : "General, science-based aftercare — your provider's specific instructions always come first."} Nicotine slows healing; SPF protects every result.</p>
     </div>
   );
 }
@@ -4690,7 +4765,7 @@ function SkinProceduresCard({ data, addEntry, deleteEntry }) {
                 <div style={{ flex: 1 }}><div style={{ fontWeight: 600, fontSize: ".9rem" }}>{p.type}{p.provider ? ` · ${p.provider}` : ""}</div><div className="muted small">{formatShortDate(p.date)} · in {Math.max(0, Math.round((new Date(p.date + "T00:00:00") - Date.now()) / 86400000))} days</div></div>
                 <button className="skin-x" onClick={() => deleteEntry("skinProcedures")(p.id)}>×</button>
               </div>
-              <ProcGuidance type={p.type} mode="prep" />
+              <ProcTimeline type={p.type} procDate={p.date} />
             </div>
           ))}
         </div>
@@ -4705,7 +4780,7 @@ function SkinProceduresCard({ data, addEntry, deleteEntry }) {
                 <div style={{ flex: 1 }}><div style={{ fontWeight: 600, fontSize: ".9rem" }}>{p.type}{p.provider ? ` · ${p.provider}` : ""}</div><div className="muted small">{formatShortDate(p.date)}{p.notes ? ` — ${p.notes}` : ""}</div></div>
                 <button className="skin-x" onClick={() => deleteEntry("skinProcedures")(p.id)}>×</button>
               </div>
-              {p.date >= recentDate && <ProcGuidance type={p.type} mode="recovery" />}
+              {p.date >= recentDate && <ProcTimeline type={p.type} procDate={p.date} />}
             </div>
           ))}
         </div>
@@ -4716,7 +4791,7 @@ function SkinProceduresCard({ data, addEntry, deleteEntry }) {
   );
 }
 
-const SKIN_COACH_SYSTEM = `You are FitLog's skin coach. The user's full physiology + skin data is provided below. You are warm, concrete, and honest.
+const SKIN_COACH_SYSTEM = `You are SkinLog's skin coach. The user's full physiology + skin data is provided below. You are warm, concrete, and honest.
 
 YOUR EDGE: you can see how this person's sleep, nicotine, diet, training and stress move their skin — use those cross-domain links, no generic skincare app has them. Lead with the highest-evidence lever for THIS person.
 
@@ -4797,17 +4872,27 @@ function skinLogStreak(entries) {
   return s;
 }
 
+const DAIRY_LEVER_RE = /\b(milk|cheese|yogurt|yoghurt|dairy|whey|ice ?cream|latte|cappuccino)\b/i;
 function SkinLevers({ data, goals }) {
   const today = getTodayStr();
   const lastSleep = (data.sleep || []).filter(s => s.date === today || s.date === daysAgo(1)).sort((a, b) => (b.date || "").localeCompare(a.date || ""))[0];
   const need = estimateSleepNeed(data, goals).hours;
   const slept = lastSleep ? sleepTST(lastSleep) : null;
+  const waterMl = (data.water || []).filter(w => w.date === today).reduce((a, w) => a + (w.ml || 0), 0);
+  const waterGoal = (goals && goals.waterGoalMl) || 2500;
   const nic = (data.nicotine || []).filter(n => n.date === today).length;
-  const gl = dayGlycemicLoad((data.diet || []).filter(d => d.date === today));
+  const todayDiet = (data.diet || []).filter(d => d.date === today);
+  const gl = dayGlycemicLoad(todayDiet);
+  const dairy = todayDiet.some(d => DAIRY_LEVER_RE.test(`${d.name || ""} ${d.food || ""} ${d.notes || ""}`));
+  const rlogs = (data.skinRoutineLogs || []).filter(l => l.date === today);
+  const amDone = rlogs.some(l => l.slot === "am"), pmDone = rlogs.some(l => l.slot === "pm");
+  const routineN = (amDone ? 1 : 0) + (pmDone ? 1 : 0);
   const items = [
     { l: "Sleep", v: slept != null ? `${slept.toFixed(1)}h` : "—", warn: slept != null && slept < need - 1, ok: slept == null || slept >= need - 0.5 },
+    { l: "Water", v: waterMl ? `${(waterMl / 1000).toFixed(1)}L` : "—", warn: false, ok: waterMl >= waterGoal * 0.7 },
     { l: "Nicotine", v: nic === 0 ? "none" : `${nic}×`, warn: nic > 0, ok: nic === 0 },
-    { l: "Glycemic", v: gl.hasData ? gl.band : "—", warn: gl.band === "high", ok: !gl.hasData || gl.band !== "high" },
+    { l: "Diet", v: gl.hasData ? (gl.band + (dairy ? " · dairy" : "")) : (dairy ? "dairy" : "—"), warn: gl.band === "high" || dairy, ok: gl.hasData && gl.band !== "high" && !dairy },
+    { l: "Routine", v: routineN === 2 ? "AM·PM ✓" : routineN === 1 ? (amDone ? "AM ✓" : "PM ✓") : "—", warn: false, ok: routineN === 2 },
   ];
   return (
     <Card title="Today's skin levers" sub="the controllables — surfaced before they show up in your skin">
@@ -4818,6 +4903,7 @@ function SkinLevers({ data, goals }) {
           </div>
         ))}
       </div>
+      <p className="muted small" style={{ marginTop: 10, lineHeight: 1.45 }}>Sleep and nicotine are your strongest levers; water and a calm diet help a little. Hydration is real but oversold — don't expect miracles from water alone.</p>
     </Card>
   );
 }
@@ -4844,27 +4930,30 @@ function RoutineCheck({ data, addEntry, deleteEntry, compact }) {
   );
 }
 
-function QuickConditionLog({ data, addEntry }) {
-  const today = getTodayStr();
-  const loggedToday = (data.skin || []).some(s => s.date === today);
-  function quick(v) { addEntry("skin")({ id: Date.now(), date: today, condition: v, breakouts: 0, concern: "", notes: "" }); toast("✦ Skin logged"); haptic(8); }
-  return (
-    <div>
-      <div className="muted small" style={{ marginBottom: 6 }}>{loggedToday ? "Logged today ✓ — tap to update" : "How's your skin today?"}</div>
-      <div className="sleep-q-chips">{SKIN_CONDITION.map(c => <button key={c.v} className="sleep-q-chip" onClick={() => quick(c.v)}>{c.l}</button>)}</div>
-    </div>
-  );
-}
-
-function SkinDashboard({ data, goals, skin, addEntry, deleteEntry }) {
+function SkinDashboard({ data, goals, skin }) {
   const streak = skinLogStreak(data.skin);
+  const today = getTodayStr();
+  const procs = data.skinProcedures || [];
+  const upcoming = procs.filter(p => (p.date || "") > today).sort((a, b) => a.date.localeCompare(b.date))[0];
+  const recent = procs.filter(p => (p.date || "") <= today && p.date >= daysAgo(14)).sort((a, b) => b.date.localeCompare(a.date))[0];
+  const proc = upcoming || recent;
+  let procLine = null;
+  if (proc) {
+    const dayN = Math.round((new Date(today + "T00:00:00") - new Date(proc.date + "T00:00:00")) / 86400000);
+    const plan = PROC_PLAN[proc.type] || PROC_PLAN.Other;
+    const next = (plan.steps || []).filter(s => s.d >= dayN).sort((a, b) => a.d - b.d)[0];
+    procLine = { proc, dayN, next, upcoming: !!upcoming };
+  }
   return (
     <>
       <SkinLevers data={data} goals={goals} />
-      <Card title="Quick log">
-        <QuickConditionLog data={data} addEntry={addEntry} />
-        <div style={{ marginTop: 14 }}><RoutineCheck data={data} addEntry={addEntry} deleteEntry={deleteEntry} compact /></div>
-      </Card>
+      {procLine && (
+        <Card className="proc-countdown">
+          <div className="muted small" style={{ textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700 }}>{procLine.upcoming ? "Coming up" : "Recovering"}</div>
+          <div className="sleep-need-v" style={{ fontSize: "1.4rem" }}>{procLine.proc.type}{procLine.upcoming ? ` · in ${-procLine.dayN}d` : ` · day ${procLine.dayN}`}</div>
+          {procLine.next && <p className="muted small" style={{ lineHeight: 1.5, marginTop: 4 }}>{procLine.upcoming ? `Next: ${procLine.next.t}` : procLine.next.t} — {procLine.next.why}. See the full timeline in Plan.</p>}
+        </Card>
+      )}
       {skin ? (
         <>
           <Card>
@@ -4880,7 +4969,7 @@ function SkinDashboard({ data, goals, skin, addEntry, deleteEntry }) {
           {skin.topLever && <Card title="Your biggest skin lever" className="sleep-lever-card"><p className="sleep-lever-text">{skin.topLever.text}</p></Card>}
         </>
       ) : (
-        <Card title="Skin intelligence"><Empty icon="✦" title="Log your skin for a couple of weeks" hint="Once there's a week or two of entries, FitLog learns how your sleep, nicotine, diet and stress move your skin." /></Card>
+        <Card title="Skin intelligence"><Empty icon="✦" title="Log your skin for a couple of weeks" hint="Once there's a week or two of entries, SkinLog learns how your sleep, nicotine, diet and stress move your skin." /></Card>
       )}
     </>
   );
@@ -4928,6 +5017,78 @@ function ProductIntroCard({ data, addEntry, deleteEntry }) {
   );
 }
 
+function avgCondBetween(skin, startStr, endStr) {
+  const xs = (skin || []).filter(s => s.date >= startStr && s.date <= endStr && s.condition != null).map(s => s.condition);
+  return xs.length ? +(xs.reduce((a, b) => a + b, 0) / xs.length).toFixed(1) : null;
+}
+
+function ProductEffectCard({ data }) {
+  const today = getTodayStr();
+  const dayMs = 86400000;
+  const changes = [
+    ...(data.skinProductIntros || []).map(p => ({ name: p.name, date: p.startDate, slot: p.kind })),
+    ...(data.skinRoutineChanges || []).filter(c => c.action === "added").map(c => ({ name: c.product, date: c.date, slot: c.slot })),
+  ].filter(c => c.date).sort((a, b) => b.date.localeCompare(a.date));
+  if (!changes.length) return (
+    <Card title="Product effects" sub="add a product in Plan → SkinLog tracks its long-term effect here">
+      <Empty icon="🧴" title="No product changes logged yet" hint="When you introduce or add a product, SkinLog watches your skin for the weeks before and after to estimate its real effect." />
+    </Card>
+  );
+  return (
+    <Card title="Product effects" sub="before vs after — correlation over weeks, not proof">
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {changes.map((c, i) => {
+          const start = new Date(c.date + "T00:00:00");
+          const daysSince = Math.round((new Date(today + "T00:00:00") - start) / dayMs);
+          const before = avgCondBetween(data.skin, localDateStr(new Date(start.getTime() - 21 * dayMs)), localDateStr(new Date(start.getTime() - dayMs)));
+          const after = avgCondBetween(data.skin, c.date, localDateStr(new Date(start.getTime() + 21 * dayMs)));
+          const muddied = changes.some(o => o !== c && Math.abs((new Date(o.date + "T00:00:00") - start) / dayMs) <= 10);
+          let body;
+          if (daysSince < 14) body = <span className="muted small">Too soon — about {14 - daysSince} more days for a first read (skin is slow; give it 6–8 weeks for the full picture).</span>;
+          else if (before == null || after == null) body = <span className="muted small">Not enough skin logs around this change to compare yet.</span>;
+          else { const d = +(after - before).toFixed(1); body = <span className="small">{before} → {after}/5 <b style={{ color: d > 0.2 ? "var(--good)" : d < -0.2 ? "#d98a3c" : "inherit" }}>{d > 0 ? `↑ +${d}` : d < 0 ? `↓ ${d}` : "→ flat"}</b> over {daysSince} days</span>; }
+          return (
+            <div key={i} className="prod-effect">
+              <div className="prod-effect-h"><b>{c.name}</b><span className="muted small">{formatShortDate(c.date)}{c.slot ? ` · ${c.slot}` : ""}</span></div>
+              {body}
+              {muddied && <div className="muted small" style={{ marginTop: 4 }}>⚠ Other changes happened around the same time — hard to isolate this one.</div>}
+            </div>
+          );
+        })}
+      </div>
+      <p className="muted small" style={{ marginTop: 10, lineHeight: 1.45 }}>This is correlation, not proof. For a clean read, change one product at a time and give it 6–8 weeks.</p>
+    </Card>
+  );
+}
+
+function RoutineSuggestCard({ goals, conflicts }) {
+  const routine = goals.skinRoutine || { am: [], pm: [] };
+  const amText = (routine.am || []).map(s => s.product.toLowerCase()).join(" ");
+  const pmText = (routine.pm || []).map(s => s.product.toLowerCase()).join(" ");
+  const all = `${amText} ${pmText}`;
+  const count = (routine.am || []).length + (routine.pm || []).length;
+  const suggestions = [];
+  (conflicts || []).forEach(c => suggestions.push({ tone: "warn", evidence: "high", text: c }));
+  if ((routine.am || []).length && !/spf|sunscreen|sun ?screen|sun ?block/.test(amText)) suggestions.push({ tone: "warn", evidence: "high", text: "No morning SPF detected — add a daily SPF. It's the single highest-evidence step for ageing, pigmentation, and protecting any procedure results." });
+  if (/retin|tretinoin|adapalene|retinal|retinol/.test(all) && !/spf|sunscreen/.test(amText)) suggestions.push({ tone: "warn", evidence: "high", text: "You list a retinoid but no SPF — daily sun protection is essential while using one." });
+  if (count > 0 && !/moisturiz|moisturis|cream|lotion|hydrat|ceramide/.test(all)) suggestions.push({ tone: "neutral", evidence: "moderate", text: "No moisturizer listed — a basic one supports your barrier, especially alongside actives." });
+  if (count > 0 && !/cleans|wash|face ?wash|gel|foam/.test(all)) suggestions.push({ tone: "neutral", evidence: "low", text: "No cleanser listed — a gentle cleanser morning and night is a sensible base." });
+  if (!suggestions.length) suggestions.push({ tone: "ok", evidence: "", text: count ? "No gaps or conflicts detected. Hold steady and let your routine work — avoid changing several things at once." : "Add your AM/PM products above and SkinLog will check for gaps, conflicts, and missing SPF." });
+  return (
+    <Card title="Routine suggestions" sub="science-ranked tweaks from your actual routine">
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {suggestions.map((s, i) => (
+          <div key={i} className="rs-row" data-tone={s.tone}>
+            <span className="small" style={{ lineHeight: 1.5 }}>{s.text}</span>
+            {s.evidence && <span className="rs-ev">{s.evidence}</span>}
+          </div>
+        ))}
+      </div>
+      <p className="muted small" style={{ marginTop: 10, lineHeight: 1.45 }}>Suggestions, not prescriptions. Patch-test new actives; prescription products and persistent acne are a dermatologist's call.</p>
+    </Card>
+  );
+}
+
 const SKIN_TABS = [
   { k: "dash", label: "Dashboard" },
   { k: "log", label: "Log" },
@@ -4943,17 +5104,22 @@ function SkinSection({ data, goals, addEntry, deleteEntry, onSaveGoals }) {
   const conflicts = useMemo(() => detectRoutineConflicts(goals.skinRoutine), [goals.skinRoutine]);
   return (
     <div className="skin-scope stack">
+      <div className="skinlog-bg" aria-hidden="true">
+        <span className="sl-bloom b1" /><span className="sl-bloom b2" /><span className="sl-bloom b3" />
+        <span className="sl-leaf l1" /><span className="sl-leaf l2" /><span className="sl-leaf l3" /><span className="sl-leaf l4" /><span className="sl-leaf l5" /><span className="sl-leaf l6" />
+      </div>
+      <div className="skinlog-brand"><span className="skinlog-mark" />SkinLog</div>
       <div className="skin-tabs">
         {SKIN_TABS.map(t => <button key={t.k} className={`skin-tab ${tab === t.k ? "on" : ""}`} onClick={() => { setTab(t.k); haptic(6); }}>{t.label}</button>)}
       </div>
 
-      {tab === "dash" && <SkinDashboard data={data} goals={goals} skin={skin} addEntry={addEntry} deleteEntry={deleteEntry} />}
+      {tab === "dash" && <SkinDashboard data={data} goals={goals} skin={skin} />}
 
       {tab === "log" && (
         <>
           <SkinLogForm onAdd={addEntry("skin")} recent={data.skin} />
           <Card title="Routine check-off" sub="mark today's routine to build a consistency record"><RoutineCheck data={data} addEntry={addEntry} deleteEntry={deleteEntry} /></Card>
-          <SkinRoutineCard goals={goals} onSaveGoals={onSaveGoals} conflicts={conflicts} />
+          <SkinRoutineCard goals={goals} onSaveGoals={onSaveGoals} conflicts={conflicts} addEntry={addEntry} />
           <SkinPhotos />
         </>
       )}
@@ -4976,11 +5142,13 @@ function SkinSection({ data, goals, addEntry, deleteEntry, onSaveGoals }) {
                 </Card>
               )}
               <SkinExperimentCard data={data} goals={goals} onSaveGoals={onSaveGoals} />
+              <ProductEffectCard data={data} />
             </>
           ) : (
             <>
               <Card title="Insights"><Empty icon="✦" title="Not enough data yet" hint="Log your skin daily for a week or two and your trends, correlations and progress show up here." /></Card>
               <SkinAdviceCard skin={skin} conflicts={conflicts} />
+              <ProductEffectCard data={data} />
             </>
           )}
         </>
@@ -4989,6 +5157,7 @@ function SkinSection({ data, goals, addEntry, deleteEntry, onSaveGoals }) {
       {tab === "plan" && (
         <>
           <SkinProceduresCard data={data} addEntry={addEntry} deleteEntry={deleteEntry} />
+          <RoutineSuggestCard goals={goals} conflicts={conflicts} />
           <ProductIntroCard data={data} addEntry={addEntry} deleteEntry={deleteEntry} />
         </>
       )}
@@ -4997,7 +5166,7 @@ function SkinSection({ data, goals, addEntry, deleteEntry, onSaveGoals }) {
 
       {tab === "research" && <SkinResearchStore data={data} addEntry={addEntry} deleteEntry={deleteEntry} />}
 
-      <p className="muted small" style={{ textAlign: "center", lineHeight: 1.5, padding: "4px 12px" }}>FitLog's skin tools track, correlate, experiment and explain — they don't diagnose or prescribe. For persistent acne, suspicious spots, prescription actives, or the decision to get a procedure, see a dermatologist.</p>
+      <p className="muted small" style={{ textAlign: "center", lineHeight: 1.5, padding: "4px 12px" }}>SkinLog's skin tools track, correlate, experiment and explain — they don't diagnose or prescribe. For persistent acne, suspicious spots, prescription actives, or the decision to get a procedure, see a dermatologist.</p>
     </div>
   );
 }
@@ -5051,7 +5220,7 @@ function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, setData, 
   };
 
   return (
-    <div className="log-overlay">
+    <div className={`log-overlay${view === "skin" ? " skinlog-active" : ""}`}>
       <div className="log-overlay-head">
         <div className="log-overlay-head-inner">
           {view
