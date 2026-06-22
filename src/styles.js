@@ -963,6 +963,8 @@ input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
 }
 .log-close:active { background: var(--surface); }
 .log-overlay-body { flex: 1; overflow-y: auto; padding: 16px 16px 40px; }
+.log-overlay-inner { max-width: 600px; margin: 0 auto; width: 100%; }
+.log-overlay-head-inner { max-width: 600px; margin: 0 auto; width: 100%; display: flex; align-items: center; gap: 10px; }
 .log-group-title {
   font-size: .72rem; text-transform: uppercase; letter-spacing: .08em;
   color: var(--muted); font-weight: 700; margin: 16px 2px 8px;

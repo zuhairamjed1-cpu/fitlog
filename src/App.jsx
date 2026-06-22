@@ -4716,13 +4716,16 @@ function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, setData, 
   return (
     <div className="log-overlay">
       <div className="log-overlay-head">
-        {view
-          ? <button className="log-back" onClick={() => setView(null)}>‹ All</button>
-          : <span className="log-overlay-title">Log anything</span>}
-        <span className="log-overlay-mid">{view ? labelFor(view) : ""}</span>
-        <button className="log-close" onClick={onClose} aria-label="Close">✕</button>
+        <div className="log-overlay-head-inner">
+          {view
+            ? <button className="log-back" onClick={() => setView(null)}>‹ All</button>
+            : <span className="log-overlay-title">Log anything</span>}
+          <span className="log-overlay-mid">{view ? labelFor(view) : ""}</span>
+          <button className="log-close" onClick={onClose} aria-label="Close">✕</button>
+        </div>
       </div>
       <div className="log-overlay-body">
+        <div className="log-overlay-inner">
         {view ? renderForm() : (
           <div className="stack">
             <div className="muted small" style={{ marginBottom: 2 }}>Pick what you want to record</div>
@@ -4741,6 +4744,7 @@ function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, setData, 
             ))}
           </div>
         )}
+        </div>
       </div>
     </div>
   );
