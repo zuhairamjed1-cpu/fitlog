@@ -45,6 +45,9 @@ export function computeMacroTargets(data, goals, date = getTodayStr()) {
 
   const dailyDelta = Math.round((usedRate * KCAL_PER_KG) / 7);
   let calories = tdee + dailyDelta;
+  let fromPlan = false;
+  // if the active phase came from an imported plan with explicit calories, honour it
+  if (phase && phase.calories && phase.calories > 0) { calories = phase.calories; fromPlan = true; }
 
   // hard safety floor
   const sexF = (goals.profile && (goals.profile.sex || "").toLowerCase().startsWith("f"));
@@ -52,9 +55,9 @@ export function computeMacroTargets(data, goals, date = getTodayStr()) {
   let flooredTo = null;
   if (calories < floor) { calories = floor; flooredTo = floor; }
 
-  // protein: evidence-based g/kg (higher on a cut to spare muscle)
+  // protein: imported phase protein if present, else evidence-based g/kg
   const ppk = clamp(dir === "loss" ? 2.2 : dir === "gain" ? 2.0 : 1.8, 1.6, 2.4);
-  const protein = Math.round(ppk * cw);
+  const protein = (phase && phase.protein && phase.protein > 0) ? phase.protein : Math.round(ppk * cw);
   // fat: ~0.9 g/kg, hormone floor ~0.6
   const fat = Math.round(0.9 * cw);
   // carbs: remainder
@@ -62,11 +65,13 @@ export function computeMacroTargets(data, goals, date = getTodayStr()) {
   const carbs = Math.round(carbKcal / 4);
 
   return {
-    ready: true, calories, protein, carbs, fat,
+    ready: true, calories, protein, carbs, fat, fromPlan,
     tdee, tdeeSource, dailyDelta, usedRate: +usedRate.toFixed(3), reqRate: +(reqRate || 0).toFixed(3),
     clampedToCeiling, flooredTo, dir, proteinGkg: +ppk.toFixed(1), currentWeight: cw,
     tier: "calc", confidence: tdeeSource === "measured" ? "moderate" : "low–moderate",
-    note: `${tdeeSource === "measured" ? "TDEE from your logged intake vs weight change" : "TDEE estimated from profile + training days"}; ${dailyDelta === 0 ? "maintenance" : (dailyDelta > 0 ? `+${dailyDelta}` : dailyDelta) + " kcal/day vs maintenance"}${clampedToCeiling ? " (capped to a safe pace)" : ""}.`,
+    note: fromPlan
+      ? `From your imported plan${phase.name ? ` (${phase.name})` : ""}: ${calories} kcal, ${protein}g protein.`
+      : `${tdeeSource === "measured" ? "TDEE from your logged intake vs weight change" : "TDEE estimated from profile + training days"}; ${dailyDelta === 0 ? "maintenance" : (dailyDelta > 0 ? `+${dailyDelta}` : dailyDelta) + " kcal/day vs maintenance"}${clampedToCeiling ? " (capped to a safe pace)" : ""}.`,
   };
 }
 

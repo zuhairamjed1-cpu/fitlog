@@ -5298,7 +5298,7 @@ const GOAL_TYPES = [
   { k: "leanbulk", label: "Lean Bulk" }, { k: "cut", label: "Cut" }, { k: "minicut", label: "Mini Cut" },
   { k: "recomp", label: "Recomp" }, { k: "maintenance", label: "Maintenance" }, { k: "strength", label: "Strength" }, { k: "health", label: "Health" },
 ];
-const GP_TABS = [{ k: "plan", label: "Plan" }, { k: "state", label: "State" }, { k: "traj", label: "Trajectory" }, { k: "cons", label: "Constraints" }, { k: "fore", label: "Forecast" }, { k: "sim", label: "Simulate" }, { k: "report", label: "Report" }];
+const GP_TABS = [{ k: "plan", label: "Plan" }, { k: "state", label: "State" }, { k: "road", label: "Roadmap" }, { k: "traj", label: "Trajectory" }, { k: "cons", label: "Constraints" }, { k: "fore", label: "Forecast" }, { k: "sim", label: "Simulate" }, { k: "report", label: "Report" }];
 const GP_EXP = [{ k: "novice", label: "Novice (<1yr)" }, { k: "intermediate", label: "Intermediate" }, { k: "advanced", label: "Advanced (3yr+)" }];
 
 function TierBadge({ tier }) {
@@ -5317,13 +5317,14 @@ function GoalForm({ goals, currentWeight, onSave, onCancel }) {
   const [experience, setExp] = useState(gp.experience || "intermediate");
   const [freq, setFreq] = useState(gp.freq ?? 4);
   const [importedMacros, setImportedMacros] = useState(null);
+  const [importedRoadmap, setImportedRoadmap] = useState(null);
   const [importMsg, setImportMsg] = useState(null);
   const onImportFile = e => {
     const f = e.target.files && e.target.files[0]; if (!f) return;
     const reader = new FileReader();
     reader.onload = () => {
       const p = parseGoalMarkdown(String(reader.result || ""));
-      if (!p.anyFound) { setImportMsg("Couldn't recognise a plan in that file — fill the fields in below."); setImportedMacros(null); return; }
+      if (!p.anyFound) { setImportMsg("Couldn't recognise a plan in that file — fill the fields in below."); setImportedMacros(null); setImportedRoadmap(null); return; }
       if (p.type) setType(p.type);
       if (p.startWeight != null) setSW(p.startWeight);
       if (p.goalWeight != null) setGW(p.goalWeight);
@@ -5331,7 +5332,8 @@ function GoalForm({ goals, currentWeight, onSave, onCancel }) {
       if (p.targetDate) setTarget(p.targetDate);
       if (p.freq) setFreq(p.freq);
       setImportedMacros(p.macros || null);
-      setImportMsg(`Pulled out: ${p.found.join(", ")}. Review everything below, then save.`);
+      setImportedRoadmap(p.hasRoadmap ? p : null);
+      setImportMsg(`Imported ${p.found.join(", ")}.${p.hasRoadmap ? ` ${p.phases.length}-phase roadmap detected — it'll appear in the Roadmap tab.` : ""} Review below, then save.`);
       haptic(8);
     };
     reader.readAsText(f);
@@ -5340,6 +5342,16 @@ function GoalForm({ goals, currentWeight, onSave, onCancel }) {
   function save() {
     if (!goalWeight || !targetDate) { toast("Add a goal weight and target date"); return; }
     const payload = { ...goals, goalPlan: { type, startWeight: +startWeight || currentWeight || null, goalWeight: +goalWeight, startDate, targetDate, experience, freq: +freq || 4, priorities: gp.priorities || [] } };
+    if (importedRoadmap && importedRoadmap.hasRoadmap) {
+      const today = getTodayStr();
+      payload.goalPlan.phases = importedRoadmap.phases.map(p => ({
+        id: p.id, type: p.type, name: p.name, startDate: p.startDate, endDate: p.endDate,
+        startWeight: p.startWeight, goalWeight: p.goalWeight, calories: p.calories, protein: p.protein,
+        status: (p.endDate && p.endDate < today) ? "done" : (p.startDate && p.startDate <= today && (!p.endDate || p.endDate >= today)) ? "active" : "planned",
+        origin: "import",
+      }));
+      payload.goalPlan.roadmap = { checkpoints: importedRoadmap.checkpoints, deloads: importedRoadmap.deloads, rules: importedRoadmap.rules, longTerm: importedRoadmap.longTerm, meta: importedRoadmap.meta, importedAt: today };
+    }
     if (importedMacros) {
       if (importedMacros.calories) payload.calories = importedMacros.calories;
       if (importedMacros.protein) payload.protein = importedMacros.protein;
@@ -5398,6 +5410,63 @@ function TrajectoryChart({ traj, pts }) {
       <text x={pad.l - 4} y={Y(ymax) + 4} textAnchor="end" className="gp-axis">{Math.round(ymax)}</text>
       <text x={pad.l - 4} y={Y(ymin)} textAnchor="end" className="gp-axis">{Math.round(ymin)}</text>
     </svg>
+  );
+}
+
+function GoalRoadmapTab({ goals }) {
+  const gp = goals.goalPlan || {};
+  const phases = getPhases(goals.goalPlan);
+  const rm = gp.roadmap || null;
+  if (!phases.length && !rm) return <Card><Empty icon="◎" title="No roadmap yet" hint="Import a .md plan from the Plan tab (Edit your goal → Import a plan). A multi-phase roadmap with checkpoints, deloads and long-term targets will appear here." /></Card>;
+  const PHASE_C = { active: "#5cc8df", done: "#8fd989", planned: "#aab2c0" };
+  return (
+    <>
+      {phases.length > 0 && (
+        <Card title="Phases" sub={rm ? "imported from your plan" : "your roadmap"}>
+          {phases.map((p, i) => (
+            <div key={p.id || i} style={{ padding: "9px 0", borderBottom: i < phases.length - 1 ? "1px solid var(--line)" : "none" }}>
+              <div className="gp-stat-row"><span style={{ fontWeight: 600 }}>{p.name || (GOAL_TYPES.find(x => x.k === p.type) || {}).label || p.type}</span><span className="small" style={{ color: PHASE_C[p.status] || "#aab2c0" }}>{p.status === "active" ? "● now" : p.status === "done" ? "done" : "planned"}</span></div>
+              <div className="muted small" style={{ marginTop: 2 }}>{p.startDate} → {p.endDate}{p.startWeight != null && p.goalWeight != null ? ` · ${p.startWeight}→${p.goalWeight}kg` : ""}{p.calories ? ` · ${p.calories} kcal` : ""}{p.protein ? ` · ${p.protein}g` : ""}</div>
+            </div>
+          ))}
+        </Card>
+      )}
+      {rm && rm.checkpoints && rm.checkpoints.length > 0 && (
+        <Card title="Monthly checkpoints" sub="weekly-average weight targets">
+          {rm.checkpoints.map((c, i) => <div key={i} className="gp-stat-row"><span className="muted small">{c.label || c.date}</span><span>{c.target}kg{c.note ? ` · ${c.note}` : ""}</span></div>)}
+          <p className="muted small" style={{ marginTop: 8, lineHeight: 1.45 }}>Under target → add ~150–200 cal; over → drop ~150–200. The number serves the rate.</p>
+        </Card>
+      )}
+      {rm && rm.deloads && rm.deloads.length > 0 && (
+        <Card title="Deload schedule" sub="plateau insurance — don't skip">
+          {rm.deloads.map((d, i) => <div key={i} className="gp-stat-row"><span className="muted small">Deload {i + 1}</span><span>{d}</span></div>)}
+        </Card>
+      )}
+      {rm && rm.rules && rm.rules.length > 0 && (
+        <Card title="Decision & tracking rules">
+          {rm.rules.map((r, i) => <p key={i} className="small" style={{ lineHeight: 1.5, margin: "6px 0" }}>• {r}</p>)}
+        </Card>
+      )}
+      {rm && rm.longTerm && Object.keys(rm.longTerm).length > 0 && (
+        <Card title="Long-term target" sub="where this leg leads">
+          {rm.longTerm.currentFFMI && <div className="gp-stat-row"><span className="muted small">FFMI now</span><span>~{rm.longTerm.currentFFMI} <TierBadge tier="estimate" /></span></div>}
+          {rm.longTerm.targetFFMI && <div className="gp-stat-row"><span className="muted small">Target FFMI</span><span>{rm.longTerm.targetFFMI}</span></div>}
+          {rm.longTerm.targetWeight && <div className="gp-stat-row"><span className="muted small">Target lean weight</span><span>{rm.longTerm.targetWeight} kg</span></div>}
+          {rm.longTerm.leanToAdd && <div className="gp-stat-row"><span className="muted small">Lean mass to add</span><span>{rm.longTerm.leanToAdd}</span></div>}
+          {rm.longTerm.timeline && <div className="gp-stat-row"><span className="muted small">Realistic timeline</span><span>{rm.longTerm.timeline} <TierBadge tier="forecast" /></span></div>}
+          <p className="muted small" style={{ marginTop: 8, lineHeight: 1.45 }}>FFMI targets rest on an estimated body-fat %; a DEXA scan would be the Tier-1 anchor.</p>
+        </Card>
+      )}
+      {rm && rm.meta && (rm.meta.heightCm || rm.meta.maintenance) && (
+        <Card title="Plan baseline">
+          {rm.meta.heightCm && <div className="gp-stat-row"><span className="muted small">Height</span><span>{rm.meta.heightCm} cm</span></div>}
+          {rm.meta.startWeight && <div className="gp-stat-row"><span className="muted small">Start weight</span><span>{rm.meta.startWeight} kg</span></div>}
+          {rm.meta.bodyFatPct && <div className="gp-stat-row"><span className="muted small">Body fat</span><span>~{rm.meta.bodyFatPct}%</span></div>}
+          {rm.meta.maintenance && <div className="gp-stat-row"><span className="muted small">Maintenance</span><span>~{rm.meta.maintenance} kcal <TierBadge tier="estimate" /></span></div>}
+          {rm.importedAt && <p className="muted small" style={{ marginTop: 8 }}>Imported {rm.importedAt} from your .md plan.</p>}
+        </Card>
+      )}
+    </>
   );
 }
 
@@ -5655,6 +5724,7 @@ function GoalPlanSection({ data, goals, onSaveGoals, addEntry, deleteEntry }) {
       )}
 
       {tab === "state" && <GoalStateTab data={data} goals={goals} onSaveGoals={onSaveGoals} addEntry={addEntry} deleteEntry={deleteEntry} />}
+      {tab === "road" && <GoalRoadmapTab goals={goals} />}
 
       {tab === "traj" && (
         t ? (

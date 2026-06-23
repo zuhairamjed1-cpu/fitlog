@@ -219,6 +219,17 @@ ok("goalplan: constraints rank a primary lever", !!cons.primary && cons.levers.l
 
   const stA = computePhysiologyState({ weight: wt, sleep: [], exercise: [], sports: [], diet: [], nicotine: [], journal: [] }, g);
   ok("physiology: alignment carries why+fix advice array", Array.isArray(stA.alignment.advice), stA.alignment.advice.length);
+
+  // rich markdown roadmap import
+  const rmd = "# Plan\n### June 23, 2026 → December 23, 2026\n\n## Phase overview\n| Phase | Dates | Calories | Protein | Weight goal |\n|---|---|---|---|---|\n| **0 · Reverse & confirm** | Jun 23 – Jul 6 (2 wks) | ramp 2,300 to 2,650 | 160 g | 74.2 to ~75.0 kg |\n| **1 · Lean Bulk I** | Jul 7 – Sep 7 (9 wks) | ~2,900 (calibrate) | 165 g | ~75.0 to ~76.0 kg |\n\n## Monthly weight checkpoints\n| Date | Target | Note |\n|---|---|---|\n| Jul 23 | ~75.0 kg | start |\n\n## Deload schedule\n- ~Aug 25-31 and Oct 27-Nov 2\n\n## Decision & tracking rules\n- **Scale flat 3 weeks** then eat more.\n- **Gaining too fast** then trim 150 cal.\n";
+  const rp = parseGoalMarkdown(rmd);
+  ok("goalmd: parses multi-phase roadmap from tables", rp.hasRoadmap && rp.phases.length === 2 && rp.phases[0].type === "maintenance" && rp.phases[1].calories === 2900 && rp.phases[1].protein === 165, rp.phases.length);
+  ok("goalmd: phase dates → ISO", rp.phases[0].startDate === "2026-06-23" && rp.phases[1].endDate === "2026-09-07", [rp.phases[0].startDate, rp.phases[1].endDate]);
+  ok("goalmd: extracts checkpoints + rules", rp.checkpoints.length >= 1 && rp.rules.length >= 2, { c: rp.checkpoints.length, r: rp.rules.length });
+
+  const planGoals = { profile: { sex: "male", age: 25, heightCm: 182, weightKg: 74.2 }, goalPlan: { phases: [{ type: "leanbulk", name: "Lean Bulk I", startDate: daysAgo(2), endDate: daysAgo(-60), startWeight: 75, goalWeight: 76, calories: 2900, protein: 165, status: "active" }] } };
+  const mp = computeMacroTargets({ weight: wt }, planGoals);
+  ok("macros: honour imported phase calories/protein", mp.fromPlan === true && mp.calories === 2900 && mp.protein === 165, { cal: mp.calories, p: mp.protein });
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
