@@ -24,11 +24,17 @@ const lastNum = s => { if (s == null) return null; const m = String(s).replace(/
 function typeOf(name) { for (const [re, k] of TYPE_MAP) if (re.test(name || "")) return k; return null; }
 
 function mdToISO(s, year) {
-  const m = String(s).match(/([A-Za-z]{3,})\.?\s+(\d{1,2})/);
-  if (!m) return null;
-  const mo = MONTHS[m[1].slice(0, 3).toLowerCase()];
-  if (!mo) return null;
-  return { iso: `${year}-${String(mo).padStart(2, "0")}-${String(+m[2]).padStart(2, "0")}`, mo };
+  const str = String(s);
+  // "Mon D" / "Month D"  (Jun 23, January 7) — (?!\d) so a year (Jul 2026) isn't read as day 20
+  let m = str.match(/([A-Za-z]{3,})\.?\s+(\d{1,2})(?!\d)/);
+  let mo, day;
+  if (m && MONTHS[m[1].slice(0, 3).toLowerCase()]) { mo = MONTHS[m[1].slice(0, 3).toLowerCase()]; day = +m[2]; }
+  // "D Mon" / "D of Month"  (23 Jun, 7th of July)
+  if (!mo) { m = str.match(/(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?([A-Za-z]{3,})/); if (m && MONTHS[m[2].slice(0, 3).toLowerCase()]) { mo = MONTHS[m[2].slice(0, 3).toLowerCase()]; day = +m[1]; } }
+  // numeric "M/D" or "M-D" (6/23) — assume month/day
+  if (!mo) { m = str.match(/\b(\d{1,2})[\/.](\d{1,2})\b/); if (m && +m[1] >= 1 && +m[1] <= 12) { mo = +m[1]; day = +m[2]; } }
+  if (!mo || !day) return null;
+  return { iso: `${year}-${String(mo).padStart(2, "0")}-${String(day).padStart(2, "0")}`, mo };
 }
 
 // generic markdown table parser → [{ header:[], rows:[[]] }]
@@ -60,6 +66,24 @@ function bulletsIn(body) {
   return body.split(/\r?\n/).filter(l => /^\s*[-*]\s+/.test(l)).map(l => l.replace(/^\s*[-*]\s+/, "").replace(/\*\*/g, "").trim()).filter(Boolean);
 }
 
+// Map a parsed roadmap's phases onto the goalPlan.phases[] shape the State,
+// Roadmap and Adaptation engines consume. Pure + exported so the UI and the test
+// suite run the exact same code (no drift between "what parses" and "what shows").
+export function buildRoadmapPhases(parsed, today) {
+  const t = today || new Date().toISOString().slice(0, 10);
+  if (!parsed || !Array.isArray(parsed.phases) || !parsed.phases.length) return [];
+  return parsed.phases.map(x => ({
+    id: x.id, type: x.type, name: x.name,
+    startDate: x.startDate, endDate: x.endDate,
+    startWeight: x.startWeight, goalWeight: x.goalWeight,
+    calories: x.calories, protein: x.protein,
+    status: (x.endDate && x.endDate < t) ? "done"
+      : (x.startDate && x.startDate <= t && (!x.endDate || x.endDate >= t)) ? "active"
+        : "planned",
+    origin: "import",
+  }));
+}
+
 export function parseGoalMarkdown(text) {
   const t = String(text || "");
   const found = [];
@@ -77,12 +101,14 @@ export function parseGoalMarkdown(text) {
   const freqM = t.match(/(\d)\s*(?:x|×|days?)\s*(?:\/|per|a)?\s*(?:wk|week)/i); const freq = freqM ? +freqM[1] : null;
   if (Object.keys(meta).length) found.push("starting stats");
 
-  // ── phases (table with Phase + Dates) ──
+  // ── phases (table with a Phase/Block column + a Dates/Window column) ──
   const phases = [];
-  const phaseTbl = tables.find(tb => tb.header.some(h => /phase/.test(h)) && tb.header.some(h => /date/.test(h)));
+  const reName = /phase|block|stage|meso|mesocycle/;
+  const reDate = /date|window|when|timing|period|month/;
+  const phaseTbl = tables.find(tb => tb.header.some(h => reName.test(h)) && tb.header.some(h => reDate.test(h)));
   if (phaseTbl) {
-    const col = name => phaseTbl.header.findIndex(h => name.test(h));
-    const ci = { name: col(/phase/), dates: col(/date/), cal: col(/cal/), prot: col(/protein/), wt: col(/weight/) };
+    const col = re => phaseTbl.header.findIndex(h => re.test(h));
+    const ci = { name: col(reName), dates: col(reDate), cal: col(/cal|kcal|energy|intake/), prot: col(/protein|\bpro\b/), wt: col(/weight|goal|target|\bbw\b/) };
     let year = baseYear, lastMo = 0;
     phaseTbl.rows.forEach((r, idx) => {
       const nameRaw = (r[ci.name] || "").replace(/\*\*/g, "").replace(/^\s*\d+\s*·\s*/, "").trim();
@@ -95,7 +121,7 @@ export function parseGoalMarkdown(text) {
       if (eTry && s2 && eTry.mo < s2.mo) eYear++;
       const e2 = mdToISO(parts[1] || "", eYear);
       if (s2) lastMo = s2.mo;
-      const weeks = (datesRaw.match(/(\d+)\s*wk/) || [])[1];
+      const weeks = (datesRaw.match(/(\d+)\s*(?:wk|week)/) || [])[1];
       const wtCell = r[ci.wt] || "";
       const wNums = wtCell.replace(/,/g, "").match(/\d{2,3}(?:\.\d)?/g) || [];
       phases.push({
@@ -111,7 +137,39 @@ export function parseGoalMarkdown(text) {
     if (phases.length) found.push(`${phases.length} phases`);
   }
 
-  // ── monthly checkpoints (table with Date + Target) ──
+  // ── fallback: phases written as headed sections (## Phase 1: Lean Bulk … ) ──
+  // Many AI-written plans use headings + bullets instead of a table. Scan for
+  // headings that name a phase and pull dates / calories / protein / weight from
+  // the lines beneath each, up to the next heading.
+  if (!phases.length) {
+    const lines = t.split(/\r?\n/);
+    const heads = [];
+    lines.forEach((l, i) => { if (/^#{2,4}\s/.test(l) && /(phase|block|stage|mesocycle)\b/i.test(l)) heads.push(i); });
+    let year = baseYear, lastMo = 0;
+    heads.forEach((hi, idx) => {
+      const headTxt = lines[hi].replace(/^#{2,4}\s*/, "").replace(/\*\*/g, "").replace(/^\s*(?:phase|block|stage)\s*\d+\s*[:\-·.]?\s*/i, "").trim();
+      const end = idx + 1 < heads.length ? heads[idx + 1] : lines.length;
+      const body = lines.slice(hi, end).join("\n");
+      const dateLine = (body.match(/(?:dates?|window|timing|period|when)\s*[:\-]?\s*([^\n]+)/i) || [])[1] || body.match(/[A-Za-z]{3,}\.?\s+\d{1,2}\s*(?:[–—\-]|to|→)\s*[A-Za-z0-9]/i)?.[0] || "";
+      const parts = String(dateLine).split(/[–—\->→]| to /).map(s => s.trim()).filter(Boolean);
+      const sP = mdToISO(parts[0] || "", year); if (sP && sP.mo < lastMo) year++;
+      const s2 = mdToISO(parts[0] || "", year);
+      let eYear = year; const eTry = mdToISO(parts[1] || "", year); if (eTry && s2 && eTry.mo < s2.mo) eYear++;
+      const e2 = mdToISO(parts[1] || "", eYear); if (s2) lastMo = s2.mo;
+      const cal = lastNum((body.match(/(?:cal(?:orie)?s?|kcal|energy|intake)\D*?(\d[\d,]{2,4}(?:\s*(?:to|→|–|—|-)\s*\d[\d,]{2,4})?)/i) || [])[1]);
+      const prot = num((body.match(/protein\s*[:\-~≈]?\s*(\d{2,3})/i) || [])[1]);
+      const wM = body.match(/(\d{2,3}(?:\.\d)?)\s*(?:kg)?\s*(?:->|→|to|–|—|-)\s*~?(\d{2,3}(?:\.\d)?)\s*kg/i);
+      const weeks = (body.match(/(\d+)\s*(?:wk|week)/) || [])[1];
+      phases.push({
+        id: 1000 + idx, name: headTxt, type: typeOf(headTxt) || "leanbulk",
+        startDate: s2 ? s2.iso : null, endDate: e2 ? e2.iso : null, weeks: weeks ? +weeks : null,
+        calories: cal, protein: prot,
+        startWeight: wM ? parseFloat(wM[1]) : null, goalWeight: wM ? parseFloat(wM[2]) : null,
+        raw: { dates: dateLine },
+      });
+    });
+    if (phases.length) found.push(`${phases.length} phases`);
+  }
   let checkpoints = [];
   const cpTbl = tables.find(tb => tb.header.some(h => /date/.test(h)) && tb.header.some(h => /target|weight/.test(h)) && !tb.header.some(h => /phase|ffmi/.test(h)));
   if (cpTbl) {
@@ -167,18 +225,43 @@ export function parseGoalMarkdown(text) {
   if (type && !found.includes("goal type") && !phases.length) found.push("goal type");
   if (freq && !found.includes("training days")) found.push("training days");
 
-  // macros: from the active-ish first bulk phase, else loose match
+  // macros: prefer the phase that covers TODAY (so imported targets match where
+  // you actually are in the plan), else the first non-maintenance phase with
+  // calories, else any phase with calories, else a loose prose match.
+  const today = new Date().toISOString().slice(0, 10);
+  const inWindow = p => p.startDate && p.startDate <= today && (!p.endDate || p.endDate >= today);
+  let activePhaseIdx = phases.findIndex(p => p.calories && inWindow(p));
+  if (activePhaseIdx < 0) activePhaseIdx = phases.findIndex(p => p.calories && p.type !== "maintenance");
+  if (activePhaseIdx < 0) activePhaseIdx = phases.findIndex(p => p.calories);
+  const activeP = activePhaseIdx >= 0 ? phases[activePhaseIdx] : null;
   let macros = null;
-  const bulkP = phases.find(p => p.calories) ;
   const calLoose = num((t.match(/cal(?:orie)?s?[:\s]+([\d,]{3,5})/i) || [])[1]);
   const protLoose = num((t.match(/protein[:\s]+(\d{2,3})/i) || [])[1]);
-  const calories = (bulkP && bulkP.calories) || calLoose || null;
-  const protein = (bulkP && bulkP.protein) || protLoose || null;
+  const calories = (activeP && activeP.calories) || calLoose || null;
+  const protein = (activeP && activeP.protein) || protLoose || null;
   if (calories || protein) { macros = { calories, protein, carbs: null, fat: null }; if (!found.includes("macros")) found.push("macros"); }
 
+  // ── human-readable analysis summary (for the import preview) ──
+  const fmt = n => (n == null ? "?" : n.toLocaleString());
+  const summary = [];
+  if (phases.length) {
+    summary.push(`${phases.length} phase${phases.length > 1 ? "s" : ""}${startDate || targetDate ? `, ${startDate || "?"} → ${targetDate || "?"}` : ""}`);
+    if (startWeight != null || goalWeight != null) summary.push(`${startWeight ?? "?"} kg → ${goalWeight ?? "?"} kg${type ? ` (${type})` : ""}`);
+    if (activeP) summary.push(`Active now: ${activeP.name || activeP.type}${activeP.calories ? ` — ${fmt(activeP.calories)} kcal` : ""}${activeP.protein ? `, ${activeP.protein} g protein` : ""}`);
+  } else if (startWeight != null || goalWeight != null) {
+    summary.push(`${startWeight ?? "?"} kg → ${goalWeight ?? "?"} kg${type ? ` (${type})` : ""}${targetDate ? ` by ${targetDate}` : ""}`);
+    if (macros && (macros.calories || macros.protein)) summary.push(`Targets: ${macros.calories ? fmt(macros.calories) + " kcal" : ""}${macros.calories && macros.protein ? ", " : ""}${macros.protein ? macros.protein + " g protein" : ""}`);
+  }
+  const extras = [];
+  if (checkpoints.length) extras.push(`${checkpoints.length} checkpoint${checkpoints.length > 1 ? "s" : ""}`);
+  if (deloads.length) extras.push(`${deloads.length} deload${deloads.length > 1 ? "s" : ""}`);
+  if (rules.length) extras.push(`${rules.length} rule${rules.length > 1 ? "s" : ""}`);
+  if (extras.length) summary.push(extras.join(" · "));
+  if (longTerm.targetFFMI) summary.push(`Long-term: FFMI ${longTerm.targetFFMI}${longTerm.targetWeight ? ` (~${longTerm.targetWeight} kg)` : ""}`);
+
   return {
-    type, startWeight, goalWeight, startDate, targetDate, freq, macros,
-    meta, phases, checkpoints, deloads, rules, longTerm,
+    type, startWeight, goalWeight, startDate, targetDate, freq, macros, activePhaseIdx,
+    meta, phases, checkpoints, deloads, rules, longTerm, summary,
     found, anyFound: found.length > 0, hasRoadmap: phases.length > 0,
   };
 }

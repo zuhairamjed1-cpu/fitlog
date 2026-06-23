@@ -23,7 +23,7 @@ import { computePhysiologyState, computeRecoveryDebt } from "../src/engines/phys
 import { proposeAdaptation } from "../src/engines/adaptation.js";
 import { computePhaseResult, blendRate, logDecision, evaluateDecisions } from "../src/engines/strategy.js";
 import { computeMacroTargets, macrosDiffer } from "../src/engines/macros.js";
-import { parseGoalMarkdown } from "../src/engines/goalmd.js";
+import { parseGoalMarkdown, buildRoadmapPhases } from "../src/engines/goalmd.js";
 
 let pass = 0, fail = 0;
 const ok = (name, cond, got) => { if (cond) pass++; else { fail++; console.log("  ✗", name, "—", JSON.stringify(got)); } };
@@ -213,6 +213,13 @@ ok("goalplan: constraints rank a primary lever", !!cons.primary && cons.levers.l
   ok("macros: cut respects the safety floor", computeMacroTargets({ weight: wt }, { ...g, goalPlan: { type: "cut", startWeight: 74.2, goalWeight: 68, startDate: daysAgo(20), targetDate: daysAgo(-30), freq: 4 } }).calories >= 1500, 1);
   ok("macros: macrosDiffer flags stale targets", macrosDiffer(mt, g) === true, 1);
 
+  // estimate-only path is tiered honestly (no false "calculated" confidence) and runs lower than the old 1.7–1.8× multipliers
+  ok("macros: estimated TDEE is tiered as estimate + low confidence", mt.estimateOnly === true && mt.tier === "estimate" && mt.confidence === "low", { t: mt.tier, c: mt.confidence, e: mt.estimateOnly });
+  ok("macros: conservative activity factor keeps estimated maintenance sane", mt.tdee < mt.currentWeight * 42, mt.tdee);
+  // imported-plan calories override the estimate and are NOT flagged estimate-only
+  const mtPlan = computeMacroTargets({ weight: wt }, { ...g, goalPlan: { ...g.goalPlan, roadmap: { meta: { maintenance: 2650 } } } });
+  ok("macros: plan maintenance overrides the formula estimate", mtPlan.tdeeSource === "plan" && mtPlan.estimateOnly !== true, { s: mtPlan.tdeeSource, e: mtPlan.estimateOnly });
+
   const parsed = parseGoalMarkdown("Lean bulk from 74kg → 77kg. Target date: 2026-12-01. Protein: 165g. Train 5x/week.");
   ok("goalmd: extracts type+weights+date+freq+macros", parsed.type === "leanbulk" && parsed.startWeight === 74 && parsed.goalWeight === 77 && parsed.targetDate === "2026-12-01" && parsed.freq === 5 && parsed.macros.protein === 165, JSON.stringify(parsed.found));
   ok("goalmd: gibberish recognises nothing", parseGoalMarkdown("hello world, no plan here").anyFound === false, 1);
@@ -227,9 +234,42 @@ ok("goalplan: constraints rank a primary lever", !!cons.primary && cons.levers.l
   ok("goalmd: phase dates → ISO", rp.phases[0].startDate === "2026-06-23" && rp.phases[1].endDate === "2026-09-07", [rp.phases[0].startDate, rp.phases[1].endDate]);
   ok("goalmd: extracts checkpoints + rules", rp.checkpoints.length >= 1 && rp.rules.length >= 2, { c: rp.checkpoints.length, r: rp.rules.length });
 
+  // robustness: alternative table headers (Block / Window / kcal) + "D Mon" date order
+  const rv = parseGoalMarkdown("# P\n| Block | Window | kcal | Pro | Target |\n|---|---|---|---|---|\n| Bulk I | 7 Jul 2026 – 7 Sep 2026 | 2900 | 165 g | 75 → 76 kg |\n| Bulk II | 8 Sep – 9 Nov | 2950 | 170 g | 76 → 77 kg |\n");
+  ok("goalmd: parses Block/Window/kcal headers + D-Mon dates", rv.hasRoadmap && rv.phases.length === 2 && rv.phases[0].startDate === "2026-07-07" && rv.phases[0].calories === 2900, [rv.phases.length, rv.phases[0].startDate]);
+
+  // robustness: phases as headed sections (no table)
+  const rs = parseGoalMarkdown("# Roadmap 2026\n## Phase 1: Lean Bulk\n- Dates: Jul 7 – Sep 7\n- Calories: ~2900\n- Protein: 165 g\n- Weight: 75 → 76 kg\n## Phase 2: Mini-cut\n- Dates: Sep 8 – Oct 5\n- Calories: 2200\n- Protein: 180 g\n- Weight: 76 → 74 kg\n");
+  ok("goalmd: section-fallback parses phases without a table", rs.hasRoadmap && rs.phases.length === 2 && rs.phases[0].calories === 2900 && rs.phases[1].type === "minicut", [rs.phases.length, rs.phases[0].calories]);
+
+  // summary is a non-empty human-readable analysis for the preview
+  ok("goalmd: produces a summary array", Array.isArray(rp.summary) && rp.summary.length >= 2, rp.summary && rp.summary.length);
+
+  // active-phase macro selection: prefer a non-maintenance phase over the ramp/maintenance one
+  const ap = parseGoalMarkdown("# P\n| Phase | Dates | Calories | Protein | Weight |\n|---|---|---|---|---|\n| Confirm maintenance | — | 2400 | 150 g | 80 → 80 kg |\n| Lean bulk | — | 2900 | 165 g | 80 → 83 kg |\n");
+  ok("goalmd: macros prefer the working phase, not the maintenance ramp", ap.macros && ap.macros.calories === 2900, ap.macros && ap.macros.calories);
+
+  // active-phase macro selection: a phase whose window covers today wins
+  const Y = new Date().getFullYear();
+  const apW = parseGoalMarkdown(`# P ${Y}\n| Phase | Dates | Calories | Protein | Weight |\n|---|---|---|---|---|\n| This year | Jan 1 – Dec 31 | 3100 | 170 g | 78 → 82 kg |\n`);
+  ok("goalmd: macros come from the phase active today", apW.macros && apW.macros.calories === 3100, apW.macros && apW.macros.calories);
+
   const planGoals = { profile: { sex: "male", age: 25, heightCm: 182, weightKg: 74.2 }, goalPlan: { phases: [{ type: "leanbulk", name: "Lean Bulk I", startDate: daysAgo(2), endDate: daysAgo(-60), startWeight: 75, goalWeight: 76, calories: 2900, protein: 165, status: "active" }] } };
   const mp = computeMacroTargets({ weight: wt }, planGoals);
   ok("macros: honour imported phase calories/protein", mp.fromPlan === true && mp.calories === 2900 && mp.protein === 165, { cal: mp.calories, p: mp.protein });
+
+  // ── END-TO-END: any document → goalPlan.phases → getPhases → roadmap renders them ──
+  // Uses a plan whose phases are nothing like the default lean-bulk, to prove the
+  // roadmap reflects whatever phases the document actually contains.
+  const diffDoc = "# Cut then recomp 2026\n\n| Phase | Dates | Calories | Protein | Weight |\n|---|---|---|---|---|\n| **Aggressive cut** | Jan 5 – Mar 1 | 1800 | 200 g | 90 → 84 kg |\n| **Recomp** | Mar 2 – Jun 1 | 2400 | 190 g | 84 → 84 kg |\n| **Maintain & assess** | Jun 2 – Aug 1 | 2600 | 170 g | 84 → 85 kg |\n";
+  const dp = parseGoalMarkdown(diffDoc);
+  ok("e2e: parser recognises the document's own 3 phases", dp.hasRoadmap && dp.phases.length === 3 && dp.phases[0].type === "cut" && dp.phases[1].type === "recomp" && dp.phases[2].type === "maintenance", dp.phases.map(p => p.type));
+  const builtPhases = buildRoadmapPhases(dp, "2026-04-15");        // a date inside the Recomp window
+  const gpRoadmap = { goalPlan: { type: dp.type, goalWeight: 85, startDate: "2026-01-05", targetDate: "2026-08-01", phases: builtPhases } };
+  const shown = getPhases(gpRoadmap.goalPlan);
+  ok("e2e: roadmap shows all 3 imported phases (not the migrated single one)", shown.length === 3 && shown[0].name === "Aggressive cut" && shown[0].calories === 1800, shown.length);
+  ok("e2e: status is computed per phase (done / active / planned)", shown[0].status === "done" && shown[1].status === "active" && shown[2].status === "planned", shown.map(s => s.status));
+  ok("e2e: active phase = the one whose window covers the date", activePhase(gpRoadmap.goalPlan, "2026-04-15").name === "Recomp", activePhase(gpRoadmap.goalPlan, "2026-04-15").name);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -14,7 +14,11 @@ import { activePhase, phaseReqRate, phaseDir } from "./phases.js";
 import { getTodayStr } from "../lib/dates.js";
 
 const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
-const activityFactor = freq => (freq <= 2 ? 1.45 : freq <= 4 ? 1.6 : freq <= 5 ? 1.7 : 1.8);
+// Total-daily-energy multipliers over BMR. Deliberately conservative — the high
+// end of typical activity tables (1.7–1.9) routinely overshoots real maintenance
+// by hundreds of kcal. Logged intake-vs-weight or the plan's own maintenance
+// should override these whenever available.
+const activityFactor = freq => (freq <= 2 ? 1.35 : freq <= 4 ? 1.45 : freq <= 5 ? 1.55 : 1.6);
 
 export function computeMacroTargets(data, goals, date = getTodayStr()) {
   const wt = computeWeightTrend(data);
@@ -32,14 +36,17 @@ export function computeMacroTargets(data, goals, date = getTodayStr()) {
   if (reqRate > gainCeil) { usedRate = gainCeil; clampedToCeiling = true; }
   if (reqRate < lossFloor) { usedRate = lossFloor; clampedToCeiling = true; }
 
-  // TDEE — measured from logs if available, else Mifflin × activity
+  // TDEE — measured from logs if available, else the plan's stated maintenance, else Mifflin × activity
   const eb = computeEnergyBalance(data, goals);
   let tdee = (eb && eb.ready && eb.tdee) ? eb.tdee : null;
-  let tdeeSource = tdee ? "measured" : "estimated";
+  let tdeeSource = tdee ? "measured" : null;
   const bmr = mifflinBMR(goals.profile, cw);
+  const planMaint = gp && gp.roadmap && gp.roadmap.meta && gp.roadmap.meta.maintenance;
+  if (!tdee && planMaint) { tdee = planMaint; tdeeSource = "plan"; }
   if (!tdee) {
     const freq = (gp && gp.freq) || 4;
     tdee = bmr ? Math.round(bmr * activityFactor(freq)) : null;
+    tdeeSource = "estimated";
   }
   if (!tdee) return { ready: false, reason: "Add your profile (sex/age/height) or log food + weight so I can estimate TDEE." };
 
@@ -68,10 +75,14 @@ export function computeMacroTargets(data, goals, date = getTodayStr()) {
     ready: true, calories, protein, carbs, fat, fromPlan,
     tdee, tdeeSource, dailyDelta, usedRate: +usedRate.toFixed(3), reqRate: +(reqRate || 0).toFixed(3),
     clampedToCeiling, flooredTo, dir, proteinGkg: +ppk.toFixed(1), currentWeight: cw,
-    tier: "calc", confidence: tdeeSource === "measured" ? "moderate" : "low–moderate",
+    tier: fromPlan ? "calc" : tdeeSource === "measured" ? "measured" : tdeeSource === "plan" ? "calc" : "estimate",
+    confidence: tdeeSource === "measured" ? "moderate" : tdeeSource === "plan" || fromPlan ? "moderate" : "low",
+    estimateOnly: !fromPlan && tdeeSource === "estimated",
     note: fromPlan
       ? `From your imported plan${phase.name ? ` (${phase.name})` : ""}: ${calories} kcal, ${protein}g protein.`
-      : `${tdeeSource === "measured" ? "TDEE from your logged intake vs weight change" : "TDEE estimated from profile + training days"}; ${dailyDelta === 0 ? "maintenance" : (dailyDelta > 0 ? `+${dailyDelta}` : dailyDelta) + " kcal/day vs maintenance"}${clampedToCeiling ? " (capped to a safe pace)" : ""}.`,
+      : tdeeSource === "estimated"
+        ? `Rough estimate only: BMR (${bmr}) × a conservative activity factor ≈ ${tdee} kcal maintenance${planMaint ? ` — note your plan says ~${planMaint}` : ""}. Formula multipliers run high; log ~1 week of food + weight and I'll replace this with your real TDEE.`
+        : `${tdeeSource === "measured" ? "TDEE from your logged intake vs weight change" : "Maintenance from your imported plan"} (${tdee} kcal); ${dailyDelta === 0 ? "maintenance" : (dailyDelta > 0 ? `+${dailyDelta}` : dailyDelta) + " kcal/day"}${clampedToCeiling ? " (capped to a safe pace)" : ""}.`,
   };
 }
 

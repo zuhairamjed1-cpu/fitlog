@@ -18,7 +18,7 @@ import { getPhases, activePhase, applyPhaseChange } from "./engines/phases";
 import { proposeAdaptation } from "./engines/adaptation";
 import { computePhaseResult, summarizeDecisions, evaluateDecisions, logDecision } from "./engines/strategy";
 import { computeMacroTargets, macrosDiffer } from "./engines/macros";
-import { parseGoalMarkdown } from "./engines/goalmd";
+import { parseGoalMarkdown, buildRoadmapPhases } from "./engines/goalmd";
 import { buildBrain, formatBrainText, prioritizeInsights } from "./brain/brain";
 import { sleepTST, estimateSleepNeed, computeSleep } from "./engines/sleep";
 import { computeRecovery } from "./engines/recovery";
@@ -5319,23 +5319,67 @@ function GoalForm({ goals, currentWeight, onSave, onCancel }) {
   const [importedMacros, setImportedMacros] = useState(null);
   const [importedRoadmap, setImportedRoadmap] = useState(null);
   const [importMsg, setImportMsg] = useState(null);
+  const [pasteText, setPasteText] = useState("");
+  const [parsePreview, setParsePreview] = useState(null);
+  const [fileStatus, setFileStatus] = useState(null);
+
+  const buildGoalPayload = p => {
+    const today = getTodayStr();
+    const gw = p.goalWeight ?? (p.phases.length ? p.phases[p.phases.length - 1].goalWeight : null);
+    const td = p.targetDate ?? (p.phases.length ? p.phases[p.phases.length - 1].endDate : null);
+    if (gw == null || !td) return null;
+    const payload = { ...goals, goalPlan: { type: p.type || (goals.goalPlan && goals.goalPlan.type) || "leanbulk", startWeight: (p.startWeight ?? currentWeight ?? null), goalWeight: gw, startDate: p.startDate || today, targetDate: td, experience, freq: p.freq || +freq || 4, priorities: (goals.goalPlan && goals.goalPlan.priorities) || [] } };
+    if (p.hasRoadmap) {
+      payload.goalPlan.phases = buildRoadmapPhases(p, today);
+      payload.goalPlan.roadmap = { checkpoints: p.checkpoints, deloads: p.deloads, rules: p.rules, longTerm: p.longTerm, meta: p.meta, importedAt: today };
+    }
+    if (p.macros) { if (p.macros.calories) payload.calories = p.macros.calories; if (p.macros.protein) payload.protein = p.macros.protein; if (p.macros.carbs) payload.carbs = p.macros.carbs; if (p.macros.fat) payload.fat = p.macros.fat; }
+    // If the plan carries phase-level calories, let the active phase drive Log Meal
+    // targets automatically (they re-adjust as you move through phases). Otherwise
+    // any flat imported macros are a one-off manual set.
+    const hasPhaseCals = p.hasRoadmap && p.phases.some(x => x.calories);
+    payload.macroMode = hasPhaseCals ? "auto" : (p.macros ? "manual" : (goals.macroMode || "manual"));
+    return payload;
+  };
+
+  const commitImport = p => {
+    const payload = buildGoalPayload(p);
+    if (!payload) { toast("Add a goal weight + target date below first"); return; }
+    onSave(payload);
+    const bits = [];
+    if (p.hasRoadmap) bits.push(`${p.phases.length} phases`);
+    if (payload.macroMode === "auto") bits.push("macros now auto from your active phase");
+    else if (p.macros && (p.macros.calories || p.macros.protein)) bits.push("macros set");
+    toast(bits.length ? `✦ Applied — ${bits.join(", ")}. Open the Roadmap tab.` : "✦ Goal imported");
+    haptic(12);
+  };
+
+  const handlePlanText = (text, src) => {
+    let p;
+    try { p = parseGoalMarkdown(text || ""); }
+    catch (err) { setImportMsg("Couldn't parse that — error: " + (err && err.message)); setParsePreview(null); setFileStatus(`⚠ Error parsing ${src || "text"}`); return; }
+    if (!p || !p.anyFound) { setImportMsg(`Read ${src || "the text"} (${(text || "").length} chars) but found no recognisable plan. It needs weights like "74 → 77 kg", dates, or a phase table.`); setParsePreview(null); setFileStatus(`⚠ Read ${(text || "").length} chars — no plan recognised`); return; }
+    if (p.type) setType(p.type);
+    if (p.startWeight != null) setSW(p.startWeight);
+    if (p.goalWeight != null) setGW(p.goalWeight);
+    if (p.startDate) setStart(p.startDate);
+    if (p.targetDate) setTarget(p.targetDate);
+    if (p.freq) setFreq(p.freq);
+    setImportedMacros(p.macros || null);
+    setImportedRoadmap(p.hasRoadmap ? p : null);
+    setParsePreview(p);
+    setImportMsg(null);
+    setFileStatus(`✓ Parsed ${src || "text"} — ${p.hasRoadmap ? `${p.phases.length} phases` : "goal"} recognised`);
+    haptic(8);
+  };
+
   const onImportFile = e => {
-    const f = e.target.files && e.target.files[0]; if (!f) return;
+    const f = e.target.files && e.target.files[0];
+    if (!f) { setImportMsg("No file received — try again, or paste the text below."); setFileStatus("⚠ No file received"); return; }
+    setFileStatus(`Reading "${f.name}"…`);
     const reader = new FileReader();
-    reader.onload = () => {
-      const p = parseGoalMarkdown(String(reader.result || ""));
-      if (!p.anyFound) { setImportMsg("Couldn't recognise a plan in that file — fill the fields in below."); setImportedMacros(null); setImportedRoadmap(null); return; }
-      if (p.type) setType(p.type);
-      if (p.startWeight != null) setSW(p.startWeight);
-      if (p.goalWeight != null) setGW(p.goalWeight);
-      if (p.startDate) setStart(p.startDate);
-      if (p.targetDate) setTarget(p.targetDate);
-      if (p.freq) setFreq(p.freq);
-      setImportedMacros(p.macros || null);
-      setImportedRoadmap(p.hasRoadmap ? p : null);
-      setImportMsg(`Imported ${p.found.join(", ")}.${p.hasRoadmap ? ` ${p.phases.length}-phase roadmap detected — it'll appear in the Roadmap tab.` : ""} Review below, then save.`);
-      haptic(8);
-    };
+    reader.onerror = () => { setImportMsg("Couldn't read that file — try pasting the text instead."); setFileStatus(`⚠ Couldn't read "${f.name}"`); };
+    reader.onload = () => handlePlanText(String(reader.result || ""), `"${f.name}"`);
     reader.readAsText(f);
     e.target.value = "";
   };
@@ -5344,12 +5388,7 @@ function GoalForm({ goals, currentWeight, onSave, onCancel }) {
     const payload = { ...goals, goalPlan: { type, startWeight: +startWeight || currentWeight || null, goalWeight: +goalWeight, startDate, targetDate, experience, freq: +freq || 4, priorities: gp.priorities || [] } };
     if (importedRoadmap && importedRoadmap.hasRoadmap) {
       const today = getTodayStr();
-      payload.goalPlan.phases = importedRoadmap.phases.map(p => ({
-        id: p.id, type: p.type, name: p.name, startDate: p.startDate, endDate: p.endDate,
-        startWeight: p.startWeight, goalWeight: p.goalWeight, calories: p.calories, protein: p.protein,
-        status: (p.endDate && p.endDate < today) ? "done" : (p.startDate && p.startDate <= today && (!p.endDate || p.endDate >= today)) ? "active" : "planned",
-        origin: "import",
-      }));
+      payload.goalPlan.phases = buildRoadmapPhases(importedRoadmap, today);
       payload.goalPlan.roadmap = { checkpoints: importedRoadmap.checkpoints, deloads: importedRoadmap.deloads, rules: importedRoadmap.rules, longTerm: importedRoadmap.longTerm, meta: importedRoadmap.meta, importedAt: today };
     }
     if (importedMacros) {
@@ -5364,10 +5403,38 @@ function GoalForm({ goals, currentWeight, onSave, onCancel }) {
   }
   return (
     <Card title={gp.goalWeight ? "Edit your goal" : "Set your goal"} sub="build it here, or import a plan from a .md file">
-      <div className="gp-field"><label>Import a plan (.md)</label>
-        <input type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" onChange={onImportFile} style={{ fontSize: 13 }} />
-        {importMsg && <p className="muted small" style={{ marginTop: 6, lineHeight: 1.45 }}>{importMsg}</p>}
-        <p className="muted small" style={{ marginTop: 4, lineHeight: 1.4 }}>Upload a plan written by Claude (or anyone) — I'll pull out what I recognise. Or just fill it in below.</p>
+      <div className="gp-field"><label>Import a plan</label>
+        <input type="file" onChange={onImportFile} style={{ fontSize: 13 }} />
+        <textarea value={pasteText} onChange={e => setPasteText(e.target.value)} placeholder="…or paste your plan text here, then tap Parse" rows={3} style={{ width: "100%", marginTop: 8, resize: "vertical", background: "transparent", color: "inherit", border: "1px solid var(--line)", borderRadius: 10, padding: "8px 10px", fontSize: 13, fontFamily: "inherit" }} />
+        <button type="button" className="btn-ghost btn-sm" style={{ marginTop: 6 }} onClick={() => handlePlanText(pasteText, "pasted text")}>Parse pasted plan</button>
+        {fileStatus && <p className="small" style={{ marginTop: 8, lineHeight: 1.4, color: fileStatus.startsWith("✓") ? "#8fd989" : fileStatus.startsWith("⚠") ? "#f47e6e" : "var(--text-2)" }}>{fileStatus}</p>}
+        {importMsg && <p className="small" style={{ marginTop: 8, lineHeight: 1.45, color: "#f9c97e" }}>{importMsg}</p>}
+        {parsePreview && (
+          <div style={{ marginTop: 10, padding: 12, border: "1px solid var(--line)", borderRadius: 10 }}>
+            <div className="small" style={{ fontWeight: 600, color: "#8fd989" }}>✓ Found a plan — here's what I read</div>
+            {Array.isArray(parsePreview.summary) && parsePreview.summary.length > 0 && (
+              <ul style={{ margin: "7px 0 4px", paddingLeft: 18, lineHeight: 1.6 }}>
+                {parsePreview.summary.map((s, i) => <li key={i} className="small" style={{ color: "var(--text-2)" }}>{s}</li>)}
+              </ul>
+            )}
+            {parsePreview.phases.length > 0 && (
+              <div style={{ marginTop: 6, borderTop: "1px solid var(--line)", paddingTop: 6 }}>
+                {parsePreview.phases.map((p, i) => (
+                  <div key={i} className="small" style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "2px 0", color: "var(--text-2)" }}>
+                    <span>{p.name || p.type}</span>
+                    <span className="muted" style={{ whiteSpace: "nowrap" }}>{p.startDate ? p.startDate.slice(5) : "?"}→{p.endDate ? p.endDate.slice(5) : "?"}{p.calories ? ` · ${p.calories}kcal` : ""}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <p className="muted small" style={{ marginTop: 8, lineHeight: 1.45 }}>Applying sets your goal weight, dates{parsePreview.hasRoadmap ? ", phases and Roadmap" : ""}{parsePreview.phases.some(p => p.calories) ? ", and switches macros to auto (your active phase drives Log Meal)" : (parsePreview.macros ? ", and your macro targets" : "")}. Recognised: {parsePreview.found.join(", ")}.</p>
+            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+              <button type="button" className="btn-primary btn-sm" onClick={() => commitImport(parsePreview)}>Apply to my goal</button>
+              <button type="button" className="btn-ghost btn-sm" onClick={() => { setParsePreview(null); setImportMsg(null); setFileStatus(null); }}>Clear</button>
+            </div>
+          </div>
+        )}
+        <p className="muted small" style={{ marginTop: 6, lineHeight: 1.4 }}>Upload or paste a plan written by Claude (or anyone). A multi-phase roadmap imports straight into your goal and Roadmap tab.</p>
       </div>
       <div className="gp-field"><label>Goal type</label><div className="gp-chips">{GOAL_TYPES.map(t => <button key={t.k} className={`gp-chip ${type === t.k ? "on" : ""}`} onClick={() => setType(t.k)}>{t.label}</button>)}</div></div>
       <div className="gp-row2">
@@ -5705,7 +5772,7 @@ function GoalPlanSection({ data, goals, onSaveGoals, addEntry, deleteEntry }) {
           <Card title="Macros" sub="targets driven by your goal" action={<button className="btn-ghost btn-sm" onClick={() => { onSaveGoals({ ...goals, macroMode: goals.macroMode === "auto" ? "manual" : "auto" }); haptic(6); }}>{goals.macroMode === "auto" ? "Auto · on" : "Auto · off"}</button>}>
             {macros && macros.ready ? (
               <>
-                <div className="gp-stat-row"><span className="muted small">Calories</span><span>{macros.calories} kcal <TierBadge tier="calc" /></span></div>
+                <div className="gp-stat-row"><span className="muted small">Calories</span><span>{macros.calories} kcal <TierBadge tier={macros.tier || "calc"} /></span></div>
                 <div className="gp-stat-row"><span className="muted small">Protein</span><span>{macros.protein} g <span className="muted small">({macros.proteinGkg}g/kg)</span></span></div>
                 <div className="gp-stat-row"><span className="muted small">Carbs</span><span>{macros.carbs} g</span></div>
                 <div className="gp-stat-row"><span className="muted small">Fat</span><span>{macros.fat} g</span></div>
