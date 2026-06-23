@@ -18,6 +18,10 @@ import { lookupGI } from "../src/engines/gi-database.js";
 import { computeCarbTiming } from "../src/engines/carbtiming.js";
 import { planFueling, reconcileFueling, sleepWindow } from "../src/engines/fueling.js";
 import { buildBrain, formatBrainText } from "../src/brain/brain.js";
+import { getPhases, activePhase, phaseReqRate } from "../src/engines/phases.js";
+import { computePhysiologyState, computeRecoveryDebt } from "../src/engines/physiology.js";
+import { proposeAdaptation } from "../src/engines/adaptation.js";
+import { computePhaseResult, blendRate, logDecision, evaluateDecisions } from "../src/engines/strategy.js";
 
 let pass = 0, fail = 0;
 const ok = (name, cond, got) => { if (cond) pass++; else { fail++; console.log("  ✗", name, "—", JSON.stringify(got)); } };
@@ -149,6 +153,53 @@ const traj = buildTrajectory({ goalPlan: { startDate: "2026-03-01", targetDate: 
 ok("goalplan: trajectory computes status + projection", ["on-track", "ahead", "behind"].includes(traj.status) && traj.projectedEnd != null, traj.status);
 const cons = analyzeConstraints({ data, goals, goalPlan: { freq: 4 }, recovery: { readiness: 70 } });
 ok("goalplan: constraints rank a primary lever", !!cons.primary && cons.levers.length >= 1, cons.levers.length);
+
+// ── Strategic OS layer (phases / physiology / adaptation / strategy) ──
+{
+  const legacy = { type: "leanbulk", startWeight: 80, goalWeight: 84, startDate: daysAgo(28), targetDate: daysAgo(-90), freq: 4 };
+  ok("phases: legacy migrates to one active phase", getPhases(legacy).length === 1 && getPhases(legacy)[0].status === "active", 1);
+  ok("phases: active phase req rate is a gain", phaseReqRate(activePhase(legacy, daysAgo(0))) > 0, phaseReqRate(activePhase(legacy, daysAgo(0))));
+
+  const sleep = [], exercise = [], sports = [], weight = [], diet = [];
+  for (let i = 27; i >= 0; i--) {
+    const bad = i < 3;
+    sleep.push({ date: daysAgo(i), bedtime: "23:30", wakeTime: bad ? "05:30" : "07:30", duration: bad ? 6 : 7.6, quality: bad ? "Poor" : "Good", latencyMin: 10, wakeMin: 10, id: i });
+    if (i % 2 === 0) exercise.push({ date: daysAgo(i), raw: "Squat 100x5x5\nBench 80x5x5", id: "e" + i });
+    if (i % 7 === 0) sports.push({ date: daysAgo(i), sport: "Football", duration: "70", intensity: "Moderate", id: "s" + i });
+    for (let m = 0; m < 3; m++) diet.push({ date: daysAgo(i), protein: 55, calories: 950, carbs: 110, fat: 30, id: `d${i}-${m}` });
+  }
+  for (let k = 0; k < 14; k++) { const day = 27 - k * 2; weight.push({ date: daysAgo(day), kg: +(80 + (27 - day) / 28 * 1.1).toFixed(1), id: "w" + k }); }
+  const d2 = { sleep, exercise, sports, weight, diet, nicotine: [], journal: [], water: [] };
+  const g2 = { protein: 160, calories: 2800, profile: { sex: "male", age: 25, heightCm: 178, weightKg: 80, sleepNeedH: 8 }, goalPlan: legacy };
+
+  const debt = computeRecoveryDebt(d2, g2);
+  ok("physiology: recovery debt series + relative framing", debt.series.length === 28 && Number.isFinite(debt.relPct) && ["rising", "falling", "steady"].includes(debt.trend), debt.trend);
+  const st = computePhysiologyState(d2, g2);
+  ok("physiology: alignment is banded + tiered", ["On track", "Drifting", "Off track"].includes(st.alignment.band) && st.alignment.tier === "estimate", st.alignment.band);
+  ok("physiology: momentum banded with components", ["Strong", "Steady", "Stalling", "Reversing"].includes(st.momentum.band) && !!st.momentum.components.gapClosing, st.momentum.band);
+  ok("physiology: every soft field carries a tier", !!(st.recoveryDebt.tier && st.alignment.tier && st.momentum.tier && st.stressBudget.tier), 1);
+
+  const sparse = diet.filter((_, idx) => idx % 6 === 0).map(x => ({ ...x, protein: 20 }));
+  const st2 = computePhysiologyState({ ...d2, diet: sparse }, g2);
+  ok("physiology: divergence note fires when inputs low but outcomes ok", st2.adherence.overall < 70 && ["Strong", "Steady"].includes(st2.momentum.band) ? !!st2.momentum.divergenceNote : true, st2.momentum.divergenceNote ? "fired" : "n/a");
+
+  const base = { hasGoal: true, currentWeight: 80, trend: { confidence: "Moderate", spanDays: 28 }, recoveryDebt: { relPct: 10, trend: "steady" }, adherence: { overall: 85 }, phase: { type: "leanbulk" } };
+  ok("adaptation: gain-too-fast → reduce-surplus", (proposeAdaptation({ ...base, reqRate: 0.24, actualRate: 0.55 }, {}, daysAgo(0), []) || {}).kind === "reduce-surplus", 1);
+  ok("adaptation: low adherence → fix-adherence not a plan change", (() => { const p = proposeAdaptation({ ...base, reqRate: 0.24, actualRate: 0.55, adherence: { overall: 45 } }, {}, daysAgo(0), []); return !!p && p.kind === "fix-adherence" && p.change === null; })(), 1);
+  ok("adaptation: immature data → wait (hysteresis)", (proposeAdaptation({ ...base, reqRate: 0.24, actualRate: 0.55, trend: { confidence: "Low", spanDays: 9 } }, {}, daysAgo(0), []) || {}).kind === "wait", 1);
+  ok("adaptation: high recovery debt → deload", (proposeAdaptation({ ...base, reqRate: 0.24, actualRate: 0.26, recoveryDebt: { relPct: 55, trend: "rising" } }, {}, daysAgo(0), []) || {}).kind === "insert-deload", 1);
+  ok("adaptation: on-track → no proposal", proposeAdaptation({ ...base, reqRate: 0.24, actualRate: 0.26 }, {}, daysAgo(0), []) === null, 1);
+
+  const ph = { id: 7, type: "leanbulk", startDate: daysAgo(84), endDate: daysAgo(0), startWeight: 78, goalWeight: 80.5 };
+  const w2 = []; for (let k = 0; k < 10; k++) { const day = 84 - k * 9; w2.push({ date: daysAgo(day), kg: +(78 + (84 - day) / 84 * 3).toFixed(1) }); }
+  const res = computePhaseResult(ph, { weight: w2, diet: [] });
+  ok("strategy: phase result gives MODELED muscle/fat ranges", Array.isArray(res.estMuscleKg) && res.estMuscleKg.length === 2 && res.tier === "estimate", JSON.stringify(res.estMuscleKg));
+  const bl = blendRate([0.5, 0.55], 0.3);
+  ok("strategy: personal rate is a weak prior blended with evidence", bl.source === "blended" && bl.weight < 0.5 && bl.rate > 0.3 && bl.rate < 0.5, bl.rate);
+  let log = logDecision([], { date: daysAgo(30), rec: { kind: "reduce-surplus" }, metric: "weightRate", expectedDir: -1, baselineValue: 0.55 });
+  log = evaluateDecisions(log, { weightRate: 0.30 }, daysAgo(0), 21);
+  ok("strategy: decision evaluated correlationally", log[0].verdict === "improved" && log[0].correlational === true, log[0].verdict);
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

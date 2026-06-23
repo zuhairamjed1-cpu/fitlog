@@ -13,6 +13,10 @@ import { computeSkin, detectRoutineConflicts } from "./engines/skin";
 import { estimateGlycemicLoad, dayGlycemicLoad } from "./engines/glycemic";
 import { planFueling, reconcileFueling, sleepWindow, SESSION_TYPES } from "./engines/fueling";
 import { computeGoalPlan, formatGoalText, simulateGoal } from "./engines/goalplan";
+import { computePhysiologyState } from "./engines/physiology";
+import { getPhases, activePhase, applyPhaseChange } from "./engines/phases";
+import { proposeAdaptation } from "./engines/adaptation";
+import { computePhaseResult, summarizeDecisions, evaluateDecisions, logDecision } from "./engines/strategy";
 import { buildBrain, formatBrainText, prioritizeInsights } from "./brain/brain";
 import { sleepTST, estimateSleepNeed, computeSleep } from "./engines/sleep";
 import { computeRecovery } from "./engines/recovery";
@@ -20,7 +24,7 @@ import { computeRecovery } from "./engines/recovery";
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const TABS = ["Home", "Log", "History", "Coach", "Journal", "Settings", "Ejac"];
 const STORAGE_KEY = "fitlog_v5";
-const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], nicotine: [], nicotinePlans: [], journal: [], weight: [], ejac: [], skin: [], skinResearch: [], skinProcedures: [], plannedSessions: [], skinRoutineLogs: [], skinProductIntros: [], skinRoutineChanges: [], skinCoachPlans: [], goalSnapshots: [], goalReports: [] };
+const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], nicotine: [], nicotinePlans: [], journal: [], weight: [], ejac: [], skin: [], skinResearch: [], skinProcedures: [], plannedSessions: [], skinRoutineLogs: [], skinProductIntros: [], skinRoutineChanges: [], skinCoachPlans: [], goalSnapshots: [], goalReports: [], completedPhases: [], decisionLog: [] };
 const defaultProfile = {
   // Body
   sex: "", age: "", heightCm: "", weightKg: "",
@@ -5292,7 +5296,7 @@ const GOAL_TYPES = [
   { k: "leanbulk", label: "Lean Bulk" }, { k: "cut", label: "Cut" }, { k: "minicut", label: "Mini Cut" },
   { k: "recomp", label: "Recomp" }, { k: "maintenance", label: "Maintenance" }, { k: "strength", label: "Strength" }, { k: "health", label: "Health" },
 ];
-const GP_TABS = [{ k: "plan", label: "Plan" }, { k: "traj", label: "Trajectory" }, { k: "cons", label: "Constraints" }, { k: "fore", label: "Forecast" }, { k: "sim", label: "Simulate" }, { k: "report", label: "Report" }];
+const GP_TABS = [{ k: "plan", label: "Plan" }, { k: "state", label: "State" }, { k: "traj", label: "Trajectory" }, { k: "cons", label: "Constraints" }, { k: "fore", label: "Forecast" }, { k: "sim", label: "Simulate" }, { k: "report", label: "Report" }];
 const GP_EXP = [{ k: "novice", label: "Novice (<1yr)" }, { k: "intermediate", label: "Intermediate" }, { k: "advanced", label: "Advanced (3yr+)" }];
 
 function TierBadge({ tier }) {
@@ -5361,6 +5365,155 @@ function TrajectoryChart({ traj, pts }) {
   );
 }
 
+const BAND_COLOR = { "On track": "#8fd989", "Strong": "#8fd989", "Steady": "#5cc8df", "Drifting": "#f9c97e", "Stalling": "#f9c97e", "Off track": "#f47e6e", "Reversing": "#f47e6e", "no-data": "#aab2c0" };
+const barColor = s => s == null ? "#aab2c0" : s < 60 ? "#f47e6e" : s < 80 ? "#f9c97e" : "#8fd989";
+
+function GoalStateTab({ data, goals, onSaveGoals, addEntry, deleteEntry }) {
+  const today = getTodayStr();
+  const state = useMemo(() => computePhysiologyState(data, goals, today), [data, goals, today]);
+  const proposal = useMemo(() => proposeAdaptation(state, goals.goalPlan, today, data.completedPhases || []), [state, goals.goalPlan, data.completedPhases, today]);
+  const phases = getPhases(goals.goalPlan);
+
+  if (!state.hasGoal) return <Card><Empty icon="◎" title="Set a goal first" hint="Your physiology state reads against an active goal phase — add a goal weight and date in the Plan tab." /></Card>;
+
+  const al = state.alignment, mo = state.momentum, debt = state.recoveryDebt;
+
+  const applyProposal = p => {
+    const newPhases = applyPhaseChange(goals.goalPlan, p.change);
+    onSaveGoals({ ...goals, goalPlan: { ...goals.goalPlan, phases: newPhases, lastAdaptation: today } });
+    const isDebt = p.kind === "insert-deload";
+    addEntry("decisionLog")({
+      id: Date.now(), date: today, source: "adaptation", rec: { kind: p.kind },
+      metric: isDebt ? "recoveryDebt" : "weightRate", expectedDir: -1,
+      baselineValue: isDebt ? debt.value : state.actualRate,
+      takenInferred: null, followupValue: null, deltaAfter: null, verdict: null,
+    });
+    haptic(12); toast("✦ Strategy updated — logged for follow-up");
+  };
+
+  const logPhaseResult = ph => {
+    const res = computePhaseResult(ph, data);
+    addEntry("completedPhases")(res); haptic(10); toast("✦ Phase logged to strategy memory");
+  };
+
+  const decSummary = summarizeDecisions(evaluateDecisions(data.decisionLog || [], { weightRate: state.actualRate, recoveryDebt: debt.value }, today));
+  const donePhases = phases.filter(p => p.status === "done");
+  const loggedIds = new Set((data.completedPhases || []).map(r => r.id));
+
+  return (
+    <>
+      {/* ── ADAPTATION ── */}
+      {proposal ? (
+        <Card title="Strategic adaptation" className="gp-primary">
+          {proposal.actionable ? (
+            <>
+              <div className="gp-verdict" style={{ color: "#f9c97e", borderColor: "#f9c97e55" }}>Suggested change <TierBadge tier="forecast" /></div>
+              <p className="small" style={{ lineHeight: 1.55, marginTop: 8 }}>{proposal.rationale}</p>
+              {proposal.memoryNote && <p className="muted small" style={{ marginTop: 6, lineHeight: 1.5 }}>{proposal.memoryNote}</p>}
+              {proposal.newRoadmapPreview && (
+                <div style={{ marginTop: 10 }}>
+                  <div className="muted small" style={{ marginBottom: 4 }}>New roadmap</div>
+                  {proposal.newRoadmapPreview.map((ph, i) => <div key={i} className="gp-stat-row"><span className="muted small">{(GOAL_TYPES.find(x => x.k === ph.type) || {}).label || ph.type}{ph.status === "active" ? " · now" : ph.status === "done" ? " · done" : ""}</span><span className="small">{ph.startDate} → {ph.endDate}</span></div>)}
+                </div>
+              )}
+              <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                <button className="btn-primary btn-sm" onClick={() => applyProposal(proposal)}>Apply change</button>
+                <button className="btn-ghost btn-sm" onClick={() => { onSaveGoals({ ...goals, goalPlan: { ...goals.goalPlan, lastAdaptation: today } }); toast("Dismissed for now"); }}>Not now</button>
+              </div>
+              <p className="muted small" style={{ marginTop: 10, lineHeight: 1.45 }}>Proposed, not automatic. This is a forecast-grade suggestion from your trend — you decide.</p>
+            </>
+          ) : (
+            <>
+              <div className="gp-verdict" style={{ color: "#5cc8df", borderColor: "#5cc8df55" }}>{proposal.kind === "fix-adherence" ? "Fix execution first" : proposal.kind === "wait" ? "Watching" : "Settling"}</div>
+              <p className="small" style={{ lineHeight: 1.55, marginTop: 8 }}>{proposal.rationale}</p>
+            </>
+          )}
+        </Card>
+      ) : (
+        <Card><div className="gp-verdict" style={{ color: "#8fd989", borderColor: "#8fd98955" }}>Hold course</div><p className="muted small" style={{ marginTop: 8, lineHeight: 1.5 }}>No strategy change recommended — your trend is tracking the plan. Keep going.</p></Card>
+      )}
+
+      {/* ── ALIGNMENT (process) ── */}
+      <Card title="Goal alignment" sub="are your inputs serving the goal right now">
+        <div className="gp-verdict" style={{ color: BAND_COLOR[al.band] || "#aab2c0", borderColor: `${BAND_COLOR[al.band] || "#aab2c0"}55` }}>{al.band === "no-data" ? "Not enough data" : al.band} <TierBadge tier="estimate" /></div>
+        <div style={{ marginTop: 10 }}>
+          {[["Trajectory", al.components.trajectory], ["Training", al.components.training], ["Nutrition", al.components.nutrition], ["Recovery", al.components.recovery]].map(([label, s]) => (
+            <div key={label} className="gp-lever">
+              <div className="gp-lever-top"><span className="gp-lever-name">{label}</span><span className="gp-lever-score">{s == null ? "—" : s}</span></div>
+              <div className="gp-lever-bar"><div className="gp-lever-fill" style={{ width: `${s || 0}%`, background: barColor(s) }} /></div>
+            </div>
+          ))}
+        </div>
+        {al.riskAdj < 0 && <p className="muted small" style={{ marginTop: 8 }}>Risk adjustment: {al.riskAdj} (rate or recovery flag docking the overall)</p>}
+        <p className="muted small" style={{ marginTop: 8, lineHeight: 1.45 }}>Alignment is process quality — the band and the bars matter more than any single number.</p>
+      </Card>
+
+      {/* ── MOMENTUM (outcome) ── */}
+      <Card title="Strategic momentum" sub="are you actually moving toward the goal">
+        <div className="gp-verdict" style={{ color: BAND_COLOR[mo.band] || "#aab2c0", borderColor: `${BAND_COLOR[mo.band] || "#aab2c0"}55` }}>{mo.band === "no-data" ? "Not enough data" : mo.band} <TierBadge tier="estimate" /></div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+          <span className="carb-chip mixed">Gap: {mo.components.gapClosing || "—"}</span>
+          <span className="carb-chip mixed">Strength: {mo.components.strength || "—"}</span>
+          <span className="carb-chip mixed">Recovery: {mo.components.recovery || "—"}</span>
+        </div>
+        {mo.divergenceNote && <p className="small" style={{ marginTop: 10, lineHeight: 1.55, color: "#8fd989" }}>✓ {mo.divergenceNote}</p>}
+        <p className="muted small" style={{ marginTop: 8, lineHeight: 1.45 }}>Momentum reads outcomes, not checkboxes. On-track outcomes outrank a missed target.</p>
+      </Card>
+
+      {/* ── RECOVERY DEBT (relative) ── */}
+      <Card title="Recovery debt" sub="fatigue accumulating vs clearing">
+        {debt.hasData ? (
+          <>
+            <div className="gp-verdict" style={{ color: debt.trend === "rising" ? "#f47e6e" : debt.trend === "falling" ? "#8fd989" : "#5cc8df", borderColor: "#5cc8df55" }}>{debt.trend === "rising" ? "Rising" : debt.trend === "falling" ? "Clearing" : "Steady"} <TierBadge tier="estimate" /></div>
+            <p className="small" style={{ marginTop: 8, lineHeight: 1.55 }}>{debt.relPct > 0 ? `~${debt.relPct}% above` : debt.relPct < 0 ? `~${Math.abs(debt.relPct)}% below` : "right at"} your 4-week baseline.{debt.burnoutDays != null && debt.trend === "rising" ? ` At this rate you'd reach your overreaching zone in ~${debt.burnoutDays} days.` : ""}</p>
+            <p className="muted small" style={{ marginTop: 8, lineHeight: 1.45 }}>Shown relative to your own baseline — the weights are estimates, so the direction is what matters, not an absolute score.</p>
+          </>
+        ) : <Empty icon="◐" title="Log a couple of weeks" hint="Sleep + training history wakes up the recovery-debt trend." />}
+      </Card>
+
+      {/* ── STATE GRID ── */}
+      <Card title="Physiology state" sub="the shared layer every engine reads">
+        <div className="gp-stat-row"><span className="muted small">Energy balance</span><span>{state.energyAvailability.value != null ? `${state.energyAvailability.value > 0 ? "+" : ""}${state.energyAvailability.value} kcal/day` : "—"} <TierBadge tier="calc" /></span></div>
+        <div className="gp-stat-row"><span className="muted small">Training load (ACWR)</span><span>{state.trainingLoad.acwr ?? "—"} <TierBadge tier="calc" /></span></div>
+        <div className="gp-stat-row"><span className="muted small">Stress budget used</span><span>{state.stressBudget.usedPct}% <TierBadge tier="estimate" /></span></div>
+        <div className="gp-stat-row"><span className="muted small">Fatigue (acute)</span><span>{state.fatigue.value ?? "—"}{state.fatigue.value != null ? "/100" : ""} <TierBadge tier="estimate" /></span></div>
+        <p className="muted small" style={{ marginTop: 8, lineHeight: 1.45 }}>Energy balance is a maintenance-relative proxy; true energy availability needs body-fat %.</p>
+      </Card>
+
+      {/* ── ROADMAP ── */}
+      {phases.length > 0 && (
+        <Card title="Roadmap" sub="your phases">
+          {phases.map((ph, i) => (
+            <div key={ph.id || i} className="gp-stat-row">
+              <span className="muted small">{(GOAL_TYPES.find(x => x.k === ph.type) || {}).label || ph.type}{ph.status === "active" ? " · active" : ph.status === "done" ? " · done" : ""}{ph.origin === "adaptation" ? " · adapted" : ""}</span>
+              <span className="small">{ph.status === "done" && !loggedIds.has(ph.id) ? <button className="btn-ghost btn-sm" onClick={() => logPhaseResult(ph)}>Log result</button> : `${ph.startDate} → ${ph.endDate}`}</span>
+            </div>
+          ))}
+        </Card>
+      )}
+
+      {/* ── STRATEGY MEMORY ── */}
+      {(data.completedPhases || []).length > 0 && (
+        <Card title="Strategy memory" sub="your phases as experiments — personal priors">
+          {(data.completedPhases || []).map((r, i) => (
+            <div key={r.id || i} style={{ padding: "8px 0", borderBottom: i < data.completedPhases.length - 1 ? "1px solid var(--line)" : "none" }}>
+              <div className="gp-stat-row"><span>{(GOAL_TYPES.find(x => x.k === r.type) || {}).label || r.type} · {r.weeks}wk</span><span className="muted small">{r.success} <TierBadge tier="estimate" /></span></div>
+              <div className="muted small" style={{ marginTop: 3 }}>actual {r.actualRateKgWk ?? "—"} kg/wk (planned {r.plannedRateKgWk ?? "—"}) · Δ{r.deltaWeightKg ?? "—"}kg{r.estMuscleKg ? ` · ~${r.estMuscleKg[0]}–${r.estMuscleKg[1]}kg muscle / ${r.estFatKg[0]}–${r.estFatKg[1]}kg fat (modeled)` : ""}</div>
+            </div>
+          ))}
+        </Card>
+      )}
+
+      {/* ── DECISION OUTCOMES ── */}
+      {decSummary.note && (
+        <Card title="Decision outcomes" sub="did suggestions help — correlational">
+          <p className="small" style={{ lineHeight: 1.55 }}>{decSummary.note}</p>
+        </Card>
+      )}
+    </>
+  );
+}
+
 function GoalPlanSection({ data, goals, onSaveGoals, addEntry, deleteEntry }) {
   const [tab, setTab] = useState("plan");
   const [editing, setEditing] = useState(false);
@@ -5407,6 +5560,8 @@ function GoalPlanSection({ data, goals, onSaveGoals, addEntry, deleteEntry }) {
           ) : <Card><Empty icon="◎" title="Add a goal weight + dates" hint="Once your goal has a target weight and date, the reality check appears here." /></Card>}
         </>
       )}
+
+      {tab === "state" && <GoalStateTab data={data} goals={goals} onSaveGoals={onSaveGoals} addEntry={addEntry} deleteEntry={deleteEntry} />}
 
       {tab === "traj" && (
         t ? (
