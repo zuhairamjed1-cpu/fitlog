@@ -79,6 +79,75 @@ export function assessGoal({ goalPlan, currentWeight }) {
   return { weeks: r1(weeks), reqKgWk: r2(reqKgWk), reqPctWk: r2(reqPctWk), dir, verdict, note, expectedMuscleKg, expectedFatKg, realisticWeeks, realisticGoalWeight, exp, totalChange: r1(totalChange), startWeight: sw, goalWeight: gw };
 }
 
+// Verdict for a phase given only a weekly RATE (kg/wk) — same ceilings as assessGoal.
+function verdictFromRate(rate, weight, exp) {
+  const dir = rate > 0.02 ? "gain" : rate < -0.02 ? "loss" : "maintain";
+  if (dir === "gain") {
+    const maxKgWk = (GAIN_MAX_PCT_WK[exp] / 100) * weight;
+    const verdict = rate > maxKgWk * 1.4 ? "unrealistic" : rate > maxKgWk ? "aggressive" : "realistic";
+    return { dir, verdict, note: `~${r2(rate)}kg/wk vs a lean-gain ceiling of ~${r2(maxKgWk)}kg/wk for an ${exp} lifter.` };
+  }
+  if (dir === "loss") {
+    const loss = -rate, sustMax = (LOSS_SUST_MAX_PCT_WK / 100) * weight, hardMax = (LOSS_HARD_PCT_WK / 100) * weight;
+    const verdict = loss > hardMax ? "unrealistic" : loss > sustMax ? "aggressive" : "realistic";
+    return { dir, verdict, note: `~${r2(loss)}kg/wk loss vs a sustainable ~${r2(sustMax)}kg/wk ceiling.` };
+  }
+  return { dir, verdict: "realistic", note: "Maintenance pace — composition/performance work." };
+}
+
+// ─── PER-PHASE ROADMAP ANALYSIS ──────────────────────────────────────────────
+// Runs the SAME evidence-based reality check on every phase of an imported plan,
+// so each leg (bulk / cut / recomp / mini-cut) gets its own verdict + risk flags.
+// Weight-anchored phases reuse assessGoal verbatim; rate-only phases (e.g. a plan
+// that just says "+0.25kg/week") use verdictFromRate. Chains start-weights forward
+// when a phase doesn't state its own. Everything stays tier-honest: forecasts are
+// modeled ranges, never measured.
+export function analyzeRoadmap({ phases, currentWeight, experience = "intermediate" }) {
+  if (!Array.isArray(phases) || !phases.length) return null;
+  const exp = ["novice", "intermediate", "advanced"].includes(experience) ? experience : "intermediate";
+  let prevGoal = null, totalWeeks = 0;
+  const typeCounts = {}, risks = [], out = [];
+  phases.forEach(p => {
+    typeCounts[p.type] = (typeCounts[p.type] || 0) + 1;
+    const weeks = weeksBetween(p.startDate, p.endDate);
+    if (weeks && weeks > 0) totalWeeks += weeks;
+    const sw = p.startWeight ?? prevGoal ?? currentWeight ?? null;
+    let gw = p.goalWeight ?? null;
+    if (gw == null && p.targetRate != null && sw != null && weeks && weeks > 0) gw = r1(sw + p.targetRate * weeks);
+
+    let a = null;
+    if (sw != null && gw != null && weeks && weeks > 0) {
+      a = assessGoal({ goalPlan: { startWeight: sw, goalWeight: gw, startDate: p.startDate, targetDate: p.endDate, experience: exp }, currentWeight: sw });
+    }
+    let dir = a ? a.dir : null, verdict = a ? a.verdict : null, note = a ? a.note : null;
+    const rate = a ? a.reqKgWk : (p.targetRate != null ? p.targetRate : null);
+    if (!a && rate != null && (sw || currentWeight)) {
+      const v = verdictFromRate(rate, sw || currentWeight, exp); dir = v.dir; verdict = v.verdict; note = v.note;
+    }
+    if (!dir) dir = (p.type === "cut" || p.type === "minicut") ? "loss" : p.type === "maintenance" ? "maintain" : "gain";
+
+    const phaseRisks = [];
+    if (verdict === "unrealistic") phaseRisks.push(dir === "gain" ? "Surplus likely too high — excess skews to fat" : dir === "loss" ? "Deficit too aggressive — muscle-loss & rebound risk" : "Pace exceeds evidence");
+    else if (verdict === "aggressive") phaseRisks.push(dir === "gain" ? "Slightly fast gain — expect some extra fat" : dir === "loss" ? "Fast cut — keep protein high & keep lifting" : "On the fast side");
+    if (weeks != null && weeks > 0 && weeks < 2) phaseRisks.push("Very short phase — limited adaptation window");
+    if (p.calories == null && p.targetRate == null) phaseRisks.push("No calorie or rate target set");
+    phaseRisks.forEach(r => risks.push(`${p.name || p.type}: ${r}`));
+
+    out.push({
+      id: p.id, name: p.name, type: p.type, startDate: p.startDate, endDate: p.endDate,
+      weeks: r1(weeks), startWeight: sw, goalWeight: gw, calories: p.calories ?? null, protein: p.protein ?? null,
+      targetRate: rate == null ? null : r2(rate), focus: p.focus || null,
+      dir, verdict: verdict || "realistic", note,
+      expectedMuscleKg: a ? a.expectedMuscleKg : null, expectedFatKg: a ? a.expectedFatKg : null,
+      risks: phaseRisks,
+    });
+    if (gw != null) prevGoal = gw;
+  });
+  const order = { unrealistic: 3, aggressive: 2, realistic: 1 };
+  const planVerdict = out.reduce((w, p) => (order[p.verdict] || 0) > (order[w] || 0) ? p.verdict : w, "realistic");
+  return { phases: out, planVerdict, risks, totalWeeks: r1(totalWeeks), typeCounts, count: out.length, tier: "forecast" };
+}
+
 export function buildTrajectory({ goalPlan, weightTrend, today }) {
   const sw = goalPlan.startWeight, gw = goalPlan.goalWeight;
   if (sw == null || gw == null || !goalPlan.startDate || !goalPlan.targetDate) return null;

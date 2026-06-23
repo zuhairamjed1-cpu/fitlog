@@ -10,7 +10,7 @@ import { computeTraining, mapMuscles } from "../src/engines/training.js";
 import { computeSleep, estimateSleepNeed, sleepTST } from "../src/engines/sleep.js";
 import { computeRecovery } from "../src/engines/recovery.js";
 import { computeNicotineStats } from "../src/engines/nicotine.js";
-import { assessGoal, buildTrajectory, analyzeConstraints } from "../src/engines/goalplan.js";
+import { assessGoal, buildTrajectory, analyzeConstraints, analyzeRoadmap } from "../src/engines/goalplan.js";
 import { computeProteinDistribution } from "../src/engines/protein.js";
 import { computeSkin, detectRoutineConflicts } from "../src/engines/skin.js";
 import { estimateGlycemicLoad, dayGlycemicLoad } from "../src/engines/glycemic.js";
@@ -242,6 +242,14 @@ ok("goalplan: constraints rank a primary lever", !!cons.primary && cons.levers.l
   const rs = parseGoalMarkdown("# Roadmap 2026\n## Phase 1: Lean Bulk\n- Dates: Jul 7 – Sep 7\n- Calories: ~2900\n- Protein: 165 g\n- Weight: 75 → 76 kg\n## Phase 2: Mini-cut\n- Dates: Sep 8 – Oct 5\n- Calories: 2200\n- Protein: 180 g\n- Weight: 76 → 74 kg\n");
   ok("goalmd: section-fallback parses phases without a table", rs.hasRoadmap && rs.phases.length === 2 && rs.phases[0].calories === 2900 && rs.phases[1].type === "minicut", [rs.phases.length, rs.phases[0].calories]);
 
+  // robustness: numbered headings, "2900 kcal" (number before unit), prose protein
+  const rn = parseGoalMarkdown("# Plan\n## 1. Lean Bulk (Weeks 1-8)\nTarget around 2900 kcal with 165g protein. Move from 75 to 76 kg.\n## 2. Mini-cut (Weeks 9-12)\nDrop to 2200 calories, keep protein at 180g. 76 to 74 kg.\n");
+  ok("goalmd: numbered headings + cal-before-unit + prose protein", rn.phases.length === 2 && rn.phases[0].calories === 2900 && rn.phases[0].protein === 165 && rn.phases[1].calories === 2200 && rn.phases[1].protein === 180, rn.phases.map(p => [p.calories, p.protein]));
+
+  // robustness: Month headings still recognised as phases
+  const rmth = parseGoalMarkdown("# Roadmap\n## Month 1: Reverse diet\nRamp to 2650 kcal. 74 to 75 kg.\n## Month 2-3: Bulk\n2900 kcal, 165g protein. 75 to 77 kg.\n");
+  ok("goalmd: Month headings parse as phases", rmth.phases.length === 2 && rmth.phases[0].type === "maintenance" && rmth.phases[1].calories === 2900, rmth.phases.map(p => p.type));
+
   // summary is a non-empty human-readable analysis for the preview
   ok("goalmd: produces a summary array", Array.isArray(rp.summary) && rp.summary.length >= 2, rp.summary && rp.summary.length);
 
@@ -270,6 +278,20 @@ ok("goalplan: constraints rank a primary lever", !!cons.primary && cons.levers.l
   ok("e2e: roadmap shows all 3 imported phases (not the migrated single one)", shown.length === 3 && shown[0].name === "Aggressive cut" && shown[0].calories === 1800, shown.length);
   ok("e2e: status is computed per phase (done / active / planned)", shown[0].status === "done" && shown[1].status === "active" && shown[2].status === "planned", shown.map(s => s.status));
   ok("e2e: active phase = the one whose window covers the date", activePhase(gpRoadmap.goalPlan, "2026-04-15").name === "Recomp", activePhase(gpRoadmap.goalPlan, "2026-04-15").name);
+
+  // ── strategy-document import: plain "Month block" format + preservation + per-phase analysis ──
+  const blockDoc = "Month 1-2:\nLean bulk\nCalories: 2900\nTarget: +0.25kg/week\nFocus: Improve bench press\n\nMonth 3:\nMini cut\nCalories: 2400\nTarget: -0.7kg/week\n\nMonth 4-6:\nLean bulk\nCalories: 3000\nTarget: +0.9kg/week\nFocus: Add back width\n";
+  const bd = parseGoalMarkdown(blockDoc);
+  ok("goalmd: plain Month-block format parses 3 phases", bd.hasRoadmap && bd.phases.length === 3 && bd.phases[0].type === "leanbulk" && bd.phases[1].type === "minicut", bd.phases.map(p => p.type));
+  ok("goalmd: captures per-phase target rate + focus", bd.phases[0].targetRate === 0.25 && bd.phases[0].focus === "Improve bench press" && bd.phases[1].targetRate === -0.7, [bd.phases[0].targetRate, bd.phases[0].focus]);
+  ok("goalmd: preserves source markdown + strategy notes", bd.sourceMarkdown.length > 50 && bd.strategyNotes.length >= 2, { src: bd.sourceMarkdown.length, notes: bd.strategyNotes.length });
+
+  // per-phase reality check: each leg judged on its own pace
+  const ar = analyzeRoadmap({ phases: bd.phases, currentWeight: 75, experience: "intermediate" });
+  ok("analyzeRoadmap: per-phase verdicts + plan verdict", ar.phases.length === 3 && ar.phases[0].verdict === "realistic" && ar.phases[2].verdict === "unrealistic" && ar.planVerdict === "unrealistic", ar.phases.map(p => p.verdict));
+  ok("analyzeRoadmap: flags the over-fast bulk as a risk", ar.risks.some(r => /surplus|fat/i.test(r)), ar.risks);
+  ok("analyzeRoadmap: counts phase types", ar.typeCounts.leanbulk === 2 && ar.typeCounts.minicut === 1, ar.typeCounts);
+  ok("analyzeRoadmap: weight-anchored phase reuses assessGoal ranges", (() => { const w = analyzeRoadmap({ phases: [{ id: 1, type: "leanbulk", name: "B", startWeight: 75, goalWeight: 90, startDate: daysAgo(0), endDate: daysAgo(-60) }], currentWeight: 75 }); return w.phases[0].verdict === "unrealistic" && Array.isArray(w.phases[0].expectedFatKg); })(), 1);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

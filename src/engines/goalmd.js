@@ -77,6 +77,7 @@ export function buildRoadmapPhases(parsed, today) {
     startDate: x.startDate, endDate: x.endDate,
     startWeight: x.startWeight, goalWeight: x.goalWeight,
     calories: x.calories, protein: x.protein,
+    targetRate: x.targetRate ?? null, focus: x.focus ?? null,
     status: (x.endDate && x.endDate < t) ? "done"
       : (x.startDate && x.startDate <= t && (!x.endDate || x.endDate >= t)) ? "active"
         : "planned",
@@ -144,28 +145,81 @@ export function parseGoalMarkdown(text) {
   if (!phases.length) {
     const lines = t.split(/\r?\n/);
     const heads = [];
-    lines.forEach((l, i) => { if (/^#{2,4}\s/.test(l) && /(phase|block|stage|mesocycle)\b/i.test(l)) heads.push(i); });
+    // a heading is a "phase" if it names a phase concept OR is a numbered/dated block heading
+    const phaseHead = l => /(phase|block|stage|mesocycle|meso|cycle|month|week)\b/i.test(l) || /^#{2,4}\s*\*{0,2}\s*\d+\s*[:.)·\-]/.test(l) || /^#{2,4}.*\b(bulk|cut|recomp|maintenance|maintain|deficit|surplus|lean\s*gain|mini.?cut|reverse|taper|peak|strength|build)\b/i.test(l);
+    lines.forEach((l, i) => { if (/^#{2,4}\s/.test(l) && phaseHead(l)) heads.push(i); });
     let year = baseYear, lastMo = 0;
     heads.forEach((hi, idx) => {
-      const headTxt = lines[hi].replace(/^#{2,4}\s*/, "").replace(/\*\*/g, "").replace(/^\s*(?:phase|block|stage)\s*\d+\s*[:\-·.]?\s*/i, "").trim();
+      const headTxt = lines[hi].replace(/^#{2,4}\s*/, "").replace(/\*\*/g, "").replace(/^\s*(?:phase|block|stage|month|week)\s*\d+\s*(?:[:\-·.)]|\([^)]*\))?\s*/i, "").replace(/^\s*\d+\s*[:.)·\-]\s*/, "").replace(/\([^)]*\)\s*$/, "").trim();
       const end = idx + 1 < heads.length ? heads[idx + 1] : lines.length;
       const body = lines.slice(hi, end).join("\n");
-      const dateLine = (body.match(/(?:dates?|window|timing|period|when)\s*[:\-]?\s*([^\n]+)/i) || [])[1] || body.match(/[A-Za-z]{3,}\.?\s+\d{1,2}\s*(?:[–—\-]|to|→)\s*[A-Za-z0-9]/i)?.[0] || "";
+      const dateLine = (body.match(/(?:dates?|window|timing|period|when)\s*[:\-]?\s*([^\n]+)/i) || [])[1] || body.match(/[A-Za-z]{3,}\.?\s+\d{1,2}\s*(?:[–—\-]|to|→)\s*[A-Za-z0-9]/i)?.[0] || lines[hi].match(/[A-Za-z]{3,}\.?\s+\d{1,2}\s*(?:[–—\-]|to|→)\s*[A-Za-z0-9][^|]*/i)?.[0] || "";
       const parts = String(dateLine).split(/[–—\->→]| to /).map(s => s.trim()).filter(Boolean);
       const sP = mdToISO(parts[0] || "", year); if (sP && sP.mo < lastMo) year++;
       const s2 = mdToISO(parts[0] || "", year);
       let eYear = year; const eTry = mdToISO(parts[1] || "", year); if (eTry && s2 && eTry.mo < s2.mo) eYear++;
       const e2 = mdToISO(parts[1] || "", eYear); if (s2) lastMo = s2.mo;
-      const cal = lastNum((body.match(/(?:cal(?:orie)?s?|kcal|energy|intake)\D*?(\d[\d,]{2,4}(?:\s*(?:to|→|–|—|-)\s*\d[\d,]{2,4})?)/i) || [])[1]);
-      const prot = num((body.match(/protein\s*[:\-~≈]?\s*(\d{2,3})/i) || [])[1]);
+      // calories: prefer "2900 kcal" (number before unit) over "Calories: ~2900"
+      const cal = lastNum((body.match(/(\d[\d,]{2,4})\s*(?:kcal|cal(?:orie)?s)\b/i) || body.match(/(?:cal(?:orie)?s?|kcal|energy|intake)[^\d\n]{0,5}(\d[\d,]{2,4})/i) || [])[1]);
+      // protein: prefer "165g protein" (number before word) over "protein: 165" / "protein at 180g"
+      const prot = num((body.match(/(\d{2,3})\s*g?\s*(?:of\s+)?protein/i) || body.match(/protein[^\d\n]{0,8}(\d{2,3})/i) || [])[1]);
       const wM = body.match(/(\d{2,3}(?:\.\d)?)\s*(?:kg)?\s*(?:->|→|to|–|—|-)\s*~?(\d{2,3}(?:\.\d)?)\s*kg/i);
-      const weeks = (body.match(/(\d+)\s*(?:wk|week)/) || [])[1];
+      const weeks = (body.match(/(\d+)\s*(?:wk|week)/i) || lines[hi].match(/(\d+)\s*(?:wk|week)/i) || [])[1];
+      const rateM = body.match(/(?:target|gain|loss|rate|aim)\D{0,12}([+\-]?\d?\.?\d+)\s*(?:kg|kilos?)\s*\/?\s*(?:wk|week)/i);
+      const targetRate = rateM ? parseFloat(rateM[1]) : null;
+      const focus = ((body.match(/focus\s*:?\s*\n?\s*([^\n]+)/i) || [])[1] || "").replace(/\*\*/g, "").trim() || null;
+      const hasTypeWord = /(bulk|cut|recomp|maintenance|maintain|deficit|surplus|lean\s*gain|mini.?cut|reverse|taper|peak|strength|build|phase|block|mesocycle)/i.test(headTxt + " " + lines[hi]);
+      const hasSignal = (s2 || cal != null || prot != null || wM || weeks) && (hasTypeWord || s2 || cal != null || wM);
+      if (!hasSignal) return; // skip a heading that isn't really a plan phase
       phases.push({
         id: 1000 + idx, name: headTxt, type: typeOf(headTxt) || "leanbulk",
         startDate: s2 ? s2.iso : null, endDate: e2 ? e2.iso : null, weeks: weeks ? +weeks : null,
-        calories: cal, protein: prot,
+        calories: cal, protein: prot, targetRate, focus,
         startWeight: wM ? parseFloat(wM[1]) : null, goalWeight: wM ? parseFloat(wM[2]) : null,
         raw: { dates: dateLine },
+      });
+    });
+    if (phases.length) found.push(`${phases.length} phases`);
+  }
+
+  // ── fallback 2: plain "Month/Phase block" format (no markdown headings) ──
+  //   Month 1-2:           Phase 3:
+  //   Lean bulk            Mini cut
+  //   Calories: 2900       Calories:
+  //   Target: +0.25kg/wk      2400         ← value may sit on its own line
+  //   Focus: bench         ...
+  if (!phases.length) {
+    const lines = t.split(/\r?\n/);
+    const TYPEWORD = /^(lean\s*bulk|mini.?cut|recomp|maintenance|maintain|reverse|taper|peak|strength|deficit|cut|bulk|build)\b/i;
+    const boundary = l => /^\s*(?:\*{0,2})\s*(?:month|week|phase|block|stage)\s*[\d\s\-–to]*\s*[:.)]?\s*\*{0,2}\s*$/i.test(l);
+    const heads = [];
+    lines.forEach((l, i) => { if (boundary(l)) heads.push(i); });
+    let year = baseYear, lastMo = 0;
+    heads.forEach((hi, idx) => {
+      const end = idx + 1 < heads.length ? heads[idx + 1] : lines.length;
+      const block = lines.slice(hi, end).join("\n");
+      const label = lines[hi].replace(/[*:]/g, "").trim();                 // "Month 1-2"
+      const typeLine = lines.slice(hi + 1, end).find(l => TYPEWORD.test(l.trim()));
+      const typeName = typeLine ? typeLine.replace(/[*:]/g, "").trim() : label;
+      const name = typeName && TYPEWORD.test(typeName) ? typeName : label;
+      const cal = lastNum((block.match(/(\d[\d,]{2,4})\s*(?:kcal|cal(?:orie)?s)\b/i) || block.match(/(?:cal(?:orie)?s?|kcal)[^\d\n]{0,6}\n?\s*(\d[\d,]{2,4})/i) || [])[1]);
+      const prot = num((block.match(/(\d{2,3})\s*g?\s*(?:of\s+)?protein/i) || block.match(/protein[^\d\n]{0,8}\n?\s*(\d{2,3})/i) || [])[1]);
+      const rateM = block.match(/(?:target|gain|loss|rate|aim)[^\d+\-\n]{0,12}\n?\s*([+\-]?\d?\.?\d+)\s*(?:kg|kilos?)\s*\/?\s*(?:wk|week)/i);
+      const targetRate = rateM ? parseFloat(rateM[1]) : null;
+      const focus = ((block.match(/focus\s*:?\s*\n?\s*([^\n]+)/i) || [])[1] || "").replace(/\*\*/g, "").trim() || null;
+      const wM = block.match(/(\d{2,3}(?:\.\d)?)\s*(?:kg)?\s*(?:->|→|to|–|—|-)\s*~?(\d{2,3}(?:\.\d)?)\s*kg/i);
+      const dl = label.match(/[A-Za-z]{3,}\.?\s+\d{1,2}.*$/) ? label : (block.match(/[A-Za-z]{3,}\.?\s+\d{1,2}\s*(?:[–—\-]|to|→)/i) || [])[0] || "";
+      const parts = String(dl).split(/[–—\->→]| to /).map(s => s.trim()).filter(Boolean);
+      const s2 = mdToISO(parts[0] || "", year); if (s2 && s2.mo < lastMo) year++;
+      const s3 = mdToISO(parts[0] || "", year); let eY = year; const eT = mdToISO(parts[1] || "", year); if (eT && s3 && eT.mo < s3.mo) eY++;
+      const e3 = mdToISO(parts[1] || "", eY); if (s3) lastMo = s3.mo;
+      if (cal == null && targetRate == null && !wM && !(typeName && TYPEWORD.test(typeName))) return; // not a real phase block
+      phases.push({
+        id: 2000 + idx, name, type: typeOf(name) || typeOf(block) || "leanbulk",
+        startDate: s3 ? s3.iso : null, endDate: e3 ? e3.iso : null, weeks: null,
+        calories: cal, protein: prot, targetRate, focus,
+        startWeight: wM ? parseFloat(wM[1]) : null, goalWeight: wM ? parseFloat(wM[2]) : null,
+        raw: { label },
       });
     });
     if (phases.length) found.push(`${phases.length} phases`);
@@ -259,9 +313,18 @@ export function parseGoalMarkdown(text) {
   if (extras.length) summary.push(extras.join(" · "));
   if (longTerm.targetFFMI) summary.push(`Long-term: FFMI ${longTerm.targetFFMI}${longTerm.targetWeight ? ` (~${longTerm.targetWeight} kg)` : ""}`);
 
+  // strategy notes: per-phase Focus lines + any "Focus/Note/Strategy:" prose — kept verbatim
+  const strategyNotes = [];
+  phases.forEach(p => { if (p.focus) strategyNotes.push(`${p.name || p.type}: ${p.focus}`); });
+  (t.match(/^\s*(?:focus|note|strategy|priority|emphasis)\s*:\s*(.+)$/gim) || []).forEach(l => {
+    const v = l.replace(/^\s*\w+\s*:\s*/i, "").replace(/\*\*/g, "").trim();
+    if (v && !strategyNotes.some(s => s.includes(v))) strategyNotes.push(v);
+  });
+
   return {
     type, startWeight, goalWeight, startDate, targetDate, freq, macros, activePhaseIdx,
-    meta, phases, checkpoints, deloads, rules, longTerm, summary,
+    meta, phases, checkpoints, deloads, rules, longTerm, summary, strategyNotes,
+    sourceMarkdown: t,
     found, anyFound: found.length > 0, hasRoadmap: phases.length > 0,
   };
 }

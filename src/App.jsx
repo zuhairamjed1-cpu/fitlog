@@ -12,7 +12,7 @@ import { computeNicotineStats, computeNicotineCorrelations, computeNicotineTimin
 import { computeSkin, detectRoutineConflicts } from "./engines/skin";
 import { estimateGlycemicLoad, dayGlycemicLoad } from "./engines/glycemic";
 import { planFueling, reconcileFueling, sleepWindow, SESSION_TYPES } from "./engines/fueling";
-import { computeGoalPlan, formatGoalText, simulateGoal } from "./engines/goalplan";
+import { computeGoalPlan, formatGoalText, simulateGoal, analyzeRoadmap } from "./engines/goalplan";
 import { computePhysiologyState } from "./engines/physiology";
 import { getPhases, activePhase, applyPhaseChange } from "./engines/phases";
 import { proposeAdaptation } from "./engines/adaptation";
@@ -5322,6 +5322,7 @@ function GoalForm({ goals, currentWeight, onSave, onCancel }) {
   const [pasteText, setPasteText] = useState("");
   const [parsePreview, setParsePreview] = useState(null);
   const [fileStatus, setFileStatus] = useState(null);
+  const [applied, setApplied] = useState(false);
 
   const buildGoalPayload = p => {
     const today = getTodayStr();
@@ -5331,7 +5332,7 @@ function GoalForm({ goals, currentWeight, onSave, onCancel }) {
     const payload = { ...goals, goalPlan: { type: p.type || (goals.goalPlan && goals.goalPlan.type) || "leanbulk", startWeight: (p.startWeight ?? currentWeight ?? null), goalWeight: gw, startDate: p.startDate || today, targetDate: td, experience, freq: p.freq || +freq || 4, priorities: (goals.goalPlan && goals.goalPlan.priorities) || [] } };
     if (p.hasRoadmap) {
       payload.goalPlan.phases = buildRoadmapPhases(p, today);
-      payload.goalPlan.roadmap = { checkpoints: p.checkpoints, deloads: p.deloads, rules: p.rules, longTerm: p.longTerm, meta: p.meta, importedAt: today };
+      payload.goalPlan.roadmap = { checkpoints: p.checkpoints, deloads: p.deloads, rules: p.rules, longTerm: p.longTerm, meta: p.meta, strategyNotes: p.strategyNotes || [], sourceMarkdown: p.sourceMarkdown || null, importedAt: today };
     }
     if (p.macros) { if (p.macros.calories) payload.calories = p.macros.calories; if (p.macros.protein) payload.protein = p.macros.protein; if (p.macros.carbs) payload.carbs = p.macros.carbs; if (p.macros.fat) payload.fat = p.macros.fat; }
     // If the plan carries phase-level calories, let the active phase drive Log Meal
@@ -5354,11 +5355,13 @@ function GoalForm({ goals, currentWeight, onSave, onCancel }) {
     haptic(12);
   };
 
-  const handlePlanText = (text, src) => {
+  // Parse text, and if it's a usable plan, APPLY it immediately (build the roadmap)
+  // — the preview card then stays up as confirmation of what was applied.
+  const handlePlanText = (text, src, autoApply) => {
     let p;
     try { p = parseGoalMarkdown(text || ""); }
     catch (err) { setImportMsg("Couldn't parse that — error: " + (err && err.message)); setParsePreview(null); setFileStatus(`⚠ Error parsing ${src || "text"}`); return; }
-    if (!p || !p.anyFound) { setImportMsg(`Read ${src || "the text"} (${(text || "").length} chars) but found no recognisable plan. It needs weights like "74 → 77 kg", dates, or a phase table.`); setParsePreview(null); setFileStatus(`⚠ Read ${(text || "").length} chars — no plan recognised`); return; }
+    if (!p || !p.anyFound) { setImportMsg(`Read ${src || "the text"} (${(text || "").length} chars) but found no recognisable plan. It needs weights like "74 → 77 kg", dates, calories, or phase headings.`); setParsePreview(null); setFileStatus(`⚠ Read ${(text || "").length} chars — no plan recognised`); return; }
     if (p.type) setType(p.type);
     if (p.startWeight != null) setSW(p.startWeight);
     if (p.goalWeight != null) setGW(p.goalWeight);
@@ -5369,8 +5372,21 @@ function GoalForm({ goals, currentWeight, onSave, onCancel }) {
     setImportedRoadmap(p.hasRoadmap ? p : null);
     setParsePreview(p);
     setImportMsg(null);
-    setFileStatus(`✓ Parsed ${src || "text"} — ${p.hasRoadmap ? `${p.phases.length} phases` : "goal"} recognised`);
+    if (!autoApply) setApplied(false);
     haptic(8);
+    // auto-apply if we can build a full goal payload from it (roadmap or weight+date)
+    const payload = buildGoalPayload(p);
+    if (autoApply && payload) {
+      onSave(payload);
+      setApplied(true);
+      const bits = [];
+      if (p.hasRoadmap) bits.push(`${p.phases.length}-phase roadmap built`);
+      if (payload.macroMode === "auto") bits.push("macros auto-set");
+      toast(bits.length ? `✦ Applied — ${bits.join(", ")}. See the Roadmap tab.` : "✦ Plan applied");
+      setFileStatus(`✓ Applied ${src || "plan"} — ${p.hasRoadmap ? `${p.phases.length} phases` : "goal"} set. Open the Roadmap tab.`);
+    } else {
+      setFileStatus(`✓ Parsed ${src || "text"} — ${p.hasRoadmap ? `${p.phases.length} phases` : "goal"} recognised${payload ? "" : " (add a goal weight + date below to apply)"}`);
+    }
   };
 
   const onImportFile = e => {
@@ -5379,7 +5395,7 @@ function GoalForm({ goals, currentWeight, onSave, onCancel }) {
     setFileStatus(`Reading "${f.name}"…`);
     const reader = new FileReader();
     reader.onerror = () => { setImportMsg("Couldn't read that file — try pasting the text instead."); setFileStatus(`⚠ Couldn't read "${f.name}"`); };
-    reader.onload = () => handlePlanText(String(reader.result || ""), `"${f.name}"`);
+    reader.onload = () => handlePlanText(String(reader.result || ""), `"${f.name}"`, true); // upload → auto-apply
     reader.readAsText(f);
     e.target.value = "";
   };
@@ -5389,7 +5405,7 @@ function GoalForm({ goals, currentWeight, onSave, onCancel }) {
     if (importedRoadmap && importedRoadmap.hasRoadmap) {
       const today = getTodayStr();
       payload.goalPlan.phases = buildRoadmapPhases(importedRoadmap, today);
-      payload.goalPlan.roadmap = { checkpoints: importedRoadmap.checkpoints, deloads: importedRoadmap.deloads, rules: importedRoadmap.rules, longTerm: importedRoadmap.longTerm, meta: importedRoadmap.meta, importedAt: today };
+      payload.goalPlan.roadmap = { checkpoints: importedRoadmap.checkpoints, deloads: importedRoadmap.deloads, rules: importedRoadmap.rules, longTerm: importedRoadmap.longTerm, meta: importedRoadmap.meta, strategyNotes: importedRoadmap.strategyNotes || [], sourceMarkdown: importedRoadmap.sourceMarkdown || null, importedAt: today };
     }
     if (importedMacros) {
       if (importedMacros.calories) payload.calories = importedMacros.calories;
@@ -5427,11 +5443,18 @@ function GoalForm({ goals, currentWeight, onSave, onCancel }) {
                 ))}
               </div>
             )}
-            <p className="muted small" style={{ marginTop: 8, lineHeight: 1.45 }}>Applying sets your goal weight, dates{parsePreview.hasRoadmap ? ", phases and Roadmap" : ""}{parsePreview.phases.some(p => p.calories) ? ", and switches macros to auto (your active phase drives Log Meal)" : (parsePreview.macros ? ", and your macro targets" : "")}. Recognised: {parsePreview.found.join(", ")}.</p>
-            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-              <button type="button" className="btn-primary btn-sm" onClick={() => commitImport(parsePreview)}>Apply to my goal</button>
-              <button type="button" className="btn-ghost btn-sm" onClick={() => { setParsePreview(null); setImportMsg(null); setFileStatus(null); }}>Clear</button>
-            </div>
+            <p className="muted small" style={{ marginTop: 8, lineHeight: 1.45 }}>{applied ? "Set: your goal weight, dates" : "Applying sets your goal weight, dates"}{parsePreview.hasRoadmap ? ", phases and Roadmap" : ""}{parsePreview.phases.some(p => p.calories) ? ", and switches macros to auto (your active phase drives Log Meal)" : (parsePreview.macros ? ", and your macro targets" : "")}. Recognised: {parsePreview.found.join(", ")}.</p>
+            {applied ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
+                <span className="small" style={{ fontWeight: 600, color: "#8fd989" }}>✓ Applied — open the Roadmap tab to see it</span>
+                <button type="button" className="btn-ghost btn-sm" style={{ marginLeft: "auto" }} onClick={() => { setParsePreview(null); setImportMsg(null); setFileStatus(null); setApplied(false); }}>Dismiss</button>
+              </div>
+            ) : (
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                <button type="button" className="btn-primary btn-sm" onClick={() => { commitImport(parsePreview); setApplied(true); }}>Apply to my goal</button>
+                <button type="button" className="btn-ghost btn-sm" onClick={() => { setParsePreview(null); setImportMsg(null); setFileStatus(null); setApplied(false); }}>Clear</button>
+              </div>
+            )}
           </div>
         )}
         <p className="muted small" style={{ marginTop: 6, lineHeight: 1.4 }}>Upload or paste a plan written by Claude (or anyone). A multi-phase roadmap imports straight into your goal and Roadmap tab.</p>
@@ -5480,22 +5503,52 @@ function TrajectoryChart({ traj, pts }) {
   );
 }
 
-function GoalRoadmapTab({ goals }) {
+function GoalRoadmapTab({ goals, currentWeight }) {
   const gp = goals.goalPlan || {};
   const phases = getPhases(goals.goalPlan);
   const rm = gp.roadmap || null;
+  const cw = currentWeight ?? (goals.profile && parseFloat(goals.profile.weightKg)) ?? null;
+  const analysis = useMemo(() => analyzeRoadmap({ phases, currentWeight: cw, experience: gp.experience || "intermediate" }), [phases, cw, gp.experience]);
+  const [showSource, setShowSource] = useState(false);
   if (!phases.length && !rm) return <Card><Empty icon="◎" title="No roadmap yet" hint="Import a .md plan from the Plan tab (Edit your goal → Import a plan). A multi-phase roadmap with checkpoints, deloads and long-term targets will appear here." /></Card>;
   const PHASE_C = { active: "#5cc8df", done: "#8fd989", planned: "#aab2c0" };
+  const VC = { realistic: ["Realistic", "#8fd989"], aggressive: ["Aggressive", "#f9c97e"], unrealistic: ["Unrealistic", "#f47e6e"] };
+  const aByIdx = i => (analysis && analysis.phases[i]) || null;
   return (
     <>
+      {analysis && (
+        <Card title="Plan analysis" sub="evidence-based reality check, per phase" action={<span className="gp-verdict" style={{ fontSize: 12, padding: "2px 10px", color: (VC[analysis.planVerdict] || VC.realistic)[1], borderColor: `${(VC[analysis.planVerdict] || VC.realistic)[1]}55` }}>{(VC[analysis.planVerdict] || VC.realistic)[0]}</span>}>
+          <div className="gp-stat-row"><span className="muted small">Phases</span><span>{analysis.count} · {Object.entries(analysis.typeCounts).map(([k, n]) => `${n}×${(GOAL_TYPES.find(x => x.k === k) || {}).label || k}`).join(", ")}</span></div>
+          {analysis.totalWeeks > 0 && <div className="gp-stat-row"><span className="muted small">Total span</span><span>{Math.round(analysis.totalWeeks)} weeks (~{Math.round(analysis.totalWeeks / 4.345)} mo) <TierBadge tier="calc" /></span></div>}
+          {analysis.risks.length > 0 ? (
+            <div style={{ marginTop: 8 }}>
+              <div className="small" style={{ fontWeight: 600, color: "#f9c97e", marginBottom: 4 }}>⚠ {analysis.risks.length} risk{analysis.risks.length > 1 ? "s" : ""} flagged</div>
+              {analysis.risks.map((r, i) => <p key={i} className="small" style={{ lineHeight: 1.45, margin: "3px 0", color: "var(--text-2)" }}>• {r}</p>)}
+            </div>
+          ) : <p className="small" style={{ marginTop: 8, color: "#8fd989" }}>✓ Every phase sits within evidence-based rate ceilings.</p>}
+          <p className="muted small" style={{ marginTop: 8, lineHeight: 1.45 }}>Verdicts compare each phase's pace to lean-gain / sustainable-loss ceilings for an {gp.experience || "intermediate"} lifter. Muscle/fat splits are modeled ranges, not measured.</p>
+        </Card>
+      )}
       {phases.length > 0 && (
         <Card title="Phases" sub={rm ? "imported from your plan" : "your roadmap"}>
-          {phases.map((p, i) => (
-            <div key={p.id || i} style={{ padding: "9px 0", borderBottom: i < phases.length - 1 ? "1px solid var(--line)" : "none" }}>
-              <div className="gp-stat-row"><span style={{ fontWeight: 600 }}>{p.name || (GOAL_TYPES.find(x => x.k === p.type) || {}).label || p.type}</span><span className="small" style={{ color: PHASE_C[p.status] || "#aab2c0" }}>{p.status === "active" ? "● now" : p.status === "done" ? "done" : "planned"}</span></div>
-              <div className="muted small" style={{ marginTop: 2 }}>{p.startDate} → {p.endDate}{p.startWeight != null && p.goalWeight != null ? ` · ${p.startWeight}→${p.goalWeight}kg` : ""}{p.calories ? ` · ${p.calories} kcal` : ""}{p.protein ? ` · ${p.protein}g` : ""}</div>
-            </div>
-          ))}
+          {phases.map((p, i) => {
+            const an = aByIdx(i);
+            return (
+              <div key={p.id || i} style={{ padding: "10px 0", borderBottom: i < phases.length - 1 ? "1px solid var(--line)" : "none" }}>
+                <div className="gp-stat-row">
+                  <span style={{ fontWeight: 600 }}>{p.name || (GOAL_TYPES.find(x => x.k === p.type) || {}).label || p.type}</span>
+                  <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    {an && an.verdict && an.verdict !== "realistic" && <span className="small" style={{ color: (VC[an.verdict] || VC.realistic)[1] }}>{(VC[an.verdict] || VC.realistic)[0]}</span>}
+                    <span className="small" style={{ color: PHASE_C[p.status] || "#aab2c0" }}>{p.status === "active" ? "● now" : p.status === "done" ? "done" : "planned"}</span>
+                  </span>
+                </div>
+                <div className="muted small" style={{ marginTop: 2 }}>{p.startDate || "—"} → {p.endDate || "—"}{p.startWeight != null && p.goalWeight != null ? ` · ${p.startWeight}→${p.goalWeight}kg` : ""}{an && an.targetRate != null ? ` · ${an.targetRate > 0 ? "+" : ""}${an.targetRate}kg/wk` : ""}{p.calories ? ` · ${p.calories} kcal` : ""}{p.protein ? ` · ${p.protein}g P` : ""}</div>
+                {p.focus && <div className="small" style={{ marginTop: 3, color: "var(--text-2)" }}>◎ Focus: {p.focus}</div>}
+                {an && an.note && <div className="muted small" style={{ marginTop: 3, lineHeight: 1.4 }}>{an.note}</div>}
+                {an && an.risks && an.risks.length > 0 && an.risks.map((r, ri) => <div key={ri} className="small" style={{ marginTop: 2, color: "#f9c97e" }}>⚠ {r}</div>)}
+              </div>
+            );
+          })}
         </Card>
       )}
       {rm && rm.checkpoints && rm.checkpoints.length > 0 && (
@@ -5524,13 +5577,25 @@ function GoalRoadmapTab({ goals }) {
           <p className="muted small" style={{ marginTop: 8, lineHeight: 1.45 }}>FFMI targets rest on an estimated body-fat %; a DEXA scan would be the Tier-1 anchor.</p>
         </Card>
       )}
-      {rm && rm.meta && (rm.meta.heightCm || rm.meta.maintenance) && (
+      {rm && rm.meta && (rm.meta.heightCm || rm.meta.maintenance || rm.meta.startWeight) && (
         <Card title="Plan baseline">
           {rm.meta.heightCm && <div className="gp-stat-row"><span className="muted small">Height</span><span>{rm.meta.heightCm} cm</span></div>}
           {rm.meta.startWeight && <div className="gp-stat-row"><span className="muted small">Start weight</span><span>{rm.meta.startWeight} kg</span></div>}
           {rm.meta.bodyFatPct && <div className="gp-stat-row"><span className="muted small">Body fat</span><span>~{rm.meta.bodyFatPct}%</span></div>}
           {rm.meta.maintenance && <div className="gp-stat-row"><span className="muted small">Maintenance</span><span>~{rm.meta.maintenance} kcal <TierBadge tier="estimate" /></span></div>}
           {rm.importedAt && <p className="muted small" style={{ marginTop: 8 }}>Imported {rm.importedAt} from your .md plan.</p>}
+        </Card>
+      )}
+      {rm && rm.strategyNotes && rm.strategyNotes.length > 0 && (
+        <Card title="Strategy notes" sub="kept from your plan">
+          {rm.strategyNotes.map((n, i) => <p key={i} className="small" style={{ lineHeight: 1.5, margin: "6px 0" }}>• {n}</p>)}
+        </Card>
+      )}
+      {rm && rm.sourceMarkdown && (
+        <Card title="Original plan" sub="the full document, preserved" action={<button className="btn-ghost btn-sm" onClick={() => setShowSource(s => !s)}>{showSource ? "Hide" : "Show"}</button>}>
+          {showSource
+            ? <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 12, lineHeight: 1.5, color: "var(--text-2)", margin: 0, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", maxHeight: 360, overflow: "auto" }}>{rm.sourceMarkdown}</pre>
+            : <p className="muted small" style={{ margin: 0 }}>Your imported plan is stored in full ({rm.sourceMarkdown.length} chars){rm.importedAt ? ` · imported ${rm.importedAt}` : ""}. Tap Show to read it.</p>}
         </Card>
       )}
     </>
@@ -5791,7 +5856,7 @@ function GoalPlanSection({ data, goals, onSaveGoals, addEntry, deleteEntry }) {
       )}
 
       {tab === "state" && <GoalStateTab data={data} goals={goals} onSaveGoals={onSaveGoals} addEntry={addEntry} deleteEntry={deleteEntry} />}
-      {tab === "road" && <GoalRoadmapTab goals={goals} />}
+      {tab === "road" && <GoalRoadmapTab goals={goals} currentWeight={currentWeight} />}
 
       {tab === "traj" && (
         t ? (
