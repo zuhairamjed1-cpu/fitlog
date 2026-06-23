@@ -5298,7 +5298,7 @@ const GOAL_TYPES = [
   { k: "leanbulk", label: "Lean Bulk" }, { k: "cut", label: "Cut" }, { k: "minicut", label: "Mini Cut" },
   { k: "recomp", label: "Recomp" }, { k: "maintenance", label: "Maintenance" }, { k: "strength", label: "Strength" }, { k: "health", label: "Health" },
 ];
-const GP_TABS = [{ k: "plan", label: "Plan" }, { k: "state", label: "State" }, { k: "road", label: "Roadmap" }, { k: "traj", label: "Trajectory" }, { k: "cons", label: "Constraints" }, { k: "fore", label: "Forecast" }, { k: "sim", label: "Simulate" }, { k: "report", label: "Report" }];
+const GP_TABS = [{ k: "overview", label: "Overview" }, { k: "road", label: "Roadmap" }, { k: "fore", label: "Forecast" }, { k: "report", label: "Reports" }, { k: "history", label: "History" }];
 const GP_EXP = [{ k: "novice", label: "Novice (<1yr)" }, { k: "intermediate", label: "Intermediate" }, { k: "advanced", label: "Advanced (3yr+)" }];
 
 function TierBadge({ tier }) {
@@ -5307,7 +5307,7 @@ function TierBadge({ tier }) {
   return <span className="tier-badge" style={{ color, borderColor: `${color}55` }}>{label}</span>;
 }
 
-function GoalForm({ goals, currentWeight, onSave, onCancel }) {
+function GoalForm({ goals, currentWeight, onSave, onCancel, hideImport }) {
   const gp = goals.goalPlan || {};
   const [type, setType] = useState(gp.type || "leanbulk");
   const [startWeight, setSW] = useState(gp.startWeight ?? currentWeight ?? "");
@@ -5418,8 +5418,8 @@ function GoalForm({ goals, currentWeight, onSave, onCancel }) {
     toast("◎ Goal saved"); haptic(8);
   }
   return (
-    <Card title={gp.goalWeight ? "Edit your goal" : "Set your goal"} sub="build it here, or import a plan from a .md file">
-      <div className="gp-field"><label>Import a plan</label>
+    <Card title={gp.goalWeight ? "Edit your goal" : "Set your goal"} sub={hideImport ? "define your plan — FitLog builds the phases" : "build it here, or import a plan from a .md file"}>
+      {!hideImport && (<div className="gp-field"><label>Import a plan</label>
         <input type="file" onChange={onImportFile} style={{ fontSize: 13 }} />
         <textarea value={pasteText} onChange={e => setPasteText(e.target.value)} placeholder="…or paste your plan text here, then tap Parse" rows={3} style={{ width: "100%", marginTop: 8, resize: "vertical", background: "transparent", color: "inherit", border: "1px solid var(--line)", borderRadius: 10, padding: "8px 10px", fontSize: 13, fontFamily: "inherit" }} />
         <button type="button" className="btn-ghost btn-sm" style={{ marginTop: 6 }} onClick={() => handlePlanText(pasteText, "pasted text")}>Parse pasted plan</button>
@@ -5458,7 +5458,7 @@ function GoalForm({ goals, currentWeight, onSave, onCancel }) {
           </div>
         )}
         <p className="muted small" style={{ marginTop: 6, lineHeight: 1.4 }}>Upload or paste a plan written by Claude (or anyone). A multi-phase roadmap imports straight into your goal and Roadmap tab.</p>
-      </div>
+      </div>)}
       <div className="gp-field"><label>Goal type</label><div className="gp-chips">{GOAL_TYPES.map(t => <button key={t.k} className={`gp-chip ${type === t.k ? "on" : ""}`} onClick={() => setType(t.k)}>{t.label}</button>)}</div></div>
       <div className="gp-row2">
         <div className="gp-field"><label>Start weight (kg)</label><input type="number" inputMode="decimal" value={startWeight} onChange={e => setSW(e.target.value)} placeholder={currentWeight ? String(currentWeight) : "—"} /></div>
@@ -5762,9 +5762,212 @@ function GoalStateTab({ data, goals, onSaveGoals, addEntry, deleteEntry }) {
   );
 }
 
+// Build a goal payload from a parsed plan (shared by the import flow). Pure.
+function payloadFromParsedPlan(p, goals, today) {
+  const lastPhase = p.phases.length ? p.phases[p.phases.length - 1] : null;
+  const gw = p.goalWeight ?? (lastPhase ? lastPhase.goalWeight : null);
+  const td = p.targetDate ?? (lastPhase ? lastPhase.endDate : null);
+  if (gw == null || !td) return null;
+  const prev = goals.goalPlan || {};
+  const payload = { ...goals, goalPlan: { ...prev,
+    type: p.type || prev.type || "leanbulk",
+    startWeight: p.startWeight ?? prev.startWeight ?? null,
+    goalWeight: gw, startDate: p.startDate || prev.startDate || today, targetDate: td,
+    freq: p.freq ?? prev.freq ?? null,
+  } };
+  if (p.hasRoadmap) {
+    payload.goalPlan.phases = buildRoadmapPhases(p, today);
+    payload.goalPlan.roadmap = { checkpoints: p.checkpoints, deloads: p.deloads, rules: p.rules, longTerm: p.longTerm, meta: p.meta, strategyNotes: p.strategyNotes || [], sourceMarkdown: p.sourceMarkdown || null, importedAt: today };
+  }
+  if (p.macros) { if (p.macros.calories) payload.calories = p.macros.calories; if (p.macros.protein) payload.protein = p.macros.protein; if (p.macros.carbs) payload.carbs = p.macros.carbs; if (p.macros.fat) payload.fat = p.macros.fat; }
+  const hasPhaseCals = p.hasRoadmap && p.phases.some(x => x.calories);
+  payload.macroMode = hasPhaseCals ? "auto" : (p.macros ? "manual" : (goals.macroMode || "manual"));
+  return payload;
+}
+
+// Issues a parsed plan has — surfaced before applying so the user decides.
+function planIssues(p) {
+  const out = [];
+  if (!p.startDate && !(p.phases[0] && p.phases[0].startDate)) out.push("No start date — phases will be undated");
+  if (!p.targetDate && !(p.phases.length && p.phases[p.phases.length - 1].endDate)) out.push("No end / target date");
+  if (p.hasRoadmap) {
+    const undated = p.phases.filter(x => !x.startDate || !x.endDate).length;
+    if (undated) out.push(`${undated} phase${undated > 1 ? "s" : ""} missing dates`);
+    const noCal = p.phases.filter(x => x.calories == null).length;
+    if (noCal) out.push(`${noCal} phase${noCal > 1 ? "s" : ""} with no calorie target`);
+  }
+  if (!(p.meta && p.meta.bodyFatPct) && !(p.longTerm && p.longTerm.currentFFMI)) out.push("No body-fat / FFMI target");
+  if (p.startWeight == null) out.push("No starting weight");
+  return out;
+}
+
+// ── Visual phase timeline (current highlighted, future visible, done faded) ──
+function PlanTimeline({ phases }) {
+  if (!phases || !phases.length) return null;
+  const C = { active: "#5cc8df", done: "#8fd989", planned: "#aab2c0" };
+  const fmt = d => (d ? d.slice(5).replace("-", "/") : "—");
+  return (
+    <div style={{ position: "relative", paddingLeft: 20, marginTop: 4 }}>
+      {phases.map((p, i) => {
+        const col = C[p.status] || "#aab2c0";
+        return (
+          <div key={p.id || i} style={{ position: "relative", paddingBottom: i < phases.length - 1 ? 20 : 0, opacity: p.status === "done" ? 0.5 : 1 }}>
+            <span style={{ position: "absolute", left: -20, top: 3, width: 12, height: 12, borderRadius: "50%", background: col, boxShadow: p.status === "active" ? `0 0 0 4px ${col}33` : "none" }} />
+            {i < phases.length - 1 && <span style={{ position: "absolute", left: -15, top: 16, width: 2, bottom: 0, background: "var(--line)" }} />}
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+              <span style={{ fontWeight: 600, color: p.status === "active" ? "var(--text)" : "var(--text-2)" }}>
+                {p.name || (GOAL_TYPES.find(x => x.k === p.type) || {}).label || p.type}
+                {p.status === "active" && <span className="small" style={{ color: col, marginLeft: 6 }}>● now</span>}
+              </span>
+              <span className="muted small" style={{ whiteSpace: "nowrap" }}>{fmt(p.startDate)} → {fmt(p.endDate)}</span>
+            </div>
+            {(p.calories || p.targetRate != null) && <div className="muted small" style={{ marginTop: 2 }}>{p.calories ? `${p.calories} kcal` : ""}{p.calories && p.targetRate != null ? " · " : ""}{p.targetRate != null ? `${p.targetRate > 0 ? "+" : ""}${p.targetRate}kg/wk` : ""}</div>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Entry screen: two intentional action cards (not forms) ──
+function PlanEntryCards({ onBuild, onImport }) {
+  return (
+    <>
+      <Card>
+        <div style={{ fontSize: 22, marginBottom: 6 }}>◷</div>
+        <div style={{ fontWeight: 700, fontSize: 17 }}>Build a Plan</div>
+        <p className="muted small" style={{ lineHeight: 1.5, margin: "6px 0 12px" }}>Create a long-term plan directly inside FitLog — goal, timeline, target weight and body fat, training priorities and constraints. FitLog generates the phases.</p>
+        <button className="btn-primary" onClick={onBuild}>Create Plan</button>
+      </Card>
+      <Card>
+        <div style={{ fontSize: 22, marginBottom: 6 }}>⬆</div>
+        <div style={{ fontWeight: 700, fontSize: 17 }}>Import Existing Plan</div>
+        <p className="muted small" style={{ lineHeight: 1.5, margin: "6px 0 12px" }}>Upload a markdown plan from a coach, ChatGPT, Claude or anywhere. FitLog analyzes it first — you review before it becomes active. Supports .md files and pasted markdown.</p>
+        <button className="btn-primary" onClick={onImport}>Import Plan</button>
+      </Card>
+    </>
+  );
+}
+
+// ── Import flow: upload/paste → analyze → Plan Analysis card → apply/edit/discard ──
+function PlanImportFlow({ goals, currentWeight, onApply, onEdit, onDiscard }) {
+  const [parsed, setParsed] = useState(null);
+  const [paste, setPaste] = useState("");
+  const [msg, setMsg] = useState(null);
+  const [status, setStatus] = useState(null);
+  const today = getTodayStr();
+
+  const analyze = (text, src) => {
+    let p;
+    try { p = parseGoalMarkdown(text || ""); }
+    catch (err) { setMsg("Couldn't parse that — " + (err && err.message)); setParsed(null); setStatus(`⚠ Error reading ${src}`); return; }
+    if (!p || !p.anyFound) { setParsed(null); setMsg(`Read ${src} (${(text || "").length} chars) but found no recognisable plan. It needs weights, dates, calories, or phase headings.`); setStatus(`⚠ No plan recognised in ${src}`); return; }
+    setParsed(p); setMsg(null); setStatus(`✓ Analyzed ${src}`); haptic(8);
+  };
+  const onFile = e => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) { setStatus("⚠ No file received"); return; }
+    setStatus(`Reading "${f.name}"…`);
+    const r = new FileReader();
+    r.onerror = () => { setMsg("Couldn't read that file — paste the text instead."); setStatus(`⚠ Couldn't read "${f.name}"`); };
+    r.onload = () => analyze(String(r.result || ""), `"${f.name}"`);
+    r.readAsText(f); e.target.value = "";
+  };
+
+  const previewPhases = parsed && parsed.hasRoadmap ? buildRoadmapPhases(parsed, today) : [];
+  const analysis = previewPhases.length ? analyzeRoadmap({ phases: previewPhases, currentWeight, experience: (goals.goalPlan && goals.goalPlan.experience) || "intermediate" }) : null;
+  const issues = parsed ? planIssues(parsed) : [];
+  const payload = parsed ? payloadFromParsedPlan(parsed, goals, today) : null;
+  const VC = { realistic: ["Realistic", "#8fd989"], aggressive: ["Aggressive", "#f9c97e"], unrealistic: ["Unrealistic", "#f47e6e"] };
+
+  return (
+    <>
+      <Card title="Import a plan" sub="upload or paste — nothing is applied until you approve" action={<button className="btn-ghost btn-sm" onClick={onDiscard}>Cancel</button>}>
+        <input type="file" onChange={onFile} style={{ display: "block", width: "100%", marginBottom: 10 }} />
+        <textarea value={paste} onChange={e => setPaste(e.target.value)} placeholder="…or paste your plan markdown here, then tap Analyze" rows={4} style={{ width: "100%", background: "var(--bg-2)", color: "var(--text)", border: "1px solid var(--line)", borderRadius: 8, padding: 10, fontSize: 13, resize: "vertical" }} />
+        <button type="button" className="btn-ghost btn-sm" style={{ marginTop: 8 }} onClick={() => analyze(paste, "pasted text")}>Analyze pasted plan</button>
+        {status && <p className="small" style={{ marginTop: 8, color: status.startsWith("✓") ? "#8fd989" : status.startsWith("⚠") ? "#f47e6e" : "var(--text-2)" }}>{status}</p>}
+        {msg && <p className="small" style={{ marginTop: 6, color: "#f9c97e", lineHeight: 1.45 }}>{msg}</p>}
+      </Card>
+
+      {parsed && (
+        <Card title="Plan Analysis" sub="review before applying" action={analysis && <span className="gp-verdict" style={{ fontSize: 12, padding: "2px 10px", color: (VC[analysis.planVerdict] || VC.realistic)[1], borderColor: `${(VC[analysis.planVerdict] || VC.realistic)[1]}55` }}>{(VC[analysis.planVerdict] || VC.realistic)[0]}</span>}>
+          <div className="small" style={{ fontWeight: 600, marginBottom: 4 }}>Goal detected</div>
+          <p className="muted small" style={{ margin: "0 0 10px", lineHeight: 1.5 }}>
+            {(GOAL_TYPES.find(x => x.k === parsed.type) || {}).label || parsed.type || "Goal"}{parsed.startWeight != null || parsed.goalWeight != null ? ` · ${parsed.startWeight ?? "?"} kg → ${parsed.goalWeight ?? "?"} kg` : ""}{parsed.startDate || parsed.targetDate ? ` · ${parsed.startDate || "?"} → ${parsed.targetDate || "?"}` : ""}
+          </p>
+
+          {parsed.phases.length > 0 && (
+            <>
+              <div className="small" style={{ fontWeight: 600, marginBottom: 4 }}>Phases found ({parsed.phases.length})</div>
+              {(analysis ? analysis.phases : parsed.phases).map((p, i) => (
+                <div key={i} className="gp-stat-row" style={{ alignItems: "flex-start" }}>
+                  <span className="small">{p.name || (GOAL_TYPES.find(x => x.k === p.type) || {}).label || p.type}{p.weeks ? ` · ${Math.round(p.weeks)} wk` : ""}</span>
+                  <span className="small" style={{ color: (VC[p.verdict] || VC.realistic)[1] }}>{(VC[p.verdict] || VC.realistic)[0]}</span>
+                </div>
+              ))}
+            </>
+          )}
+
+          {analysis && (
+            <div style={{ marginTop: 10 }}>
+              <div className="small" style={{ fontWeight: 600, marginBottom: 4 }}>Feasibility</div>
+              <p className="muted small" style={{ lineHeight: 1.5, margin: 0 }}>{analysis.phases[0] && analysis.phases[0].note ? analysis.phases[0].note : "Each phase is checked against evidence-based rate ceilings."}{analysis.totalWeeks > 0 ? ` Total span ~${Math.round(analysis.totalWeeks)} weeks.` : ""}</p>
+            </div>
+          )}
+
+          {issues.length > 0 && (
+            <div style={{ marginTop: 10 }}>
+              <div className="small" style={{ fontWeight: 600, marginBottom: 4, color: "#f9c97e" }}>Potential issues</div>
+              {issues.map((it, i) => <p key={i} className="small" style={{ margin: "2px 0", color: "var(--text-2)" }}>• {it}</p>)}
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
+            <button className="btn-primary btn-sm" disabled={!payload} onClick={() => { if (payload) { onApply(payload); haptic(12); } else { setMsg("Add a goal weight + target date to the plan first."); } }}>Apply Plan</button>
+            <button className="btn-ghost btn-sm" disabled={!payload} onClick={() => payload && onEdit(payload)}>Edit Before Applying</button>
+            <button className="btn-ghost btn-sm" onClick={() => { setParsed(null); setStatus(null); setMsg(null); onDiscard(); }}>Discard</button>
+          </div>
+          {!payload && <p className="muted small" style={{ marginTop: 8 }}>This plan has no overall goal weight + end date, so it can't be applied as-is — use Edit to fill those in.</p>}
+        </Card>
+      )}
+    </>
+  );
+}
+
+// ── History: completed phases + archived plans ──
+function GoalHistoryTab({ data, goals }) {
+  const completed = data.completedPhases || [];
+  const donePhases = getPhases(goals.goalPlan).filter(p => p.status === "done");
+  const archived = data.archivedPlans || [];
+  if (!completed.length && !donePhases.length && !archived.length) return <Card><Empty icon="◷" title="No history yet" hint="Completed phases and archived plans will collect here as you progress through your roadmap." /></Card>;
+  return (
+    <>
+      {donePhases.length > 0 && (
+        <Card title="Completed phases" sub="legs of your current plan already behind you">
+          {donePhases.map((p, i) => (
+            <div key={i} className="gp-stat-row"><span className="small">{p.name || p.type}</span><span className="muted small">{p.startDate} → {p.endDate}{p.calories ? ` · ${p.calories} kcal` : ""}</span></div>
+          ))}
+        </Card>
+      )}
+      {completed.length > 0 && (
+        <Card title="Logged results" sub="outcomes you recorded">
+          {completed.map((c, i) => <p key={i} className="small" style={{ lineHeight: 1.5, margin: "6px 0" }}>• {c.name || c.type || "Phase"}{c.note ? ` — ${c.note}` : ""}</p>)}
+        </Card>
+      )}
+      {archived.length > 0 && (
+        <Card title="Archived plans">
+          {archived.map((a, i) => <p key={i} className="small" style={{ margin: "6px 0" }}>• {a.name || `Plan ${i + 1}`} {a.archivedAt ? <span className="muted small">({a.archivedAt})</span> : null}</p>)}
+        </Card>
+      )}
+    </>
+  );
+}
+
 function GoalPlanSection({ data, goals, onSaveGoals, addEntry, deleteEntry }) {
-  const [tab, setTab] = useState("plan");
+  const [tab, setTab] = useState("overview");
   const [editing, setEditing] = useState(false);
+  const [mode, setMode] = useState(null); // null | "build" | "import"
   const gp = useMemo(() => computeGoalPlan(data, goals), [data, goals]);
   const lastW = (data.weight || []).filter(w => w && w.kg > 0).sort((a, b) => (b.date || "").localeCompare(a.date || ""))[0];
   const currentWeight = (gp && gp.currentWeight) || (lastW && lastW.kg) || (goals.profile && goals.profile.weightKg) || null;
@@ -5796,43 +5999,86 @@ function GoalPlanSection({ data, goals, onSaveGoals, addEntry, deleteEntry }) {
     return snaps.length ? snaps[0].scores : null;
   }, [data.constraintSnapshots]);
 
-  if (!goals.goalPlan || goals.goalPlan.goalWeight == null || editing) {
-    return <div className="gp-scope stack"><div className="gp-brand"><span className="gp-mark" />Goal Plan</div><GoalForm goals={goals} currentWeight={currentWeight} onSave={g => { onSaveGoals(g); setEditing(false); }} onCancel={goals.goalPlan ? () => setEditing(false) : null} /></div>;
+  const hasGoal = goals.goalPlan && goals.goalPlan.goalWeight != null;
+  const brand = <div className="gp-brand"><span className="gp-mark" />Goal Plan</div>;
+
+  // Entry screen — two intentional action cards, no goal yet
+  if (!hasGoal && !mode) {
+    return <div className="gp-scope stack">{brand}<PlanEntryCards onBuild={() => setMode("build")} onImport={() => setMode("import")} /></div>;
+  }
+  // Build / edit — the internal plan builder (form)
+  if (mode === "build" || editing) {
+    return <div className="gp-scope stack">{brand}<GoalForm goals={goals} currentWeight={currentWeight} hideImport onSave={g => { onSaveGoals(g); setEditing(false); setMode(null); }} onCancel={() => { setEditing(false); setMode(null); }} /></div>;
+  }
+  // Import — upload/paste → analyze → review → apply
+  if (mode === "import") {
+    return <div className="gp-scope stack">{brand}<PlanImportFlow goals={goals} currentWeight={currentWeight}
+      onApply={g => { onSaveGoals(g); setMode(null); setTab("overview"); toast("✦ Plan applied"); }}
+      onEdit={g => { onSaveGoals(g); setMode(null); setEditing(true); }}
+      onDiscard={() => setMode(null)} /></div>;
   }
 
   const a = gp && gp.assess, t = gp && gp.trajectory, c = gp && gp.constraints;
   const typeLabel = (GOAL_TYPES.find(x => x.k === goals.goalPlan.type) || {}).label || "Goal";
   const VERDICT = { realistic: ["Realistic", "#8fd989"], aggressive: ["Aggressive", "#f9c97e"], unrealistic: ["Unrealistic", "#f47e6e"] };
   const STATUS = { "on-track": ["On track", "#8fd989"], ahead: ["Ahead", "#5cc8df"], behind: ["Behind", "#f9c97e"], "no-data": ["Not enough data", "#aab2c0"] };
+  const sw = goals.goalPlan.startWeight, gw = goals.goalPlan.goalWeight;
+  const phases = getPhases(goals.goalPlan);
+  const curPhase = activePhase(goals.goalPlan, getTodayStr());
+  const nextPhase = phases.filter(p => p.status === "planned")[0] || null;
+  const planAnalysis = phases.length ? analyzeRoadmap({ phases, currentWeight, experience: goals.goalPlan.experience || "intermediate" }) : null;
+  const phaseName = p => (p ? (p.name || (GOAL_TYPES.find(x => x.k === p.type) || {}).label || p.type) : null);
+  const sumBits = [];
+  if (a) sumBits.push(a.verdict === "realistic" ? "Your timeline is realistic." : a.verdict === "aggressive" ? "Your pace is a little aggressive — expect some extra fat." : "Your timeline looks unrealistic — consider stretching it.");
+  if (t && t.status && t.status !== "no-data") sumBits.push(t.status === "on-track" ? "You're tracking on plan." : t.status === "ahead" ? "You're ahead of plan." : "You're behind plan right now.");
+  if (c && c.primary) sumBits.push(`Biggest lever to fix: ${c.primary.label}.`);
 
   return (
     <div className="gp-scope stack">
-      <div className="gp-brand"><span className="gp-mark" />Goal Plan</div>
+      {brand}
       <div className="skin-tabs">{GP_TABS.map(x => <button key={x.k} className={`skin-tab ${tab === x.k ? "on" : ""}`} onClick={() => { setTab(x.k); haptic(6); }}>{x.label}</button>)}</div>
 
-      {tab === "plan" && (
+      {tab === "overview" && (
         <>
-          <Card title={typeLabel} sub={`${goals.goalPlan.startWeight ?? "?"}kg → ${goals.goalPlan.goalWeight}kg`} action={<button className="btn-ghost btn-sm" onClick={() => setEditing(true)}>Edit</button>}>
-            <div className="gp-stat-row"><span className="muted small">Timeline</span><span>{a ? `${Math.round(a.weeks)} weeks` : "—"} <TierBadge tier="measured" /></span></div>
-            <div className="gp-stat-row"><span className="muted small">Required pace</span><span>{a && a.reqKgWk != null ? `${a.reqKgWk > 0 ? "+" : ""}${a.reqKgWk} kg/wk` : "—"} <TierBadge tier="calc" /></span></div>
+          <Card title={typeLabel} sub={`${sw ?? "?"}kg → ${gw}kg`} action={<button className="btn-ghost btn-sm" onClick={() => setEditing(true)}>Edit</button>}>
             <div className="gp-stat-row"><span className="muted small">Current weight</span><span>{currentWeight ?? "—"} kg <TierBadge tier="measured" /></span></div>
+            <div className="gp-stat-row"><span className="muted small">Required pace</span><span>{a && a.reqKgWk != null ? `${a.reqKgWk > 0 ? "+" : ""}${a.reqKgWk} kg/wk` : "—"} <TierBadge tier="calc" /></span></div>
+            <div className="gp-stat-row"><span className="muted small">Timeline</span><span>{a ? `${Math.round(a.weeks)} weeks` : "—"}</span></div>
+            {curPhase && phases.length > 1 && <div className="gp-stat-row"><span className="muted small">Current phase</span><span style={{ color: "#5cc8df" }}>{phaseName(curPhase)} ● now</span></div>}
+            {nextPhase && <div className="gp-stat-row"><span className="muted small">Up next</span><span>{phaseName(nextPhase)}{nextPhase.startDate ? ` · ${nextPhase.startDate.slice(5)}` : ""}</span></div>}
           </Card>
+
+          {sumBits.length > 0 && (
+            <Card title="Summary" sub="where this plan stands">
+              <p className="small" style={{ lineHeight: 1.6, margin: 0 }}>{sumBits.join(" ")}</p>
+            </Card>
+          )}
+
+          {t && (
+            <Card title="Goal trajectory" sub="expected path vs your actual trend" action={<span className="gp-verdict" style={{ fontSize: 12, padding: "2px 10px", color: (STATUS[t.status] || STATUS["no-data"])[1], borderColor: `${(STATUS[t.status] || STATUS["no-data"])[1]}55` }}>{(STATUS[t.status] || STATUS["no-data"])[0]}</span>}>
+              <div style={{ marginTop: 4 }}><TrajectoryChart traj={t} pts={gp.actualPts} /></div>
+              <div className="gp-legend"><span><i style={{ background: "var(--accent)" }} />Actual</span><span><i className="dash" style={{ background: "var(--muted)" }} />Expected</span><span><i className="dash" style={{ background: "#f9c97e" }} />Projected</span></div>
+              <div className="gp-stat-row" style={{ marginTop: 6 }}><span className="muted small">Off plan by</span><span>{t.deviation != null ? `${t.deviation > 0 ? "+" : ""}${t.deviation} kg` : "—"}</span></div>
+            </Card>
+          )}
+
           {a ? (
             <Card title="Biological reality check">
               <div className="gp-verdict" style={{ color: (VERDICT[a.verdict] || VERDICT.realistic)[1], borderColor: `${(VERDICT[a.verdict] || VERDICT.realistic)[1]}55` }}>{(VERDICT[a.verdict] || VERDICT.realistic)[0]}</div>
               <p className="muted small" style={{ lineHeight: 1.55, marginTop: 8 }}>{a.note}</p>
-              {a.dir === "gain" && a.expectedMuscleKg && (
-                <div className="gp-split">
-                  <div className="gp-stat-row"><span className="muted small">Expected muscle</span><span>{a.expectedMuscleKg[0]}–{a.expectedMuscleKg[1]} kg <TierBadge tier="forecast" /></span></div>
-                  <div className="gp-stat-row"><span className="muted small">Expected fat</span><span>{a.expectedFatKg[0]}–{a.expectedFatKg[1]} kg <TierBadge tier="forecast" /></span></div>
-                </div>
-              )}
               {a.verdict !== "realistic" && a.realisticWeeks && (
-                <p className="small" style={{ lineHeight: 1.55, marginTop: 8, color: "var(--text-2)" }}>A realistic version: reach {goals.goalPlan.goalWeight}kg in <b>~{a.realisticWeeks} weeks</b>, or keep your date and target <b>~{a.realisticGoalWeight}kg</b> instead.</p>
+                <p className="small" style={{ lineHeight: 1.55, marginTop: 8, color: "var(--text-2)" }}>A realistic version: reach {gw}kg in <b>~{a.realisticWeeks} weeks</b>, or keep your date and target <b>~{a.realisticGoalWeight}kg</b>.</p>
               )}
-              <p className="muted small" style={{ marginTop: 10, lineHeight: 1.45 }}>Rates are evidence-based starting points; muscle/fat split is a modeled range, not a measurement. Verify with the scale and the mirror over weeks.</p>
             </Card>
           ) : <Card><Empty icon="◎" title="Add a goal weight + dates" hint="Once your goal has a target weight and date, the reality check appears here." /></Card>}
+
+          {c && c.primary && (
+            <Card title="Key bottleneck" className="gp-primary">
+              <div className="gp-primary-name">{c.primary.label} <span className="muted small">{c.primary.score}/100</span></div>
+              <p className="small" style={{ lineHeight: 1.55, marginTop: 6 }}>{c.primary.rec}</p>
+              <p className="muted small" style={{ marginTop: 6 }}>Your lowest-scoring lever — the highest-ROI fix. Full breakdown in Reports.</p>
+            </Card>
+          )}
 
           <Card title="Macros" sub="targets driven by your goal" action={<button className="btn-ghost btn-sm" onClick={() => { onSaveGoals({ ...goals, macroMode: goals.macroMode === "auto" ? "manual" : "auto" }); haptic(6); }}>{goals.macroMode === "auto" ? "Auto · on" : "Auto · off"}</button>}>
             {macros && macros.ready ? (
@@ -5843,71 +6089,44 @@ function GoalPlanSection({ data, goals, onSaveGoals, addEntry, deleteEntry }) {
                 <div className="gp-stat-row"><span className="muted small">Fat</span><span>{macros.fat} g</span></div>
                 <p className="muted small" style={{ marginTop: 8, lineHeight: 1.45 }}>{macros.note}</p>
                 {goals.macroMode === "auto"
-                  ? <p className="small" style={{ marginTop: 8, color: "#8fd989", lineHeight: 1.5 }}>✓ Your Log Meal targets are set by Goal Plan and re-adjust automatically as your weight and pace change.</p>
+                  ? <p className="small" style={{ marginTop: 8, color: "#8fd989", lineHeight: 1.5 }}>✓ Your Log Meal targets are set by Goal Plan and re-adjust as your weight and pace change.</p>
                   : <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
                       <button className="btn-primary btn-sm" onClick={() => { onSaveGoals({ ...goals, calories: macros.calories, protein: macros.protein, carbs: macros.carbs, fat: macros.fat }); toast("✦ Macros applied to Log Meal"); haptic(10); }}>Apply once</button>
                       <button className="btn-ghost btn-sm" onClick={() => { onSaveGoals({ ...goals, macroMode: "auto", calories: macros.calories, protein: macros.protein, carbs: macros.carbs, fat: macros.fat }); toast("✦ Goal Plan now drives your macros"); haptic(10); }}>Keep auto-updated</button>
                     </div>}
-                <p className="muted small" style={{ marginTop: 8, lineHeight: 1.45 }}>Evidence-based starting points, not a prescription{macros.flooredTo ? `; calories held at a safe floor (${macros.flooredTo})` : ""}. Adjust if your appetite or results say otherwise.</p>
               </>
             ) : <Empty icon="◎" title="Need weight + profile" hint={macros ? macros.reason : "Add your current weight and profile to compute targets."} />}
           </Card>
         </>
       )}
 
-      {tab === "state" && <GoalStateTab data={data} goals={goals} onSaveGoals={onSaveGoals} addEntry={addEntry} deleteEntry={deleteEntry} />}
-      {tab === "road" && <GoalRoadmapTab goals={goals} currentWeight={currentWeight} />}
-
-      {tab === "traj" && (
-        t ? (
-          <>
-            <Card title="Trajectory" sub="expected path vs your actual trend">
-              <div className="gp-verdict" style={{ color: (STATUS[t.status] || STATUS["no-data"])[1], borderColor: `${(STATUS[t.status] || STATUS["no-data"])[1]}55` }}>{(STATUS[t.status] || STATUS["no-data"])[0]}</div>
-              <div style={{ marginTop: 10 }}><TrajectoryChart traj={t} pts={gp.actualPts} /></div>
-              <div className="gp-legend"><span><i style={{ background: "var(--accent)" }} />Actual</span><span><i className="dash" style={{ background: "var(--muted)" }} />Expected</span><span><i className="dash" style={{ background: "#f9c97e" }} />Projected</span></div>
-            </Card>
-            <Card>
-              <div className="gp-stat-row"><span className="muted small">Should be near</span><span>{t.expectedNow ?? "—"} kg <TierBadge tier="calc" /></span></div>
-              <div className="gp-stat-row"><span className="muted small">Actual (trend)</span><span>{t.actualNow ?? "—"} kg <TierBadge tier="calc" /></span></div>
-              <div className="gp-stat-row"><span className="muted small">Off by</span><span>{t.deviation != null ? `${t.deviation > 0 ? "+" : ""}${t.deviation} kg` : "—"}</span></div>
-              <div className="gp-stat-row"><span className="muted small">Projected at target date</span><span>{t.projectedEnd != null ? `${t.projectedEnd} kg` : "—"} <TierBadge tier="forecast" /></span></div>
-              {t.projGap != null && <p className="muted small" style={{ marginTop: 8, lineHeight: 1.5 }}>At your current trend (~{t.rate} kg/wk) you'd land {t.projGap === 0 ? "right on" : `${Math.abs(t.projGap)}kg ${t.projGap > 0 ? "above" : "below"}`} your {t.goalWeight}kg goal. This is a projection of the current trend, not a guarantee.</p>}
-            </Card>
-          </>
-        ) : <Card><Empty icon="◎" title="Log your weight to see your trajectory" hint="A week or two of morning weigh-ins gives a trend to plot against your goal." /></Card>
+      {tab === "road" && (
+        <>
+          {phases.length > 0 && <Card title="Timeline" sub="your roadmap at a glance"><PlanTimeline phases={phases} /></Card>}
+          <GoalRoadmapTab goals={goals} currentWeight={currentWeight} />
+        </>
       )}
 
-      {tab === "cons" && (
-        c && c.levers.length ? (
-          <>
-            {c.primary && (
-              <Card title="Primary constraint" className="gp-primary">
-                <div className="gp-primary-name">{c.primary.label} <span className="muted small">{c.primary.score}/100</span></div>
-                <p className="small" style={{ lineHeight: 1.55, marginTop: 6 }}>{c.primary.rec}</p>
-                <p className="muted small" style={{ marginTop: 6 }}>This is your lowest-scoring lever — the highest-ROI thing to fix next.</p>
-              </Card>
-            )}
-            <Card title="What's limiting progress" sub="your levers, lowest first — and how they moved this week">
-              {c.levers.slice().sort((x, y) => x.score - y.score).map(l => {
-                const prev = consPrev && consPrev[l.key];
-                const d = prev != null ? l.score - prev : null;
-                return (
-                  <div key={l.key} className="gp-lever">
-                    <div className="gp-lever-top"><span className="gp-lever-name">{l.label} <TierBadge tier={l.tier} /></span><span className="gp-lever-score">{l.score}{d != null && Math.abs(d) >= 2 ? <span className="small" style={{ color: d > 0 ? "#8fd989" : "#f47e6e", marginLeft: 4 }}>{d > 0 ? "▲" : "▼"}{Math.abs(d)}</span> : null}</span></div>
-                    <div className="gp-lever-bar"><div className="gp-lever-fill" style={{ width: `${l.score}%`, background: l.score < 60 ? "#f47e6e" : l.score < 80 ? "#f9c97e" : "#8fd989" }} /></div>
-                    <div className="muted small" style={{ marginTop: 3 }}>{l.detail}{d != null && Math.abs(d) >= 2 ? ` · ${d > 0 ? "up" : "down"} ${Math.abs(d)} vs last week` : ""}</div>
-                  </div>
-                );
-              })}
-              {!consPrev && <p className="muted small" style={{ marginTop: 6, lineHeight: 1.4 }}>Week-over-week movement appears once you've used Goal Plan for a week.</p>}
+      {tab === "fore" && (
+        <>
+          {planAnalysis && planAnalysis.risks.length > 0 && (
+            <Card title="Risk & feasibility" sub="across every phase" action={<span className="gp-verdict" style={{ fontSize: 12, padding: "2px 10px", color: (VERDICT[planAnalysis.planVerdict] || VERDICT.realistic)[1], borderColor: `${(VERDICT[planAnalysis.planVerdict] || VERDICT.realistic)[1]}55` }}>{(VERDICT[planAnalysis.planVerdict] || VERDICT.realistic)[0]}</span>}>
+              {planAnalysis.risks.map((r, i) => <p key={i} className="small" style={{ margin: "3px 0", color: "var(--text-2)", lineHeight: 1.45 }}>⚠ {r}</p>)}
             </Card>
-          </>
-        ) : <Card><Empty icon="◎" title="Log a couple of weeks" hint="Once there's some food, training and sleep logged, the constraint analysis shows what's holding you back." /></Card>
+          )}
+          <GoalForecastTab gp={gp} data={data} addEntry={addEntry} />
+          <GoalSimulateTab gp={gp} goals={goals} />
+        </>
       )}
 
-      {tab === "fore" && <GoalForecastTab gp={gp} data={data} addEntry={addEntry} />}
-      {tab === "sim" && <GoalSimulateTab gp={gp} goals={goals} />}
-      {tab === "report" && <GoalReportTab gp={gp} data={data} addEntry={addEntry} deleteEntry={deleteEntry} />}
+      {tab === "report" && (
+        <>
+          <GoalReportTab gp={gp} data={data} addEntry={addEntry} deleteEntry={deleteEntry} />
+          <GoalStateTab data={data} goals={goals} onSaveGoals={onSaveGoals} addEntry={addEntry} deleteEntry={deleteEntry} />
+        </>
+      )}
+
+      {tab === "history" && <GoalHistoryTab data={data} goals={goals} />}
     </div>
   );
 }
