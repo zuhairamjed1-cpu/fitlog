@@ -12,7 +12,7 @@ import { computeNicotineStats, computeNicotineCorrelations, computeNicotineTimin
 import { computeSkin, detectRoutineConflicts } from "./engines/skin";
 import { estimateGlycemicLoad, dayGlycemicLoad } from "./engines/glycemic";
 import { planFueling, reconcileFueling, sleepWindow, SESSION_TYPES } from "./engines/fueling";
-import { computeGoalPlan, formatGoalText, simulateGoal, analyzeRoadmap, assessGoal } from "./engines/goalplan";
+import { computeGoalPlan, formatGoalText, simulateGoal, analyzeRoadmap, assessGoal, interpretPlan } from "./engines/goalplan";
 import { computePhysiologyState } from "./engines/physiology";
 import { getPhases, activePhase, applyPhaseChange, generatePhases } from "./engines/phases";
 import { proposeAdaptation } from "./engines/adaptation";
@@ -5867,18 +5867,18 @@ function PlanTimeline({ phases }) {
 }
 
 // ── Create screen: three cards — Build (Card 1), Import (Card 2), Analysis (Card 3) ──
-function PlanCreateScreen({ goals, currentWeight, onApply, onEdit, onCancel }) {
+function PlanCreateScreen({ goals, currentWeight, profile, maintenance, onApply, onEdit, onCancel }) {
   return (
     <>
       {onCancel && <button className="btn-ghost btn-sm" style={{ alignSelf: "flex-start" }} onClick={onCancel}>← Back to plan</button>}
       <GoalForm goals={goals} currentWeight={currentWeight} hideImport onSave={onApply} onCancel={onCancel} />
-      <PlanImportFlow goals={goals} currentWeight={currentWeight} onApply={onApply} onEdit={onEdit} onDiscard={() => {}} embedded />
+      <PlanImportFlow goals={goals} currentWeight={currentWeight} profile={profile} maintenance={maintenance} onApply={onApply} onEdit={onEdit} onDiscard={() => {}} embedded />
     </>
   );
 }
 
 // ── Import flow: upload/paste → analyze → Plan Analysis card → apply/edit/discard ──
-function PlanImportFlow({ goals, currentWeight, onApply, onEdit, onDiscard, embedded }) {
+function PlanImportFlow({ goals, currentWeight, profile, maintenance, onApply, onEdit, onDiscard, embedded }) {
   const [parsed, setParsed] = useState(null);
   const [paste, setPaste] = useState("");
   const [msg, setMsg] = useState(null);
@@ -5902,79 +5902,90 @@ function PlanImportFlow({ goals, currentWeight, onApply, onEdit, onDiscard, embe
     r.readAsText(f); e.target.value = "";
   };
 
-  const previewPhases = parsed && parsed.hasRoadmap ? buildRoadmapPhases(parsed, today) : [];
-  const analysis = previewPhases.length ? analyzeRoadmap({ phases: previewPhases, currentWeight, experience: (goals.goalPlan && goals.goalPlan.experience) || "intermediate" }) : null;
-  const issues = parsed ? planIssues(parsed) : [];
-  const payload = parsed ? payloadFromParsedPlan(parsed, goals, today) : null;
+  const interpreted = parsed ? interpretPlan(parsed, { currentWeight, profile, maintenance, experience: (goals.goalPlan && goals.goalPlan.experience) || "intermediate", today }) : null;
+  const igp = interpreted ? interpreted.goalPlan : null;
+  const reality = interpreted ? interpreted.reality : null;
+  const prov = interpreted ? interpreted.provenance : {};
+  const analysis = igp && igp.phases.length ? analyzeRoadmap({ phases: igp.phases, currentWeight, experience: igp.experience }) : null;
+  const payload = igp ? (() => {
+    const active = igp.phases.find(p => p.status === "active") || igp.phases[0] || null;
+    const pl = { ...goals, goalPlan: igp, macroMode: "auto" };
+    if (active) { if (active.calories) pl.calories = active.calories; if (active.protein) pl.protein = active.protein; }
+    return pl;
+  })() : null;
   const VC = { realistic: ["Realistic", "#8fd989"], aggressive: ["Aggressive", "#f9c97e"], unrealistic: ["Unrealistic", "#f47e6e"] };
+  const provLabel = { type: "Goal type", goalWeight: "Goal weight", startWeight: "Start weight", startDate: "Start date", targetDate: "End date", phaseDates: "Phase dates", calories: "Calories", macros: "Macros" };
+  const provOrder = ["type", "goalWeight", "startWeight", "startDate", "targetDate", "phaseDates", "calories", "macros"];
+  const derivedList = ["Phase dates", "Calorie targets", "Macro targets", igp && igp.roadmap && igp.roadmap.checkpoints.length ? "Progress checkpoints" : "Weekly milestones"];
+  const confidence = !interpreted ? "—" : (Object.values(prov).filter(v => v === "derived").length >= 4 ? "Medium" : "High");
 
   return (
     <>
-      <Card title="Import a plan" sub="upload or paste — nothing is applied until you approve" action={!embedded && <button className="btn-ghost btn-sm" onClick={onDiscard}>Cancel</button>}>
+      <Card title="Import a plan" sub="upload or paste — analyzed before anything is applied" action={!embedded && <button className="btn-ghost btn-sm" onClick={onDiscard}>Cancel</button>}>
         <input type="file" onChange={onFile} style={{ display: "block", width: "100%", marginBottom: 10 }} />
         <textarea value={paste} onChange={e => setPaste(e.target.value)} placeholder="…or paste your plan markdown here, then tap Analyze" rows={4} style={{ width: "100%", background: "var(--bg-2)", color: "var(--text)", border: "1px solid var(--line)", borderRadius: 8, padding: 10, fontSize: 13, resize: "vertical" }} />
-        <button type="button" className="btn-ghost btn-sm" style={{ marginTop: 8 }} onClick={() => analyze(paste, "pasted text")}>Analyze pasted plan</button>
+        <button type="button" className="btn-ghost btn-sm" style={{ marginTop: 8 }} onClick={() => analyze(paste, "pasted text")}>Analyze Plan</button>
         {status && <p className="small" style={{ marginTop: 8, color: status.startsWith("✓") ? "#8fd989" : status.startsWith("⚠") ? "#f47e6e" : "var(--text-2)" }}>{status}</p>}
         {msg && <p className="small" style={{ marginTop: 6, color: "#f9c97e", lineHeight: 1.45 }}>{msg}</p>}
       </Card>
 
-      {parsed && (
-        <Card title="Plan Analysis" sub="review before applying" action={analysis && <span className="gp-verdict" style={{ fontSize: 12, padding: "2px 10px", color: (VC[analysis.planVerdict] || VC.realistic)[1], borderColor: `${(VC[analysis.planVerdict] || VC.realistic)[1]}55` }}>{(VC[analysis.planVerdict] || VC.realistic)[0]}</span>}>
-          <div className="small" style={{ fontWeight: 600, marginBottom: 4 }}>Goal detected</div>
-          <p className="muted small" style={{ margin: "0 0 10px", lineHeight: 1.5 }}>
-            {(GOAL_TYPES.find(x => x.k === parsed.type) || {}).label || parsed.type || "Goal"}{parsed.startWeight != null || parsed.goalWeight != null ? ` · ${parsed.startWeight ?? "?"} kg → ${parsed.goalWeight ?? "?"} kg` : ""}{parsed.startDate || parsed.targetDate ? ` · ${parsed.startDate || "?"} → ${parsed.targetDate || "?"}` : ""}
+      {interpreted && (
+        <Card title="Plan Analysis" sub="FitLog filled in anything your plan didn't specify">
+          {/* Plan Summary */}
+          <div className="small" style={{ fontWeight: 600, marginBottom: 4 }}>Plan summary</div>
+          <p className="muted small" style={{ margin: "0 0 12px", lineHeight: 1.5 }}>
+            {(GOAL_TYPES.find(x => x.k === igp.type) || {}).label || igp.type}{igp.startWeight != null && igp.goalWeight != null ? ` · ${igp.startWeight}kg → ${igp.goalWeight}kg` : ""}{interpreted.durationWeeks ? ` · ${Math.round(interpreted.durationWeeks)} weeks` : ""}{igp.phases.length ? ` · ${igp.phases.length} phase${igp.phases.length > 1 ? "s" : ""}` : ""}
           </p>
 
-          {parsed.phases.length > 0 && (
-            <>
-              <div className="small" style={{ fontWeight: 600, marginBottom: 4 }}>Phases found ({parsed.phases.length})</div>
-              {(analysis ? analysis.phases : parsed.phases).map((p, i) => (
-                <div key={i} className="gp-stat-row" style={{ alignItems: "flex-start" }}>
-                  <span className="small">{p.name || (GOAL_TYPES.find(x => x.k === p.type) || {}).label || p.type}{p.weeks ? ` · ${Math.round(p.weeks)} wk` : ""}</span>
+          {/* FitLog Interpretation — provenance, not errors */}
+          <div className="small" style={{ fontWeight: 600, marginBottom: 4 }}>FitLog interpretation</div>
+          {provOrder.filter(k => prov[k]).map(k => (
+            <div key={k} className="gp-stat-row" style={{ padding: "2px 0" }}>
+              <span className="small">{provLabel[k]}</span>
+              <span className="small" style={{ color: prov[k] === "plan" ? "#8fd989" : "#5cc8df" }}>{prov[k] === "plan" ? "✓ From plan" : "~ FitLog derived"}</span>
+            </div>
+          ))}
+
+          {/* Phase breakdown */}
+          {igp.phases.length > 0 && (
+            <div style={{ marginTop: 10 }}>
+              <div className="small" style={{ fontWeight: 600, marginBottom: 4 }}>Phase breakdown</div>
+              {(analysis ? analysis.phases : igp.phases).map((p, i) => (
+                <div key={i} className="gp-stat-row" style={{ padding: "2px 0" }}>
+                  <span className="small">{p.name || (GOAL_TYPES.find(x => x.k === p.type) || {}).label || p.type}{p.startWeight != null && p.goalWeight != null ? ` ${p.startWeight}→${p.goalWeight}kg` : ""}</span>
                   <span className="small" style={{ color: (VC[p.verdict] || VC.realistic)[1] }}>{(VC[p.verdict] || VC.realistic)[0]}</span>
                 </div>
               ))}
-            </>
-          )}
-
-          {(() => {
-            const aSci = parsed ? assessGoal({ goalPlan: { startWeight: parsed.startWeight, goalWeight: payload && payload.goalPlan.goalWeight, startDate: parsed.startDate, targetDate: payload && payload.goalPlan.targetDate, experience: (goals.goalPlan && goals.goalPlan.experience) || "intermediate" }, currentWeight: parsed.startWeight ?? currentWeight }) : null;
-            const recs = planRecommendations(parsed, analysis, aSci);
-            return (
-              <>
-                <div style={{ marginTop: 10 }}>
-                  <div className="small" style={{ fontWeight: 600, marginBottom: 4 }}>Scientific review</div>
-                  {aSci ? (
-                    <>
-                      <div className="gp-stat-row"><span className="muted small">Realistic?</span><span style={{ color: (VC[aSci.verdict] || VC.realistic)[1] }}>{(VC[aSci.verdict] || VC.realistic)[0]}</span></div>
-                      <div className="gp-stat-row"><span className="muted small">Required rate</span><span>{aSci.reqKgWk > 0 ? "+" : ""}{aSci.reqKgWk} kg/wk <TierBadge tier="calc" /></span></div>
-                      {aSci.dir === "gain" && aSci.expectedMuscleKg && <div className="gp-stat-row"><span className="muted small">Est. muscle</span><span>{aSci.expectedMuscleKg[0]}–{aSci.expectedMuscleKg[1]} kg <TierBadge tier="forecast" /></span></div>}
-                      {aSci.dir === "gain" && aSci.expectedFatKg && <div className="gp-stat-row"><span className="muted small">Est. fat</span><span>{aSci.expectedFatKg[0]}–{aSci.expectedFatKg[1]} kg <TierBadge tier="forecast" /></span></div>}
-                    </>
-                  ) : <p className="muted small" style={{ margin: 0, lineHeight: 1.45 }}>Add a start weight, goal weight and dates for the full reality check.{analysis && analysis.totalWeeks > 0 ? ` Total span ~${Math.round(analysis.totalWeeks)} weeks.` : ""}</p>}
-                  <p className="muted small" style={{ marginTop: 6, lineHeight: 1.4 }}>Muscle/fat split is a modeled range (forecast), not measured.</p>
-                </div>
-                <div style={{ marginTop: 10 }}>
-                  <div className="small" style={{ fontWeight: 600, marginBottom: 4 }}>Recommendations</div>
-                  {recs.map((r, i) => <p key={i} className="small" style={{ margin: "3px 0", color: "var(--text-2)", lineHeight: 1.45 }}>→ {r}</p>)}
-                </div>
-              </>
-            );
-          })()}
-
-          {issues.length > 0 && (
-            <div style={{ marginTop: 10 }}>
-              <div className="small" style={{ fontWeight: 600, marginBottom: 4, color: "#f9c97e" }}>Potential issues</div>
-              {issues.map((it, i) => <p key={i} className="small" style={{ margin: "2px 0", color: "var(--text-2)" }}>• {it}</p>)}
             </div>
           )}
 
-          <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
-            <button className="btn-primary btn-sm" disabled={!payload} onClick={() => { if (payload) { onApply(payload); haptic(12); } else { setMsg("Add a goal weight + target date to the plan first."); } }}>Apply Plan</button>
-            <button className="btn-ghost btn-sm" disabled={!payload} onClick={() => payload && onEdit(payload)}>Edit Before Applying</button>
+          {/* Reality Check */}
+          {reality && (
+            <div style={{ marginTop: 10 }}>
+              <div className="small" style={{ fontWeight: 600, marginBottom: 4 }}>Reality check</div>
+              <div className="gp-stat-row"><span className="muted small">Required rate</span><span>{reality.reqKgWk > 0 ? "+" : ""}{reality.reqKgWk} kg/wk <TierBadge tier="calc" /></span></div>
+              <div className="gp-stat-row"><span className="muted small">Evidence-based range</span><span className="muted small">{reality.dir === "gain" ? "+0.15–0.35" : reality.dir === "loss" ? "−0.5–1.0" : "~0"} kg/wk</span></div>
+              <div className="gp-stat-row"><span className="muted small">Status</span><span style={{ color: (VC[reality.verdict] || VC.realistic)[1] }}>{reality.verdict === "realistic" ? "✓ " : "⚠ "}{(VC[reality.verdict] || VC.realistic)[0]}</span></div>
+            </div>
+          )}
+
+          {/* Expected Outcome */}
+          {reality && reality.dir === "gain" && reality.expectedMuscleKg && (
+            <div style={{ marginTop: 10 }}>
+              <div className="small" style={{ fontWeight: 600, marginBottom: 4 }}>Expected outcome <TierBadge tier="forecast" /></div>
+              <div className="gp-stat-row"><span className="muted small">Weight</span><span>{igp.goalWeight} kg</span></div>
+              <div className="gp-stat-row"><span className="muted small">Muscle</span><span>+{reality.expectedMuscleKg[0]} to +{reality.expectedMuscleKg[1]} kg</span></div>
+              <div className="gp-stat-row"><span className="muted small">Fat</span><span>+{reality.expectedFatKg[0]} to +{reality.expectedFatKg[1]} kg</span></div>
+              <div className="gp-stat-row"><span className="muted small">Confidence</span><span>{confidence}</span></div>
+              <p className="muted small" style={{ marginTop: 6, lineHeight: 1.4 }}>Muscle/fat split is a modeled range, not measured.</p>
+            </div>
+          )}
+
+          {/* Single action — no dead ends */}
+          <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+            <button className="btn-primary" style={{ flex: 1 }} onClick={() => { onApply(payload); haptic(12); }}>Apply Plan</button>
             <button className="btn-ghost btn-sm" onClick={() => { setParsed(null); setStatus(null); setMsg(null); if (!embedded && onDiscard) onDiscard(); }}>Discard</button>
           </div>
-          {!payload && <p className="muted small" style={{ marginTop: 8 }}>This plan has no overall goal weight + end date, so it can't be applied as-is — use Edit to fill those in.</p>}
         </Card>
       )}
     </>
@@ -6052,7 +6063,8 @@ function GoalPlanSection({ data, goals, onSaveGoals, addEntry, deleteEntry }) {
 
   // No active plan, or user chose "New plan" → the three-card create screen
   if ((!hasGoal && !mode) || mode === "create") {
-    return <div className="gp-scope stack">{brand}<PlanCreateScreen goals={goals} currentWeight={currentWeight} onApply={applyPlan} onEdit={editPlan} onCancel={hasGoal ? () => setMode(null) : null} /></div>;
+    const maintenance = macros && macros.ready ? macros.tdee : null;
+    return <div className="gp-scope stack">{brand}<PlanCreateScreen goals={goals} currentWeight={currentWeight} profile={goals.profile} maintenance={maintenance} onApply={applyPlan} onEdit={editPlan} onCancel={hasGoal ? () => setMode(null) : null} /></div>;
   }
   // Edit the existing plan (the builder form; imported phases are preserved)
   if (editing) {

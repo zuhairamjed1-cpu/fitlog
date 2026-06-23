@@ -18,6 +18,8 @@ import { computeWeightTrend } from "./weight.js";
 import { computeRecovery } from "./recovery.js";
 import { estimateSleepNeed, sleepTST } from "./sleep.js";
 import { getTodayStr, daysAgo } from "../lib/dates.js";
+import { mifflinBMR } from "./energy.js";
+import { generatePhases } from "./phases.js";
 
 const r1 = x => (x == null ? null : Math.round(x * 10) / 10);
 const r2 = x => (x == null ? null : Math.round(x * 100) / 100);
@@ -146,6 +148,92 @@ export function analyzeRoadmap({ phases, currentWeight, experience = "intermedia
   const order = { unrealistic: 3, aggressive: 2, realistic: 1 };
   const planVerdict = out.reduce((w, p) => (order[p.verdict] || 0) > (order[w] || 0) ? p.verdict : w, "realistic");
   return { phases: out, planVerdict, risks, totalWeeks: r1(totalWeeks), typeCounts, count: out.length, tier: "forecast" };
+}
+
+const addWk = (iso, wk) => { const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() + Math.round(wk * 7)); return d.toISOString().slice(0, 10); };
+const phaseDirOf = p => {
+  if (p.targetRate != null) return p.targetRate > 0.02 ? "gain" : p.targetRate < -0.02 ? "loss" : "maintain";
+  if (p.type === "cut" || p.type === "minicut") return "loss";
+  if (p.type === "maintenance") return "maintain";
+  if (p.startWeight != null && p.goalWeight != null) { const d = p.goalWeight - p.startWeight; return Math.abs(d) < 0.3 ? "maintain" : d > 0 ? "gain" : "loss"; }
+  return "gain";
+};
+function distributePhaseDates(phases, start, end) {
+  if (phases.every(p => p.startDate && p.endDate)) return phases.map(p => ({ ...p }));
+  const totalWk = weeksBetween(start, end) || phases.length * 8;
+  const w = phases.map(p => Math.abs((p.goalWeight ?? 0) - (p.startWeight ?? 0)) || 1);
+  const sumW = w.reduce((a, b) => a + b, 0) || phases.length;
+  let cursor = start;
+  return phases.map((p, i) => {
+    const s = p.startDate || cursor;
+    const e = p.endDate || (i === phases.length - 1 ? end : addWk(s, totalWk * (w[i] / sumW)));
+    cursor = e;
+    return { ...p, startDate: s, endDate: e };
+  });
+}
+
+// ─── INTERPRET an imported plan into a complete, native FitLog goalPlan ──────
+// Extracts what the document provides, DERIVES everything missing from what
+// FitLog already knows (current weight, maintenance, profile, evidence rates),
+// and reports provenance per field ("plan" vs "derived") so the UI shows
+// confidence instead of errors. After this, the plan is native — no dead ends.
+export function interpretPlan(parsed, ctx = {}) {
+  const today = ctx.today || getTodayStr();
+  const cw = ctx.currentWeight ?? parsed.startWeight ?? null;
+  const exp = ["novice", "intermediate", "advanced"].includes(ctx.experience) ? ctx.experience : "intermediate";
+  const prov = {};
+  const set = (k, v, src) => { prov[k] = src; return v; };
+
+  const type = parsed.type ? set("type", parsed.type, "plan") : set("type", "leanbulk", "derived");
+  let startWeight = parsed.startWeight != null ? set("startWeight", parsed.startWeight, "plan") : (cw != null ? set("startWeight", cw, "derived") : null);
+  let goalWeight = parsed.goalWeight != null ? set("goalWeight", parsed.goalWeight, "plan") : null;
+
+  let startDate = parsed.startDate ? set("startDate", parsed.startDate, "plan") : set("startDate", today, "derived");
+  let durationWeeks = parsed.durationWeeks || null;
+  let targetDate = parsed.targetDate ? set("targetDate", parsed.targetDate, "plan") : null;
+  if (targetDate == null) {
+    if (durationWeeks) targetDate = set("targetDate", addWk(startDate, durationWeeks), "derived");
+    else if (parsed.phases.length && parsed.phases[parsed.phases.length - 1].endDate) targetDate = set("targetDate", parsed.phases[parsed.phases.length - 1].endDate, "plan");
+    else if (startWeight != null && goalWeight != null) {
+      const total = goalWeight - startWeight, dir = Math.abs(total) < 0.5 ? "maintain" : total > 0 ? "gain" : "loss";
+      const pct = dir === "gain" ? 0.003 : dir === "loss" ? 0.007 : 0;
+      durationWeeks = pct ? Math.ceil(Math.abs(total) / (pct * startWeight)) : 12;
+      targetDate = set("targetDate", addWk(startDate, durationWeeks), "derived");
+    }
+  }
+  if (!durationWeeks && startDate && targetDate) durationWeeks = Math.round(weeksBetween(startDate, targetDate));
+
+  const maintenance = ctx.maintenance || (ctx.profile && cw ? (Math.round((mifflinBMR(ctx.profile, cw) || 0) * 1.55) || null) : null);
+
+  let phases = [];
+  if (parsed.phases.length) {
+    phases = distributePhaseDates(parsed.phases, startDate, targetDate);
+    prov.phaseDates = parsed.phases.every(p => p.startDate && p.endDate) ? "plan" : "derived";
+  } else if (startWeight != null && goalWeight != null && startDate && targetDate) {
+    phases = generatePhases({ type, startWeight, goalWeight, startDate, targetDate, experience: exp }, today);
+    prov.phaseDates = "derived";
+  }
+  let calDerived = false, calPlan = false, macDerived = false, macPlan = false;
+  phases = phases.map(p => {
+    const pw = p.startWeight ?? cw ?? startWeight;
+    const dir = phaseDirOf(p);
+    let cal = p.calories;
+    if (cal != null) calPlan = true;
+    else if (maintenance) { cal = dir === "gain" ? maintenance + 250 : dir === "loss" ? maintenance - 500 : maintenance; calDerived = true; }
+    let prot = p.protein;
+    if (prot != null) macPlan = true;
+    else if (pw) { prot = Math.round((dir === "loss" ? 2.2 : 2.0) * pw); macDerived = true; }
+    const status = (p.endDate && p.endDate < today) ? "done" : (p.startDate && p.startDate <= today && (!p.endDate || p.endDate >= today)) ? "active" : "planned";
+    return { ...p, calories: cal ?? null, protein: prot ?? null, status, origin: p.origin || "import" };
+  });
+  if (phases.length) { prov.calories = calDerived ? "derived" : (calPlan ? "plan" : "derived"); prov.macros = macDerived ? "derived" : (macPlan ? "plan" : "derived"); }
+
+  const goalPlan = {
+    type, startWeight, goalWeight, startDate, targetDate, freq: parsed.freq || null, experience: exp, phases,
+    roadmap: { checkpoints: parsed.checkpoints || [], deloads: parsed.deloads || [], rules: parsed.rules || [], longTerm: parsed.longTerm || {}, meta: parsed.meta || {}, strategyNotes: parsed.strategyNotes || [], sourceMarkdown: parsed.sourceMarkdown || null, importedAt: today },
+  };
+  const reality = (startWeight != null && goalWeight != null && targetDate) ? assessGoal({ goalPlan: { startWeight, goalWeight, startDate, targetDate, experience: exp }, currentWeight: cw ?? startWeight }) : null;
+  return { goalPlan, provenance: prov, durationWeeks, maintenance, reality };
 }
 
 export function buildTrajectory({ goalPlan, weightTrend, today }) {

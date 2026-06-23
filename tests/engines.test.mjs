@@ -10,7 +10,7 @@ import { computeTraining, mapMuscles } from "../src/engines/training.js";
 import { computeSleep, estimateSleepNeed, sleepTST } from "../src/engines/sleep.js";
 import { computeRecovery } from "../src/engines/recovery.js";
 import { computeNicotineStats } from "../src/engines/nicotine.js";
-import { assessGoal, buildTrajectory, analyzeConstraints, analyzeRoadmap } from "../src/engines/goalplan.js";
+import { assessGoal, buildTrajectory, analyzeConstraints, analyzeRoadmap, interpretPlan } from "../src/engines/goalplan.js";
 import { computeProteinDistribution } from "../src/engines/protein.js";
 import { computeSkin, detectRoutineConflicts } from "../src/engines/skin.js";
 import { estimateGlycemicLoad, dayGlycemicLoad } from "../src/engines/glycemic.js";
@@ -299,6 +299,16 @@ ok("goalplan: constraints rank a primary lever", !!cons.primary && cons.levers.l
   ok("generatePhases: phases chain weights + carry a target rate", gP[0].goalWeight === gP[1].startWeight && gP[0].targetRate > 0, [gP[0].goalWeight, gP[1].startWeight]);
   ok("generatePhases: short cut → single cut phase", (() => { const c = generatePhases({ type: "cut", startWeight: 80, goalWeight: 76, startDate: "2026-06-23", targetDate: "2026-09-01", experience: "intermediate" }, "2026-06-23"); return c.length === 1 && c[0].type === "cut"; })(), 1);
   ok("generatePhases: maintain → single maintenance phase", (() => { const m = generatePhases({ type: "maintenance", startWeight: 80, goalWeight: 80, startDate: "2026-06-23", targetDate: "2026-12-01", experience: "intermediate" }, "2026-06-23"); return m.length === 1 && m[0].type === "maintenance"; })(), 1);
+
+  // duration parsing + interpretPlan (fill missing data instead of erroring)
+  const partial = parseGoalMarkdown("Goal: Lean Bulk\n\nPhase 1:\n74kg → 77kg\n\nPhase 2:\n77kg → 80kg\n\nDuration: 6 months\n");
+  ok("goalmd: parses 'Duration: 6 months' → ~26 weeks", partial.durationWeeks === 26 && partial.startWeight === 74 && partial.goalWeight === 80, partial.durationWeeks);
+  const interp = interpretPlan(partial, { currentWeight: 74, profile: { sex: "male", age: 22, heightCm: 178 }, today: "2026-06-23" });
+  ok("interpretPlan: derives start + end dates from duration", interp.goalPlan.startDate === "2026-06-23" && interp.goalPlan.targetDate > "2026-12-01" && interp.provenance.targetDate === "derived", [interp.goalPlan.targetDate, interp.provenance.targetDate]);
+  ok("interpretPlan: fills phase dates + calories + protein for every phase", interp.goalPlan.phases.length === 2 && interp.goalPlan.phases.every(p => p.startDate && p.endDate && p.calories > 0 && p.protein > 0), interp.goalPlan.phases.map(p => [p.startDate, p.calories, p.protein]));
+  ok("interpretPlan: provenance marks plan vs derived", interp.provenance.goalWeight === "plan" && interp.provenance.startDate === "derived" && interp.provenance.calories === "derived", interp.provenance);
+  ok("interpretPlan: produces a reality check (never a dead end)", interp.reality && interp.reality.verdict === "realistic" && interp.reality.reqKgWk > 0, interp.reality && interp.reality.verdict);
+  ok("interpretPlan: a goal-only plan still completes", (() => { const g = interpretPlan(parseGoalMarkdown("Goal: lean bulk from 74kg to 80kg"), { currentWeight: 74, profile: { sex: "male", age: 22, heightCm: 178 }, today: "2026-06-23" }); return g.goalPlan.targetDate != null && g.goalPlan.phases.length >= 1; })(), 1);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

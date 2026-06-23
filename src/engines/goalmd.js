@@ -279,6 +279,11 @@ export function parseGoalMarkdown(text) {
   if (type && !found.includes("goal type") && !phases.length) found.push("goal type");
   if (freq && !found.includes("training days")) found.push("training days");
 
+  // duration ("Duration: 6 months", "6-month plan", "24 weeks") → weeks
+  let durationWeeks = null;
+  const durM = t.match(/duration\s*[:\-]?\s*(\d+)\s*(month|week|wk)/i) || t.match(/(\d+)\s*-?\s*month\b/i) || t.match(/over\s+(\d+)\s*(month|week|wk)/i);
+  if (durM) { const n = +durM[1]; const unit = (durM[2] || "month").toLowerCase(); durationWeeks = /month/.test(unit) ? Math.round(n * 4.345) : n; if (!found.includes("duration")) found.push("duration"); }
+
   // macros: prefer the phase that covers TODAY (so imported targets match where
   // you actually are in the plan), else the first non-maintenance phase with
   // calories, else any phase with calories, else a loose prose match.
@@ -322,7 +327,7 @@ export function parseGoalMarkdown(text) {
   });
 
   return {
-    type, startWeight, goalWeight, startDate, targetDate, freq, macros, activePhaseIdx,
+    type, startWeight, goalWeight, startDate, targetDate, freq, macros, activePhaseIdx, durationWeeks,
     meta, phases, checkpoints, deloads, rules, longTerm, summary, strategyNotes,
     sourceMarkdown: t,
     found, anyFound: found.length > 0, hasRoadmap: phases.length > 0,
