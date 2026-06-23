@@ -18,7 +18,7 @@ import { lookupGI } from "../src/engines/gi-database.js";
 import { computeCarbTiming } from "../src/engines/carbtiming.js";
 import { planFueling, reconcileFueling, sleepWindow } from "../src/engines/fueling.js";
 import { buildBrain, formatBrainText } from "../src/brain/brain.js";
-import { getPhases, activePhase, phaseReqRate } from "../src/engines/phases.js";
+import { getPhases, activePhase, phaseReqRate, generatePhases } from "../src/engines/phases.js";
 import { computePhysiologyState, computeRecoveryDebt } from "../src/engines/physiology.js";
 import { proposeAdaptation } from "../src/engines/adaptation.js";
 import { computePhaseResult, blendRate, logDecision, evaluateDecisions } from "../src/engines/strategy.js";
@@ -292,6 +292,13 @@ ok("goalplan: constraints rank a primary lever", !!cons.primary && cons.levers.l
   ok("analyzeRoadmap: flags the over-fast bulk as a risk", ar.risks.some(r => /surplus|fat/i.test(r)), ar.risks);
   ok("analyzeRoadmap: counts phase types", ar.typeCounts.leanbulk === 2 && ar.typeCounts.minicut === 1, ar.typeCounts);
   ok("analyzeRoadmap: weight-anchored phase reuses assessGoal ranges", (() => { const w = analyzeRoadmap({ phases: [{ id: 1, type: "leanbulk", name: "B", startWeight: 75, goalWeight: 90, startDate: daysAgo(0), endDate: daysAgo(-60) }], currentWeight: 75 }); return w.phases[0].verdict === "unrealistic" && Array.isArray(w.phases[0].expectedFatKg); })(), 1);
+
+  // generatePhases — Build-Plan path auto-creates a multi-phase roadmap
+  const gP = generatePhases({ type: "leanbulk", startWeight: 74, goalWeight: 80, startDate: "2026-06-23", targetDate: "2026-12-08", experience: "intermediate" }, "2026-06-23");
+  ok("generatePhases: 74→80/24wk → bulk, bulk, maintenance", gP.length === 3 && gP[0].type === "leanbulk" && gP[1].type === "leanbulk" && gP[2].type === "maintenance" && gP[0].startWeight === 74 && gP[1].goalWeight === 80, gP.map(p => p.type));
+  ok("generatePhases: phases chain weights + carry a target rate", gP[0].goalWeight === gP[1].startWeight && gP[0].targetRate > 0, [gP[0].goalWeight, gP[1].startWeight]);
+  ok("generatePhases: short cut → single cut phase", (() => { const c = generatePhases({ type: "cut", startWeight: 80, goalWeight: 76, startDate: "2026-06-23", targetDate: "2026-09-01", experience: "intermediate" }, "2026-06-23"); return c.length === 1 && c[0].type === "cut"; })(), 1);
+  ok("generatePhases: maintain → single maintenance phase", (() => { const m = generatePhases({ type: "maintenance", startWeight: 80, goalWeight: 80, startDate: "2026-06-23", targetDate: "2026-12-01", experience: "intermediate" }, "2026-06-23"); return m.length === 1 && m[0].type === "maintenance"; })(), 1);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

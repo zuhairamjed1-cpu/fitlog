@@ -12,9 +12,9 @@ import { computeNicotineStats, computeNicotineCorrelations, computeNicotineTimin
 import { computeSkin, detectRoutineConflicts } from "./engines/skin";
 import { estimateGlycemicLoad, dayGlycemicLoad } from "./engines/glycemic";
 import { planFueling, reconcileFueling, sleepWindow, SESSION_TYPES } from "./engines/fueling";
-import { computeGoalPlan, formatGoalText, simulateGoal, analyzeRoadmap } from "./engines/goalplan";
+import { computeGoalPlan, formatGoalText, simulateGoal, analyzeRoadmap, assessGoal } from "./engines/goalplan";
 import { computePhysiologyState } from "./engines/physiology";
-import { getPhases, activePhase, applyPhaseChange } from "./engines/phases";
+import { getPhases, activePhase, applyPhaseChange, generatePhases } from "./engines/phases";
 import { proposeAdaptation } from "./engines/adaptation";
 import { computePhaseResult, summarizeDecisions, evaluateDecisions, logDecision } from "./engines/strategy";
 import { computeMacroTargets, macrosDiffer } from "./engines/macros";
@@ -5402,10 +5402,21 @@ function GoalForm({ goals, currentWeight, onSave, onCancel, hideImport }) {
   function save() {
     if (!goalWeight || !targetDate) { toast("Add a goal weight and target date"); return; }
     const payload = { ...goals, goalPlan: { type, startWeight: +startWeight || currentWeight || null, goalWeight: +goalWeight, startDate, targetDate, experience, freq: +freq || 4, priorities: gp.priorities || [] } };
+    const existing = goals.goalPlan && goals.goalPlan.phases;
+    const isImported = existing && existing.some(p => p.origin === "import");
     if (importedRoadmap && importedRoadmap.hasRoadmap) {
       const today = getTodayStr();
       payload.goalPlan.phases = buildRoadmapPhases(importedRoadmap, today);
       payload.goalPlan.roadmap = { checkpoints: importedRoadmap.checkpoints, deloads: importedRoadmap.deloads, rules: importedRoadmap.rules, longTerm: importedRoadmap.longTerm, meta: importedRoadmap.meta, strategyNotes: importedRoadmap.strategyNotes || [], sourceMarkdown: importedRoadmap.sourceMarkdown || null, importedAt: today };
+    } else if (isImported) {
+      // editing an imported plan — keep its phases + source doc intact
+      payload.goalPlan.phases = existing;
+      payload.goalPlan.roadmap = goals.goalPlan.roadmap || null;
+    } else {
+      // Build-Plan path: FitLog generates the phase roadmap automatically
+      const gen = generatePhases(payload.goalPlan, getTodayStr());
+      if (gen.length) payload.goalPlan.phases = gen;
+      payload.goalPlan.roadmap = null;
     }
     if (importedMacros) {
       if (importedMacros.calories) payload.calories = importedMacros.calories;
@@ -5471,7 +5482,7 @@ function GoalForm({ goals, currentWeight, onSave, onCancel, hideImport }) {
       <div className="gp-field"><label>Training experience</label><div className="gp-chips">{GP_EXP.map(t => <button key={t.k} className={`gp-chip ${experience === t.k ? "on" : ""}`} onClick={() => setExp(t.k)}>{t.label}</button>)}</div></div>
       <div className="gp-field"><label>Training days / week</label><input type="number" inputMode="numeric" value={freq} onChange={e => setFreq(e.target.value)} /></div>
       <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-        <button className="btn full" onClick={save}>Save goal</button>
+        <button className="btn full" onClick={save}>{hideImport && !gp.goalWeight ? "Generate Plan" : "Save goal"}</button>
         {onCancel && <button className="btn-ghost" onClick={onCancel}>Cancel</button>}
       </div>
     </Card>
@@ -5801,6 +5812,32 @@ function planIssues(p) {
   return out;
 }
 
+// Plain-language recommendations from a parsed plan + its analysis. Honest, evidence-based.
+function planRecommendations(parsed, analysis, assess) {
+  const recs = [];
+  if (assess && assess.verdict === "unrealistic" && assess.realisticWeeks && assess.weeks) {
+    const extra = Math.max(0, Math.round(assess.realisticWeeks - assess.weeks));
+    if (extra > 0) recs.push(`Stretch the timeline by ~${extra} weeks — your pace is above what's achievable as mostly lean tissue.`);
+    recs.push(`Or keep the date and aim for ~${assess.realisticGoalWeight}kg instead of ${assess.goalWeight}kg.`);
+  } else if (assess && assess.verdict === "aggressive") {
+    recs.push(assess.dir === "gain" ? "Trim the surplus slightly — the pace is a touch fast and will add some extra fat." : "Ease the deficit — keep protein high and keep lifting to protect muscle.");
+  }
+  if (analysis) {
+    analysis.phases.forEach(p => {
+      if (p.verdict === "unrealistic") recs.push(`${p.name || p.type}: ${p.dir === "gain" ? "reduce the surplus or lengthen this phase" : "soften this deficit"}.`);
+    });
+    const bulks = analysis.phases.filter(p => p.dir === "gain");
+    const hasCutOrMaint = analysis.phases.some(p => p.dir === "loss" || p.type === "maintenance");
+    if (bulks.length >= 2 && !hasCutOrMaint && analysis.totalWeeks >= 20) recs.push("Consider a short mini-cut or maintenance block between bulk phases to keep body-fat in check.");
+  }
+  if (parsed && parsed.hasRoadmap) {
+    const undated = parsed.phases.filter(x => !x.startDate || !x.endDate).length;
+    if (undated) recs.push(`Add dates to ${undated} undated phase${undated > 1 ? "s" : ""} so trajectory and forecast can track them.`);
+  }
+  if (!recs.length) recs.push("Looks solid — every phase sits within evidence-based rate ceilings. Log consistently and let the trend confirm it.");
+  return recs;
+}
+
 // ── Visual phase timeline (current highlighted, future visible, done faded) ──
 function PlanTimeline({ phases }) {
   if (!phases || !phases.length) return null;
@@ -5829,28 +5866,19 @@ function PlanTimeline({ phases }) {
   );
 }
 
-// ── Entry screen: two intentional action cards (not forms) ──
-function PlanEntryCards({ onBuild, onImport }) {
+// ── Create screen: three cards — Build (Card 1), Import (Card 2), Analysis (Card 3) ──
+function PlanCreateScreen({ goals, currentWeight, onApply, onEdit, onCancel }) {
   return (
     <>
-      <Card>
-        <div style={{ fontSize: 22, marginBottom: 6 }}>◷</div>
-        <div style={{ fontWeight: 700, fontSize: 17 }}>Build a Plan</div>
-        <p className="muted small" style={{ lineHeight: 1.5, margin: "6px 0 12px" }}>Create a long-term plan directly inside FitLog — goal, timeline, target weight and body fat, training priorities and constraints. FitLog generates the phases.</p>
-        <button className="btn-primary" onClick={onBuild}>Create Plan</button>
-      </Card>
-      <Card>
-        <div style={{ fontSize: 22, marginBottom: 6 }}>⬆</div>
-        <div style={{ fontWeight: 700, fontSize: 17 }}>Import Existing Plan</div>
-        <p className="muted small" style={{ lineHeight: 1.5, margin: "6px 0 12px" }}>Upload a markdown plan from a coach, ChatGPT, Claude or anywhere. FitLog analyzes it first — you review before it becomes active. Supports .md files and pasted markdown.</p>
-        <button className="btn-primary" onClick={onImport}>Import Plan</button>
-      </Card>
+      {onCancel && <button className="btn-ghost btn-sm" style={{ alignSelf: "flex-start" }} onClick={onCancel}>← Back to plan</button>}
+      <GoalForm goals={goals} currentWeight={currentWeight} hideImport onSave={onApply} onCancel={onCancel} />
+      <PlanImportFlow goals={goals} currentWeight={currentWeight} onApply={onApply} onEdit={onEdit} onDiscard={() => {}} embedded />
     </>
   );
 }
 
 // ── Import flow: upload/paste → analyze → Plan Analysis card → apply/edit/discard ──
-function PlanImportFlow({ goals, currentWeight, onApply, onEdit, onDiscard }) {
+function PlanImportFlow({ goals, currentWeight, onApply, onEdit, onDiscard, embedded }) {
   const [parsed, setParsed] = useState(null);
   const [paste, setPaste] = useState("");
   const [msg, setMsg] = useState(null);
@@ -5882,7 +5910,7 @@ function PlanImportFlow({ goals, currentWeight, onApply, onEdit, onDiscard }) {
 
   return (
     <>
-      <Card title="Import a plan" sub="upload or paste — nothing is applied until you approve" action={<button className="btn-ghost btn-sm" onClick={onDiscard}>Cancel</button>}>
+      <Card title="Import a plan" sub="upload or paste — nothing is applied until you approve" action={!embedded && <button className="btn-ghost btn-sm" onClick={onDiscard}>Cancel</button>}>
         <input type="file" onChange={onFile} style={{ display: "block", width: "100%", marginBottom: 10 }} />
         <textarea value={paste} onChange={e => setPaste(e.target.value)} placeholder="…or paste your plan markdown here, then tap Analyze" rows={4} style={{ width: "100%", background: "var(--bg-2)", color: "var(--text)", border: "1px solid var(--line)", borderRadius: 8, padding: 10, fontSize: 13, resize: "vertical" }} />
         <button type="button" className="btn-ghost btn-sm" style={{ marginTop: 8 }} onClick={() => analyze(paste, "pasted text")}>Analyze pasted plan</button>
@@ -5909,12 +5937,30 @@ function PlanImportFlow({ goals, currentWeight, onApply, onEdit, onDiscard }) {
             </>
           )}
 
-          {analysis && (
-            <div style={{ marginTop: 10 }}>
-              <div className="small" style={{ fontWeight: 600, marginBottom: 4 }}>Feasibility</div>
-              <p className="muted small" style={{ lineHeight: 1.5, margin: 0 }}>{analysis.phases[0] && analysis.phases[0].note ? analysis.phases[0].note : "Each phase is checked against evidence-based rate ceilings."}{analysis.totalWeeks > 0 ? ` Total span ~${Math.round(analysis.totalWeeks)} weeks.` : ""}</p>
-            </div>
-          )}
+          {(() => {
+            const aSci = parsed ? assessGoal({ goalPlan: { startWeight: parsed.startWeight, goalWeight: payload && payload.goalPlan.goalWeight, startDate: parsed.startDate, targetDate: payload && payload.goalPlan.targetDate, experience: (goals.goalPlan && goals.goalPlan.experience) || "intermediate" }, currentWeight: parsed.startWeight ?? currentWeight }) : null;
+            const recs = planRecommendations(parsed, analysis, aSci);
+            return (
+              <>
+                <div style={{ marginTop: 10 }}>
+                  <div className="small" style={{ fontWeight: 600, marginBottom: 4 }}>Scientific review</div>
+                  {aSci ? (
+                    <>
+                      <div className="gp-stat-row"><span className="muted small">Realistic?</span><span style={{ color: (VC[aSci.verdict] || VC.realistic)[1] }}>{(VC[aSci.verdict] || VC.realistic)[0]}</span></div>
+                      <div className="gp-stat-row"><span className="muted small">Required rate</span><span>{aSci.reqKgWk > 0 ? "+" : ""}{aSci.reqKgWk} kg/wk <TierBadge tier="calc" /></span></div>
+                      {aSci.dir === "gain" && aSci.expectedMuscleKg && <div className="gp-stat-row"><span className="muted small">Est. muscle</span><span>{aSci.expectedMuscleKg[0]}–{aSci.expectedMuscleKg[1]} kg <TierBadge tier="forecast" /></span></div>}
+                      {aSci.dir === "gain" && aSci.expectedFatKg && <div className="gp-stat-row"><span className="muted small">Est. fat</span><span>{aSci.expectedFatKg[0]}–{aSci.expectedFatKg[1]} kg <TierBadge tier="forecast" /></span></div>}
+                    </>
+                  ) : <p className="muted small" style={{ margin: 0, lineHeight: 1.45 }}>Add a start weight, goal weight and dates for the full reality check.{analysis && analysis.totalWeeks > 0 ? ` Total span ~${Math.round(analysis.totalWeeks)} weeks.` : ""}</p>}
+                  <p className="muted small" style={{ marginTop: 6, lineHeight: 1.4 }}>Muscle/fat split is a modeled range (forecast), not measured.</p>
+                </div>
+                <div style={{ marginTop: 10 }}>
+                  <div className="small" style={{ fontWeight: 600, marginBottom: 4 }}>Recommendations</div>
+                  {recs.map((r, i) => <p key={i} className="small" style={{ margin: "3px 0", color: "var(--text-2)", lineHeight: 1.45 }}>→ {r}</p>)}
+                </div>
+              </>
+            );
+          })()}
 
           {issues.length > 0 && (
             <div style={{ marginTop: 10 }}>
@@ -5926,7 +5972,7 @@ function PlanImportFlow({ goals, currentWeight, onApply, onEdit, onDiscard }) {
           <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
             <button className="btn-primary btn-sm" disabled={!payload} onClick={() => { if (payload) { onApply(payload); haptic(12); } else { setMsg("Add a goal weight + target date to the plan first."); } }}>Apply Plan</button>
             <button className="btn-ghost btn-sm" disabled={!payload} onClick={() => payload && onEdit(payload)}>Edit Before Applying</button>
-            <button className="btn-ghost btn-sm" onClick={() => { setParsed(null); setStatus(null); setMsg(null); onDiscard(); }}>Discard</button>
+            <button className="btn-ghost btn-sm" onClick={() => { setParsed(null); setStatus(null); setMsg(null); if (!embedded && onDiscard) onDiscard(); }}>Discard</button>
           </div>
           {!payload && <p className="muted small" style={{ marginTop: 8 }}>This plan has no overall goal weight + end date, so it can't be applied as-is — use Edit to fill those in.</p>}
         </Card>
@@ -6001,21 +6047,16 @@ function GoalPlanSection({ data, goals, onSaveGoals, addEntry, deleteEntry }) {
 
   const hasGoal = goals.goalPlan && goals.goalPlan.goalWeight != null;
   const brand = <div className="gp-brand"><span className="gp-mark" />Goal Plan</div>;
+  const applyPlan = g => { onSaveGoals(g); setMode(null); setEditing(false); setTab("overview"); toast("✦ Plan applied"); haptic(12); };
+  const editPlan = g => { onSaveGoals(g); setMode(null); setEditing(true); };
 
-  // Entry screen — two intentional action cards, no goal yet
-  if (!hasGoal && !mode) {
-    return <div className="gp-scope stack">{brand}<PlanEntryCards onBuild={() => setMode("build")} onImport={() => setMode("import")} /></div>;
+  // No active plan, or user chose "New plan" → the three-card create screen
+  if ((!hasGoal && !mode) || mode === "create") {
+    return <div className="gp-scope stack">{brand}<PlanCreateScreen goals={goals} currentWeight={currentWeight} onApply={applyPlan} onEdit={editPlan} onCancel={hasGoal ? () => setMode(null) : null} /></div>;
   }
-  // Build / edit — the internal plan builder (form)
-  if (mode === "build" || editing) {
-    return <div className="gp-scope stack">{brand}<GoalForm goals={goals} currentWeight={currentWeight} hideImport onSave={g => { onSaveGoals(g); setEditing(false); setMode(null); }} onCancel={() => { setEditing(false); setMode(null); }} /></div>;
-  }
-  // Import — upload/paste → analyze → review → apply
-  if (mode === "import") {
-    return <div className="gp-scope stack">{brand}<PlanImportFlow goals={goals} currentWeight={currentWeight}
-      onApply={g => { onSaveGoals(g); setMode(null); setTab("overview"); toast("✦ Plan applied"); }}
-      onEdit={g => { onSaveGoals(g); setMode(null); setEditing(true); }}
-      onDiscard={() => setMode(null)} /></div>;
+  // Edit the existing plan (the builder form; imported phases are preserved)
+  if (editing) {
+    return <div className="gp-scope stack">{brand}<GoalForm goals={goals} currentWeight={currentWeight} hideImport onSave={g => { onSaveGoals(g); setEditing(false); }} onCancel={() => setEditing(false)} /></div>;
   }
 
   const a = gp && gp.assess, t = gp && gp.trajectory, c = gp && gp.constraints;
@@ -6040,7 +6081,7 @@ function GoalPlanSection({ data, goals, onSaveGoals, addEntry, deleteEntry }) {
 
       {tab === "overview" && (
         <>
-          <Card title={typeLabel} sub={`${sw ?? "?"}kg → ${gw}kg`} action={<button className="btn-ghost btn-sm" onClick={() => setEditing(true)}>Edit</button>}>
+          <Card title={typeLabel} sub={`${sw ?? "?"}kg → ${gw}kg`} action={<span style={{ display: "flex", gap: 6 }}><button className="btn-ghost btn-sm" onClick={() => setMode("create")}>New plan</button><button className="btn-ghost btn-sm" onClick={() => setEditing(true)}>Edit</button></span>}>
             <div className="gp-stat-row"><span className="muted small">Current weight</span><span>{currentWeight ?? "—"} kg <TierBadge tier="measured" /></span></div>
             <div className="gp-stat-row"><span className="muted small">Required pace</span><span>{a && a.reqKgWk != null ? `${a.reqKgWk > 0 ? "+" : ""}${a.reqKgWk} kg/wk` : "—"} <TierBadge tier="calc" /></span></div>
             <div className="gp-stat-row"><span className="muted small">Timeline</span><span>{a ? `${Math.round(a.weeks)} weeks` : "—"}</span></div>
