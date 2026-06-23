@@ -89,12 +89,12 @@ function adherence14(data, goals, phase) {
 
 const band4 = (s, a, b, c) => (s >= a ? "On track" : s >= b ? "Drifting" : "Off track");
 
-function computeAlignment({ reqRate, actualRate, dir, adh, rec, debt, cw }) {
+function computeAlignment({ reqRate, actualRate, dir, adh, rec, debt, cw, goalProtein }) {
   // trajectory: how close actual pace is to required pace (direction-aware)
   let traj = null;
   if (reqRate != null && actualRate != null) {
     if (Math.abs(reqRate) < 0.02) traj = Math.abs(actualRate) < 0.05 ? 95 : 60; // maintenance
-    else { const ratio = actualRate / reqRate; traj = Math.round(clamp(ratio, -0.5, 1.5) / 1 * 100); traj = clamp(ratio <= 0 ? 20 : Math.round(100 - Math.abs(1 - ratio) * 80), 0, 100); }
+    else { const ratio = actualRate / reqRate; traj = clamp(ratio <= 0 ? 20 : Math.round(100 - Math.abs(1 - ratio) * 80), 0, 100); }
   }
   const training = adh.training;
   const nutrition = adh.protein != null ? Math.round((adh.cal + adh.protein) / 2) : adh.cal;
@@ -109,9 +109,40 @@ function computeAlignment({ reqRate, actualRate, dir, adh, rec, debt, cw }) {
   const comps = { trajectory: traj, training, nutrition, recovery };
   const present = Object.values(comps).filter(x => x != null);
   const overall = present.length ? clamp(Math.round(mean(present) + riskAdj), 0, 100) : null;
+
+  // ── why each lever is where it is + the highest-leverage fix ──
+  const advice = [];
+  // trajectory
+  if (traj == null) advice.push({ lever: "Trajectory", score: null, why: "No weight trend yet to compare against your required pace.", fix: "Log your morning weight 3–4×/week so trajectory can read." });
+  else if (traj < 80 && actualRate != null && reqRate != null) {
+    if (dir === "gain") {
+      if (actualRate < reqRate) advice.push({ lever: "Trajectory", score: traj, why: `Gaining ~${r1(actualRate)}kg/wk vs the +${r1(reqRate)} you need.`, fix: "Nudge intake up ~150 kcal/day, or tighten food logging if intake is being under-counted." });
+      else advice.push({ lever: "Trajectory", score: traj, why: `Gaining ~${r1(actualRate)}kg/wk, faster than the +${r1(reqRate)} target.`, fix: "Trim the surplus ~200 kcal/day to bias toward lean tissue." });
+    } else if (dir === "loss") {
+      if (-actualRate < -reqRate) advice.push({ lever: "Trajectory", score: traj, why: `Losing ~${r1(Math.abs(actualRate))}kg/wk vs the ${r1(reqRate)} target — slower than planned.`, fix: "Tighten the deficit ~150 kcal/day or add light cardio." });
+      else advice.push({ lever: "Trajectory", score: traj, why: `Losing ~${r1(Math.abs(actualRate))}kg/wk, faster than target — muscle-loss risk.`, fix: "Ease the deficit ~200 kcal/day and keep protein high." });
+    }
+  }
+  // training
+  if (training < 80) advice.push({ lever: "Training", score: training, why: `~${adh.perWk ?? "?"}×/wk logged vs ${adh.freq}× planned.`, fix: `Add ${Math.max(1, Math.ceil((adh.freq || 4) - (adh.perWk || 0)))} session(s)/week to hit your plan.` });
+  // nutrition
+  if (nutrition != null && nutrition < 80) {
+    const bits = [];
+    if (adh.cal < 80) bits.push(`food logged only ${Math.round(adh.cal / 100 * 14)}/14 days`);
+    if (adh.protein != null && adh.protein < 80 && goalProtein) bits.push(`protein ~${adh.meanProtein}g vs ${goalProtein}g target`);
+    advice.push({ lever: "Nutrition", score: nutrition, why: bits.length ? bits.join("; ") + "." : "Calories/protein are under target.", fix: adh.protein != null && adh.protein < 80 ? "Add a protein-dense meal or shake; log every meal so the read is real." : "Log every meal for two weeks to make this trustworthy." });
+  }
+  // recovery
+  if (recovery != null && recovery < 80) {
+    const bits = [`readiness ${rec && rec.readiness != null ? rec.readiness : "?"}/100`];
+    if (debt && debt.trend === "rising") bits.push("recovery debt rising");
+    advice.push({ lever: "Recovery", score: recovery, why: bits.join(", ") + (rec && rec.limiter ? ` — limiter: ${rec.limiter.label || rec.limiter.category}.` : "."), fix: "Protect sleep (consistent wake time, 7–9h) and take a rest day if you've trained several days straight." });
+  }
+  advice.sort((a, b) => (a.score == null ? -1 : b.score == null ? 1 : a.score - b.score));
+
   return {
     band: overall == null ? "no-data" : band4(overall, 80, 60), overall,
-    components: comps, riskAdj, tier: "estimate", confidence: "low–moderate",
+    components: comps, riskAdj, advice, tier: "estimate", confidence: "low–moderate",
   };
 }
 
@@ -176,7 +207,7 @@ export function computePhysiologyState(data, goals, date = getTodayStr()) {
 
   const adherence = { overall: adh.overall, byLever: { cal: adh.cal, protein: adh.protein, training: adh.training }, detail: { meanProtein: adh.meanProtein, perWk: adh.perWk, freq: adh.freq }, tier: "calc", confidence: "high" };
 
-  const alignment = computeAlignment({ reqRate, actualRate, dir, adh, rec, debt, cw });
+  const alignment = computeAlignment({ reqRate, actualRate, dir, adh, rec, debt, cw, goalProtein: goals && goals.protein });
   const momentum = computeMomentum({ reqRate, actualRate, trn, debt, adh });
 
   // adaptation status summary (full proposal is in adaptation.js, Step 4)

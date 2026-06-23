@@ -22,6 +22,8 @@ import { getPhases, activePhase, phaseReqRate } from "../src/engines/phases.js";
 import { computePhysiologyState, computeRecoveryDebt } from "../src/engines/physiology.js";
 import { proposeAdaptation } from "../src/engines/adaptation.js";
 import { computePhaseResult, blendRate, logDecision, evaluateDecisions } from "../src/engines/strategy.js";
+import { computeMacroTargets, macrosDiffer } from "../src/engines/macros.js";
+import { parseGoalMarkdown } from "../src/engines/goalmd.js";
 
 let pass = 0, fail = 0;
 const ok = (name, cond, got) => { if (cond) pass++; else { fail++; console.log("  ✗", name, "—", JSON.stringify(got)); } };
@@ -199,6 +201,24 @@ ok("goalplan: constraints rank a primary lever", !!cons.primary && cons.levers.l
   let log = logDecision([], { date: daysAgo(30), rec: { kind: "reduce-surplus" }, metric: "weightRate", expectedDir: -1, baselineValue: 0.55 });
   log = evaluateDecisions(log, { weightRate: 0.30 }, daysAgo(0), 21);
   ok("strategy: decision evaluated correlationally", log[0].verdict === "improved" && log[0].correlational === true, log[0].verdict);
+}
+
+// ── macros engine + markdown import + alignment advice ──
+{
+  const wt = []; for (let k = 0; k < 8; k++) wt.push({ date: daysAgo(16 - k * 2), kg: 74.2 });
+  const g = { profile: { sex: "male", age: 25, heightCm: 178, weightKg: 74.2 }, calories: 2000, protein: 120, carbs: 200, fat: 60, goalPlan: { type: "leanbulk", startWeight: 74.2, goalWeight: 77, startDate: daysAgo(20), targetDate: daysAgo(-160), freq: 4 } };
+  const mt = computeMacroTargets({ weight: wt }, g);
+  ok("macros: bulk gives a surplus + remainder carbs that sum to calories", mt.ready && mt.dailyDelta > 0 && mt.carbs > 0 && Math.abs(mt.protein * 4 + mt.carbs * 4 + mt.fat * 9 - mt.calories) < 12, mt.calories);
+  ok("macros: aggressive goal clamps to a safe pace", computeMacroTargets({ weight: wt }, { ...g, goalPlan: { ...g.goalPlan, goalWeight: 95, targetDate: daysAgo(-20) } }).clampedToCeiling === true, 1);
+  ok("macros: cut respects the safety floor", computeMacroTargets({ weight: wt }, { ...g, goalPlan: { type: "cut", startWeight: 74.2, goalWeight: 68, startDate: daysAgo(20), targetDate: daysAgo(-30), freq: 4 } }).calories >= 1500, 1);
+  ok("macros: macrosDiffer flags stale targets", macrosDiffer(mt, g) === true, 1);
+
+  const parsed = parseGoalMarkdown("Lean bulk from 74kg → 77kg. Target date: 2026-12-01. Protein: 165g. Train 5x/week.");
+  ok("goalmd: extracts type+weights+date+freq+macros", parsed.type === "leanbulk" && parsed.startWeight === 74 && parsed.goalWeight === 77 && parsed.targetDate === "2026-12-01" && parsed.freq === 5 && parsed.macros.protein === 165, JSON.stringify(parsed.found));
+  ok("goalmd: gibberish recognises nothing", parseGoalMarkdown("hello world, no plan here").anyFound === false, 1);
+
+  const stA = computePhysiologyState({ weight: wt, sleep: [], exercise: [], sports: [], diet: [], nicotine: [], journal: [] }, g);
+  ok("physiology: alignment carries why+fix advice array", Array.isArray(stA.alignment.advice), stA.alignment.advice.length);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

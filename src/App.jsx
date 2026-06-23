@@ -17,6 +17,8 @@ import { computePhysiologyState } from "./engines/physiology";
 import { getPhases, activePhase, applyPhaseChange } from "./engines/phases";
 import { proposeAdaptation } from "./engines/adaptation";
 import { computePhaseResult, summarizeDecisions, evaluateDecisions, logDecision } from "./engines/strategy";
+import { computeMacroTargets, macrosDiffer } from "./engines/macros";
+import { parseGoalMarkdown } from "./engines/goalmd";
 import { buildBrain, formatBrainText, prioritizeInsights } from "./brain/brain";
 import { sleepTST, estimateSleepNeed, computeSleep } from "./engines/sleep";
 import { computeRecovery } from "./engines/recovery";
@@ -24,7 +26,7 @@ import { computeRecovery } from "./engines/recovery";
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const TABS = ["Home", "Log", "History", "Coach", "Journal", "Settings", "Ejac"];
 const STORAGE_KEY = "fitlog_v5";
-const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], nicotine: [], nicotinePlans: [], journal: [], weight: [], ejac: [], skin: [], skinResearch: [], skinProcedures: [], plannedSessions: [], skinRoutineLogs: [], skinProductIntros: [], skinRoutineChanges: [], skinCoachPlans: [], goalSnapshots: [], goalReports: [], completedPhases: [], decisionLog: [] };
+const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], nicotine: [], nicotinePlans: [], journal: [], weight: [], ejac: [], skin: [], skinResearch: [], skinProcedures: [], plannedSessions: [], skinRoutineLogs: [], skinProductIntros: [], skinRoutineChanges: [], skinCoachPlans: [], goalSnapshots: [], goalReports: [], completedPhases: [], decisionLog: [], constraintSnapshots: [] };
 const defaultProfile = {
   // Body
   sex: "", age: "", heightCm: "", weightKg: "",
@@ -50,7 +52,7 @@ const defaultStrategy = {
   notes: "", // free text — anything else the AI should know about strategy right now
 };
 
-const defaultGoals = { calories: 2500, protein: 180, carbs: 250, fat: 80, goal: "Build Muscle", waterGoalMl: 2500, profile: defaultProfile, strategy: defaultStrategy, sleepScreen: null, sleepExperiment: null, skinRoutine: { am: [], pm: [] }, skinExperiment: null, goalPlan: null };
+const defaultGoals = { calories: 2500, protein: 180, carbs: 250, fat: 80, goal: "Build Muscle", waterGoalMl: 2500, profile: defaultProfile, strategy: defaultStrategy, sleepScreen: null, sleepExperiment: null, skinRoutine: { am: [], pm: [] }, skinExperiment: null, goalPlan: null, macroMode: "manual" };
 const fitnessGoals = ["Build Muscle", "Lose Fat", "Improve Endurance", "Maintain Weight", "Athletic Performance"];
 const mealTypes = ["Breakfast", "Lunch", "Dinner", "Snack"];
 const sportsOptions = ["Running","Football","Basketball","Tennis","Swimming","Cycling","Yoga","Boxing","Soccer","Volleyball","Badminton","Table Tennis","Golf","Martial Arts","Hiking","Walking","Rowing","Climbing","Other"];
@@ -5314,13 +5316,47 @@ function GoalForm({ goals, currentWeight, onSave, onCancel }) {
   const [targetDate, setTarget] = useState(gp.targetDate || "");
   const [experience, setExp] = useState(gp.experience || "intermediate");
   const [freq, setFreq] = useState(gp.freq ?? 4);
+  const [importedMacros, setImportedMacros] = useState(null);
+  const [importMsg, setImportMsg] = useState(null);
+  const onImportFile = e => {
+    const f = e.target.files && e.target.files[0]; if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const p = parseGoalMarkdown(String(reader.result || ""));
+      if (!p.anyFound) { setImportMsg("Couldn't recognise a plan in that file — fill the fields in below."); setImportedMacros(null); return; }
+      if (p.type) setType(p.type);
+      if (p.startWeight != null) setSW(p.startWeight);
+      if (p.goalWeight != null) setGW(p.goalWeight);
+      if (p.startDate) setStart(p.startDate);
+      if (p.targetDate) setTarget(p.targetDate);
+      if (p.freq) setFreq(p.freq);
+      setImportedMacros(p.macros || null);
+      setImportMsg(`Pulled out: ${p.found.join(", ")}. Review everything below, then save.`);
+      haptic(8);
+    };
+    reader.readAsText(f);
+    e.target.value = "";
+  };
   function save() {
     if (!goalWeight || !targetDate) { toast("Add a goal weight and target date"); return; }
-    onSave({ ...goals, goalPlan: { type, startWeight: +startWeight || currentWeight || null, goalWeight: +goalWeight, startDate, targetDate, experience, freq: +freq || 4, priorities: gp.priorities || [] } });
+    const payload = { ...goals, goalPlan: { type, startWeight: +startWeight || currentWeight || null, goalWeight: +goalWeight, startDate, targetDate, experience, freq: +freq || 4, priorities: gp.priorities || [] } };
+    if (importedMacros) {
+      if (importedMacros.calories) payload.calories = importedMacros.calories;
+      if (importedMacros.protein) payload.protein = importedMacros.protein;
+      if (importedMacros.carbs) payload.carbs = importedMacros.carbs;
+      if (importedMacros.fat) payload.fat = importedMacros.fat;
+      payload.macroMode = "manual"; // these came from the imported plan
+    }
+    onSave(payload);
     toast("◎ Goal saved"); haptic(8);
   }
   return (
-    <Card title={gp.goalWeight ? "Edit your goal" : "Set your goal"} sub="weight-based for now — your trajectory, reality check and constraints build from this">
+    <Card title={gp.goalWeight ? "Edit your goal" : "Set your goal"} sub="build it here, or import a plan from a .md file">
+      <div className="gp-field"><label>Import a plan (.md)</label>
+        <input type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" onChange={onImportFile} style={{ fontSize: 13 }} />
+        {importMsg && <p className="muted small" style={{ marginTop: 6, lineHeight: 1.45 }}>{importMsg}</p>}
+        <p className="muted small" style={{ marginTop: 4, lineHeight: 1.4 }}>Upload a plan written by Claude (or anyone) — I'll pull out what I recognise. Or just fill it in below.</p>
+      </div>
       <div className="gp-field"><label>Goal type</label><div className="gp-chips">{GOAL_TYPES.map(t => <button key={t.k} className={`gp-chip ${type === t.k ? "on" : ""}`} onClick={() => setType(t.k)}>{t.label}</button>)}</div></div>
       <div className="gp-row2">
         <div className="gp-field"><label>Start weight (kg)</label><input type="number" inputMode="decimal" value={startWeight} onChange={e => setSW(e.target.value)} placeholder={currentWeight ? String(currentWeight) : "—"} /></div>
@@ -5445,6 +5481,17 @@ function GoalStateTab({ data, goals, onSaveGoals, addEntry, deleteEntry }) {
           ))}
         </div>
         {al.riskAdj < 0 && <p className="muted small" style={{ marginTop: 8 }}>Risk adjustment: {al.riskAdj} (rate or recovery flag docking the overall)</p>}
+        {al.advice && al.advice.length > 0 && (
+          <div style={{ marginTop: 12 }}>
+            <div className="muted small" style={{ marginBottom: 4 }}>Why it's low, and the highest-leverage fix</div>
+            {al.advice.map((ad, i) => (
+              <div key={i} style={{ padding: "7px 0", borderTop: "1px solid var(--line)" }}>
+                <div className="small" style={{ lineHeight: 1.45 }}><b>{ad.lever}</b>{ad.score != null ? ` · ${ad.score}` : ""} — {ad.why}</div>
+                <div className="small" style={{ marginTop: 2, color: "#8fd989", lineHeight: 1.45 }}>→ {ad.fix}</div>
+              </div>
+            ))}
+          </div>
+        )}
         <p className="muted small" style={{ marginTop: 8, lineHeight: 1.45 }}>Alignment is process quality — the band and the bars matter more than any single number.</p>
       </Card>
 
@@ -5520,6 +5567,33 @@ function GoalPlanSection({ data, goals, onSaveGoals, addEntry, deleteEntry }) {
   const gp = useMemo(() => computeGoalPlan(data, goals), [data, goals]);
   const lastW = (data.weight || []).filter(w => w && w.kg > 0).sort((a, b) => (b.date || "").localeCompare(a.date || ""))[0];
   const currentWeight = (gp && gp.currentWeight) || (lastW && lastW.kg) || (goals.profile && goals.profile.weightKg) || null;
+  const macros = useMemo(() => computeMacroTargets(data, goals), [data, goals]);
+
+  // Feature 4: when Goal Plan drives macros, keep goals' targets in sync as pace/weight change
+  useEffect(() => {
+    if (goals.macroMode !== "auto") return;
+    if (macros && macros.ready && macrosDiffer(macros, goals)) {
+      onSaveGoals({ ...goals, calories: macros.calories, protein: macros.protein, carbs: macros.carbs, fat: macros.fat });
+    }
+    // eslint-disable-next-line
+  }, [goals.macroMode, macros && macros.calories, macros && macros.protein, macros && macros.carbs, macros && macros.fat]);
+
+  // Feature 3: snapshot constraint lever scores weekly so limiting-progress shows movement
+  useEffect(() => {
+    const c = gp && gp.constraints;
+    if (!c || !c.levers || !c.levers.length) return;
+    const today = getTodayStr();
+    const snaps = data.constraintSnapshots || [];
+    const last = snaps[0];
+    const gap = last ? (new Date(today) - new Date(last.date)) / 86400000 : 999;
+    if (gap >= 7) { const scores = {}; c.levers.forEach(l => { scores[l.key] = l.score; }); addEntry("constraintSnapshots")({ id: Date.now(), date: today, scores }); }
+    // eslint-disable-next-line
+  }, [gp && gp.constraints && gp.constraints.levers && gp.constraints.levers.length]);
+
+  const consPrev = useMemo(() => {
+    const snaps = (data.constraintSnapshots || []).filter(s => (new Date(getTodayStr()) - new Date(s.date)) / 86400000 >= 6);
+    return snaps.length ? snaps[0].scores : null;
+  }, [data.constraintSnapshots]);
 
   if (!goals.goalPlan || goals.goalPlan.goalWeight == null || editing) {
     return <div className="gp-scope stack"><div className="gp-brand"><span className="gp-mark" />Goal Plan</div><GoalForm goals={goals} currentWeight={currentWeight} onSave={g => { onSaveGoals(g); setEditing(false); }} onCancel={goals.goalPlan ? () => setEditing(false) : null} /></div>;
@@ -5558,6 +5632,25 @@ function GoalPlanSection({ data, goals, onSaveGoals, addEntry, deleteEntry }) {
               <p className="muted small" style={{ marginTop: 10, lineHeight: 1.45 }}>Rates are evidence-based starting points; muscle/fat split is a modeled range, not a measurement. Verify with the scale and the mirror over weeks.</p>
             </Card>
           ) : <Card><Empty icon="◎" title="Add a goal weight + dates" hint="Once your goal has a target weight and date, the reality check appears here." /></Card>}
+
+          <Card title="Macros" sub="targets driven by your goal" action={<button className="btn-ghost btn-sm" onClick={() => { onSaveGoals({ ...goals, macroMode: goals.macroMode === "auto" ? "manual" : "auto" }); haptic(6); }}>{goals.macroMode === "auto" ? "Auto · on" : "Auto · off"}</button>}>
+            {macros && macros.ready ? (
+              <>
+                <div className="gp-stat-row"><span className="muted small">Calories</span><span>{macros.calories} kcal <TierBadge tier="calc" /></span></div>
+                <div className="gp-stat-row"><span className="muted small">Protein</span><span>{macros.protein} g <span className="muted small">({macros.proteinGkg}g/kg)</span></span></div>
+                <div className="gp-stat-row"><span className="muted small">Carbs</span><span>{macros.carbs} g</span></div>
+                <div className="gp-stat-row"><span className="muted small">Fat</span><span>{macros.fat} g</span></div>
+                <p className="muted small" style={{ marginTop: 8, lineHeight: 1.45 }}>{macros.note}</p>
+                {goals.macroMode === "auto"
+                  ? <p className="small" style={{ marginTop: 8, color: "#8fd989", lineHeight: 1.5 }}>✓ Your Log Meal targets are set by Goal Plan and re-adjust automatically as your weight and pace change.</p>
+                  : <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                      <button className="btn-primary btn-sm" onClick={() => { onSaveGoals({ ...goals, calories: macros.calories, protein: macros.protein, carbs: macros.carbs, fat: macros.fat }); toast("✦ Macros applied to Log Meal"); haptic(10); }}>Apply once</button>
+                      <button className="btn-ghost btn-sm" onClick={() => { onSaveGoals({ ...goals, macroMode: "auto", calories: macros.calories, protein: macros.protein, carbs: macros.carbs, fat: macros.fat }); toast("✦ Goal Plan now drives your macros"); haptic(10); }}>Keep auto-updated</button>
+                    </div>}
+                <p className="muted small" style={{ marginTop: 8, lineHeight: 1.45 }}>Evidence-based starting points, not a prescription{macros.flooredTo ? `; calories held at a safe floor (${macros.flooredTo})` : ""}. Adjust if your appetite or results say otherwise.</p>
+              </>
+            ) : <Empty icon="◎" title="Need weight + profile" hint={macros ? macros.reason : "Add your current weight and profile to compute targets."} />}
+          </Card>
         </>
       )}
 
@@ -5592,14 +5685,19 @@ function GoalPlanSection({ data, goals, onSaveGoals, addEntry, deleteEntry }) {
                 <p className="muted small" style={{ marginTop: 6 }}>This is your lowest-scoring lever — the highest-ROI thing to fix next.</p>
               </Card>
             )}
-            <Card title="What's limiting progress" sub="your levers, lowest first">
-              {c.levers.slice().sort((x, y) => x.score - y.score).map(l => (
-                <div key={l.key} className="gp-lever">
-                  <div className="gp-lever-top"><span className="gp-lever-name">{l.label} <TierBadge tier={l.tier} /></span><span className="gp-lever-score">{l.score}</span></div>
-                  <div className="gp-lever-bar"><div className="gp-lever-fill" style={{ width: `${l.score}%`, background: l.score < 60 ? "#f47e6e" : l.score < 80 ? "#f9c97e" : "#8fd989" }} /></div>
-                  <div className="muted small" style={{ marginTop: 3 }}>{l.detail}</div>
-                </div>
-              ))}
+            <Card title="What's limiting progress" sub="your levers, lowest first — and how they moved this week">
+              {c.levers.slice().sort((x, y) => x.score - y.score).map(l => {
+                const prev = consPrev && consPrev[l.key];
+                const d = prev != null ? l.score - prev : null;
+                return (
+                  <div key={l.key} className="gp-lever">
+                    <div className="gp-lever-top"><span className="gp-lever-name">{l.label} <TierBadge tier={l.tier} /></span><span className="gp-lever-score">{l.score}{d != null && Math.abs(d) >= 2 ? <span className="small" style={{ color: d > 0 ? "#8fd989" : "#f47e6e", marginLeft: 4 }}>{d > 0 ? "▲" : "▼"}{Math.abs(d)}</span> : null}</span></div>
+                    <div className="gp-lever-bar"><div className="gp-lever-fill" style={{ width: `${l.score}%`, background: l.score < 60 ? "#f47e6e" : l.score < 80 ? "#f9c97e" : "#8fd989" }} /></div>
+                    <div className="muted small" style={{ marginTop: 3 }}>{l.detail}{d != null && Math.abs(d) >= 2 ? ` · ${d > 0 ? "up" : "down"} ${Math.abs(d)} vs last week` : ""}</div>
+                  </div>
+                );
+              })}
+              {!consPrev && <p className="muted small" style={{ marginTop: 6, lineHeight: 1.4 }}>Week-over-week movement appears once you've used Goal Plan for a week.</p>}
             </Card>
           </>
         ) : <Card><Empty icon="◎" title="Log a couple of weeks" hint="Once there's some food, training and sleep logged, the constraint analysis shows what's holding you back." /></Card>
