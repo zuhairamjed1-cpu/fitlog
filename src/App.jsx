@@ -16,7 +16,7 @@ import { computeGoalPlan, formatGoalText, simulateGoal, analyzeRoadmap, assessGo
 import { computePhysiologyState } from "./engines/physiology";
 import { getPhases, activePhase, applyPhaseChange, generatePhases } from "./engines/phases";
 import { computeCircadian, todaysBioNutrition } from "./engines/circadian";
-import { computeVolume, volumeTrend, MUSCLES, MUSCLE_KEYS, VOLUME_BANDS } from "./engines/volume";
+import { computeVolume, STATUS_LEGEND } from "./engines/volume";
 import { proposeAdaptation } from "./engines/adaptation";
 import { computePhaseResult, summarizeDecisions, evaluateDecisions, logDecision } from "./engines/strategy";
 import { computeMacroTargets, macrosDiffer } from "./engines/macros";
@@ -1196,7 +1196,7 @@ function LogTab({ data, goals, addEntry, deleteEntry, initialSub, onSaveGoals, s
       {sub === "plan" && <PlanTab data={data} goals={goals} onSaveGoals={onSaveGoals} />}
       {sub === "diet" && <DietForm onAdd={addEntry("diet")} recent={data.diet} goals={goals} data={data} todayDiet={data.diet.filter(d => d.date === getTodayStr())} addEntry={addEntry} deleteEntry={deleteEntry} />}
       {sub === "sleep" && <SleepForm onAdd={addEntry("sleep")} recent={data.sleep} />}
-      {sub === "exercise" && <ExerciseForm onAdd={addEntry("exercise")} recent={data.exercise} />}
+      {sub === "exercise" && <><ExerciseForm onAdd={addEntry("exercise")} recent={data.exercise} /><WorkoutAnalysis data={data} goals={goals} /></>}
       {sub === "sports" && <SportsForm onAdd={addEntry("sports")} recent={data.sports} />}
       {sub === "intake" && <IntakeTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />}
       {sub === "nicotine" && <NicotineTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />}
@@ -3187,151 +3187,179 @@ function EnergyBalanceCard({ data, goals }) {
   );
 }
 
-// ─── WEEKLY VOLUME TRACKER ───────────────────────────────────────────────────
-// Front/back body with muscles color-coded by weekly hard-set volume, a custom
-// floating tooltip, plus summary / weak-points / symmetry / trend. All ESTIMATE
-// tier — set→muscle attribution is heuristic and volume tolerance is individual.
-const VOL_FRONT = {
-  sideDelts: [[82, 118, 11, 12], [158, 118, 11, 12]],
-  frontDelts: [[97, 123, 11, 11], [143, 123, 11, 11]],
-  chest: [[107, 143, 13, 11], [133, 143, 13, 11]],
-  biceps: [[70, 152, 8, 19], [170, 152, 8, 19]],
-  forearms: [[69, 196, 7, 21], [171, 196, 7, 21]],
-  abs: [[120, 178, 13, 24]],
-  obliques: [[101, 175, 6, 17], [139, 175, 6, 17]],
-  quads: [[106, 258, 14, 44], [134, 258, 14, 44]],
-};
-const VOL_BACK = {
-  traps: [[120, 110, 21, 12]],
-  rearDelts: [[85, 120, 11, 11], [155, 120, 11, 11]],
-  upperBack: [[108, 148, 12, 12], [132, 148, 12, 12]],
-  triceps: [[70, 152, 8, 20], [170, 152, 8, 20]],
-  forearms: [[69, 196, 7, 21], [171, 196, 7, 21]],
-  lats: [[101, 170, 11, 25], [139, 170, 11, 25]],
-  erectors: [[120, 178, 7, 28]],
-  glutes: [[107, 236, 15, 15], [133, 236, 15, 15]],
-  hamstrings: [[106, 300, 13, 36], [134, 300, 13, 36]],
-  calves: [[106, 374, 11, 26], [134, 374, 11, 26]],
+// ─── ANATOMICAL MUSCLE MAP ───────────────────────────────────────────────────
+// Hand-authored muscle-shaped SVG paths (pecs, delts, lat wings, quad teardrops,
+// ab grid, glutes, hamstrings, calves) on an organic body outline. Paired muscles
+// are authored once for the left and mirrored to the right. Colored by weekly
+// volume relative to each muscle's recommended range. ESTIMATE tier.
+const MIRROR = "matrix(-1 0 0 1 240 0)";
+const ANATOMY = {
+  front: [
+    { key: "chest", d: "M117,92 C106,89 92,93 88,104 C85,113 89,125 100,130 C109,133 116,131 117,127 Z", mirror: true },
+    { key: "frontDelts", d: "M99,89 C88,87 79,95 79,108 C79,117 86,121 94,118 C99,110 100,98 99,89 Z", mirror: true },
+    { key: "sideDelts", d: "M82,92 C73,95 69,106 70,116 C71,122 78,123 82,117 C84,109 84,99 82,92 Z", mirror: true },
+    { key: "biceps", d: "M85,121 C77,122 73,140 74,161 C75,175 80,182 85,180 C89,171 89,150 88,138 C87,127 89,121 85,121 Z", mirror: true },
+    { key: "forearms", d: "M83,191 C75,193 70,214 71,235 C72,246 78,248 83,243 C86,224 87,205 86,197 C85,193 85,191 83,191 Z", mirror: true },
+    { key: "abs", d: "M109,138 C109,135 131,135 131,138 L130,205 C130,210 124,212 120,212 C116,212 110,210 110,205 Z", center: true },
+    { key: "obliques", d: "M108,150 C100,153 97,173 99,193 C100,200 106,201 108,196 Z", mirror: true },
+    { key: "quads", d: "M118,232 C104,235 96,263 97,302 C98,332 105,353 113,356 C118,354 119,327 119,297 C119,267 120,240 118,232 Z", mirror: true },
+    { key: "adductors", d: "M119,236 C112,238 107,266 109,306 C110,320 116,324 119,320 Z", mirror: true },
+    { key: "calves", d: "M117,366 C105,369 100,394 101,424 C102,447 108,459 114,457 C117,439 118,414 117,394 C117,378 118,372 117,366 Z", mirror: true },
+  ],
+  back: [
+    { key: "traps", d: "M120,74 C108,76 99,86 97,100 C108,108 112,118 120,150 C128,118 132,108 143,100 C141,86 132,76 120,74 Z", center: true },
+    { key: "rearDelts", d: "M99,89 C88,87 79,95 79,108 C79,117 86,121 94,118 C99,110 100,98 99,89 Z", mirror: true },
+    { key: "lats", d: "M98,120 C85,126 80,150 84,174 C88,192 101,202 115,203 C117,181 116,150 112,132 C108,124 104,120 98,120 Z", mirror: true },
+    { key: "upperBack", d: "M117,120 C107,122 101,135 104,150 C111,152 116,141 117,130 Z", mirror: true },
+    { key: "erectors", d: "M118,158 C112,160 110,184 113,205 C115,211 119,209 119,201 L119,160 C119,158 118,158 118,158 Z", mirror: true },
+    { key: "triceps", d: "M85,121 C77,122 73,140 74,161 C75,175 80,182 85,180 C89,171 89,150 88,138 C87,127 89,121 85,121 Z", mirror: true },
+    { key: "forearms", d: "M83,191 C75,193 70,214 71,235 C72,246 78,248 83,243 C86,224 87,205 86,197 C85,193 85,191 83,191 Z", mirror: true },
+    { key: "glutes", d: "M119,212 C106,214 97,228 99,244 C101,256 111,260 118,254 C119,240 120,224 119,212 Z", mirror: true },
+    { key: "hamstrings", d: "M118,258 C104,261 97,287 98,321 C99,345 106,357 113,355 C118,353 119,326 119,296 C119,274 120,266 118,258 Z", mirror: true },
+    { key: "calves", d: "M116,368 C104,371 99,396 101,425 C103,447 109,459 114,457 C113,438 117,414 116,396 C115,380 117,372 116,368 Z", mirror: true },
+  ],
 };
 
-function VolumeBody({ view, vmap, active, onPick }) {
-  const fill = key => { const m = vmap[key]; if (!m || m.thisWeek === 0) return "#363c49"; return m.status.color; };
-  const zones = view === "front" ? VOL_FRONT : VOL_BACK;
-  const sil = "#262b35";
+function AnatomyBody({ view, vmap, active, onPick }) {
+  const defs = ANATOMY[view];
+  const stroke = key => active === key ? "#fff" : "rgba(8,10,14,0.55)";
+  const sw = key => active === key ? 1.5 : 0.7;
+  const tr = { transition: "fill .35s ease, fill-opacity .35s ease, stroke .15s ease", cursor: "pointer" };
+  const handlers = key => ({ onMouseEnter: () => onPick(key), onClick: () => onPick(key) });
+  const colorOf = key => { const m = vmap[key]; const s = m ? m.status : null; return { fill: s ? s.color : "#3a4150", op: s ? s.opacity : 0.4 }; };
   return (
-    <svg viewBox="0 0 240 470" style={{ width: "100%", maxWidth: 300, display: "block", margin: "0 auto" }}>
-      {/* silhouette */}
-      <g fill={sil}>
-        <ellipse cx="120" cy="34" rx="17" ry="21" />
-        <rect x="112" y="50" width="16" height="13" rx="4" />
-        <rect x="88" y="62" width="64" height="104" rx="18" />
-        <rect x="60" y="70" width="19" height="124" rx="9" />
-        <rect x="161" y="70" width="19" height="124" rx="9" />
-        <rect x="90" y="156" width="60" height="46" rx="14" />
-        <rect x="93" y="192" width="25" height="216" rx="12" />
-        <rect x="122" y="192" width="25" height="216" rx="12" />
+    <svg viewBox="0 0 240 500" style={{ width: "100%", maxWidth: 320, display: "block", margin: "0 auto" }}>
+      {/* organic body silhouette */}
+      <g fill="#1e222b" stroke="#2b313c" strokeWidth="1">
+        <ellipse cx="120" cy="42" rx="21" ry="25" />
+        <path d="M110,60 L130,60 L128,77 L112,77 Z" />
+        <path d="M120,70 C143,72 153,84 153,107 C153,135 151,163 148,191 C147,207 139,225 120,227 C101,225 93,207 92,191 C89,163 87,135 87,107 C87,84 97,72 120,70 Z" />
+        <path d="M91,90 C77,96 71,120 70,150 C69,185 65,220 68,242 C70,252 79,252 82,242 C85,220 87,185 88,155 C90,125 97,100 91,90 Z" />
+        <path d="M91,90 C77,96 71,120 70,150 C69,185 65,220 68,242 C70,252 79,252 82,242 C85,220 87,185 88,155 C90,125 97,100 91,90 Z" transform={MIRROR} />
+        <path d="M120,226 C103,228 95,252 96,292 C97,328 104,360 113,363 C120,361 121,330 120,298 C119,268 122,238 120,226 Z" />
+        <path d="M120,226 C103,228 95,252 96,292 C97,328 104,360 113,363 C120,361 121,330 120,298 C119,268 122,238 120,226 Z" transform={MIRROR} />
+        <path d="M113,363 C103,366 99,392 100,424 C101,450 108,470 114,470 C120,468 121,444 120,418 C119,390 122,372 113,363 Z" />
+        <path d="M113,363 C103,366 99,392 100,424 C101,450 108,470 114,470 C120,468 121,444 120,418 C119,390 122,372 113,363 Z" transform={MIRROR} />
+        <ellipse cx="110" cy="475" rx="12" ry="7" /><ellipse cx="130" cy="475" rx="12" ry="7" />
       </g>
-      {/* muscle zones */}
-      {Object.keys(zones).map(key => zones[key].map(([cx, cy, rx, ry], i) => (
-        <ellipse key={key + i} cx={cx} cy={cy} rx={rx} ry={ry} fill={fill(key)}
-          stroke={active === key ? "#fff" : "rgba(0,0,0,0.3)"} strokeWidth={active === key ? 1.6 : 0.75}
-          style={{ cursor: "pointer", transition: "fill .35s ease, stroke .15s ease" }}
-          onMouseEnter={() => onPick(key)} onClick={() => onPick(key)} />
-      )))}
+      {/* muscles */}
+      {defs.map(m => {
+        const c = colorOf(m.key);
+        const base = { d: m.d, fill: c.fill, fillOpacity: c.op, stroke: stroke(m.key), strokeWidth: sw(m.key), style: tr, ...handlers(m.key) };
+        return <g key={m.key}><path {...base} />{m.mirror && <path {...base} transform={MIRROR} />}</g>;
+      })}
+      {/* ab grid hint (front only) */}
+      {view === "front" && (
+        <g stroke="rgba(8,10,14,0.45)" strokeWidth="1.1" fill="none" style={{ pointerEvents: "none" }}>
+          <path d="M120,140 L120,206" /><path d="M111,157 L129,157" /><path d="M110,171 L130,171" /><path d="M110,185 L130,185" />
+        </g>
+      )}
     </svg>
   );
 }
 
-function VolumeTracker({ data, goals }) {
+function WorkoutAnalysis({ data, goals }) {
+  const [weekOffset, setWeekOffset] = useState(0);
+  const [tab, setTab] = useState("summary");
   const [view, setView] = useState("front");
   const [active, setActive] = useState(null);
   const [tip, setTip] = useState({ x: 0, y: 0 });
-  const vol = useMemo(() => computeVolume(data, goals, getTodayStr()), [data, goals]);
+  const vol = useMemo(() => computeVolume(data, goals, getTodayStr(), weekOffset), [data, goals, weekOffset]);
   const vmap = useMemo(() => { const o = {}; (vol.muscles || []).forEach(m => (o[m.key] = m)); return o; }, [vol]);
 
-  if (!vol.ready) {
-    return <Card title="◫ Weekly Volume Tracker" sub="hard sets per muscle, this week"><Empty icon="◫" title="No training volume yet" hint={vol.reason} /></Card>;
-  }
+  if (!vol.ready) return <Card title="Training Analysis"><Empty icon="◫" title="No workouts logged yet" hint="Log a workout above — your weekly training analysis and muscle map appear here." /></Card>;
 
   const am = active ? vmap[active] : null;
-  const trend = active ? volumeTrend(data, active, 6, getTodayStr()) : null;
-  const tMax = trend ? Math.max(6, ...trend.map(t => t.sets)) : 6;
+  const s = vol.summary, b = vol.balance;
+  const s$ = n => (n > 0 ? "+" : "") + n;
+  const musclesByVol = vol.muscles.slice().sort((a, c) => c.thisWeek - a.thisWeek);
 
   return (
     <>
-      <Card title="◫ Weekly Volume Tracker" sub={`week of ${formatShortDate(vol.weekStart)} · Mon–Sun`} action={<TierBadge tier="estimate" />}>
-        <div className="seg" style={{ marginBottom: 12 }}>
-          {["front", "back"].map(v => <button key={v} className={`seg-btn ${view === v ? "active" : ""}`} onClick={() => { setView(v); setActive(null); }}>{v === "front" ? "Front" : "Back"}</button>)}
+      <Card title="Training Analysis" sub={vol.weekOffset === 0 ? `This week · from ${formatShortDate(vol.weekStart)}` : `Previous week · from ${formatShortDate(vol.weekStart)}`} action={<TierBadge tier="estimate" />}>
+        <div className="seg" style={{ marginBottom: 10 }}>
+          <button className={`seg-btn ${weekOffset === 0 ? "active" : ""}`} onClick={() => { setWeekOffset(0); setActive(null); }}>This Week</button>
+          <button className={`seg-btn ${weekOffset === 1 ? "active" : ""}`} onClick={() => { setWeekOffset(1); setActive(null); }}>Previous Week</button>
+        </div>
+        <div className="skin-tabs" style={{ marginBottom: 12 }}>
+          {[["summary", "Summary"], ["intel", "Intelligence"], ["weak", "Weak Points"]].map(([k, l]) => (
+            <button key={k} className={`skin-tab ${tab === k ? "on" : ""}`} onClick={() => setTab(k)}>{l}</button>
+          ))}
         </div>
 
+        {tab === "summary" && (
+          <>
+            <div className="gp-stat-row"><span className="muted small">Total hard sets</span><span>{s.totalSets}</span></div>
+            <div className="gp-stat-row"><span className="muted small">Total exercises</span><span>{s.totalExercises}</span></div>
+            <div className="gp-stat-row"><span className="muted small">Sessions</span><span>{s.totalSessions}</span></div>
+            <div className="gp-stat-row"><span className="muted small">Training days</span><span>{s.trainingDays} / 7</span></div>
+            <div className="gp-stat-row"><span className="muted small">Most trained</span><span>{s.highest ? `${s.highest.label} (${s.highest.sets})` : "—"}</span></div>
+            <div className="gp-stat-row"><span className="muted small">Least trained</span><span>{s.lowest ? `${s.lowest.label} (${s.lowest.sets})` : "—"}</span></div>
+            <div className="gp-stat-row"><span className="muted small">Volume vs previous week</span><span style={{ color: s.volumeTrendPct == null ? "var(--text-2)" : s.volumeTrendPct >= 0 ? "#8fd989" : "#f47e6e" }}>{s.volumeTrendPct == null ? "—" : `${s$(s.volumeTrendPct)}%`}</span></div>
+            <p className="muted small" style={{ marginTop: 8, lineHeight: 1.4 }}>Session duration isn't logged, so it isn't shown. Counts are hard working sets (warmups excluded).</p>
+          </>
+        )}
+
+        {tab === "intel" && (
+          <>
+            {musclesByVol.map(m => (
+              <div key={m.key} className="gp-stat-row" style={{ padding: "3px 0" }}>
+                <span className="small" style={{ flex: 1 }}>{m.label}</span>
+                <span className="small" style={{ width: 52, textAlign: "right", color: "var(--text-2)" }}>{m.thisWeek} set{m.thisWeek === 1 ? "" : "s"}</span>
+                <span className="small" style={{ width: 64, textAlign: "right", color: "var(--text-2)" }}>{m.recommended}</span>
+                <span className="small" style={{ width: 88, textAlign: "right", color: m.status.color, fontWeight: 600 }}>{m.status.label}</span>
+              </div>
+            ))}
+            <div style={{ borderTop: "1px solid var(--line)", marginTop: 10, paddingTop: 10 }}>
+              <div className="small" style={{ fontWeight: 600, marginBottom: 6 }}>Volume balance <span className="muted" style={{ fontWeight: 400 }}>(hard sets)</span></div>
+              <div className="gp-stat-row"><span className="muted small">Push / Pull</span><span>{b.push} / {b.pull}</span></div>
+              <div className="gp-stat-row"><span className="muted small">Upper / Lower</span><span>{b.upper} / {b.lower}</span></div>
+              <div className="gp-stat-row"><span className="muted small">Anterior / Posterior</span><span>{b.anterior} / {b.posterior}</span></div>
+            </div>
+          </>
+        )}
+
+        {tab === "weak" && (
+          vol.weakPoints.length === 0
+            ? <Empty icon="✓" title="Nothing under-trained" hint="Every muscle hit its recommended weekly minimum this week." />
+            : vol.weakPoints.map((w, i) => (
+              <div key={w.key} style={{ padding: "8px 0", borderTop: i ? "1px solid var(--line)" : "none" }}>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>Weak point #{i + 1} · {w.label}</div>
+                <p className="muted small" style={{ margin: "3px 0", lineHeight: 1.45 }}>{w.reason}</p>
+                <div className="gp-stat-row"><span className="muted small">Suggested target</span><span>{w.suggestedTarget} sets/wk</span></div>
+                {w.exercises.length > 0 && <div className="gp-stat-row"><span className="muted small">Try</span><span>{w.exercises.join(" · ")}</span></div>}
+              </div>
+            ))
+        )}
+      </Card>
+
+      <Card title="Muscle Map" sub="weekly volume by muscle group" action={<span style={{ display: "flex", gap: 6 }}>
+        <button className={`seg-btn ${view === "front" ? "active" : ""}`} style={{ padding: "3px 10px", fontSize: 12 }} onClick={() => { setView("front"); setActive(null); }}>Front</button>
+        <button className={`seg-btn ${view === "back" ? "active" : ""}`} style={{ padding: "3px 10px", fontSize: 12 }} onClick={() => { setView("back"); setActive(null); }}>Back</button>
+      </span>}>
         <div style={{ position: "relative" }} onMouseMove={e => { const r = e.currentTarget.getBoundingClientRect(); setTip({ x: e.clientX - r.left, y: e.clientY - r.top }); }} onMouseLeave={() => setActive(null)}>
-          <VolumeBody view={view} vmap={vmap} active={active} onPick={setActive} />
+          <AnatomyBody view={view} vmap={vmap} active={active} onPick={setActive} />
           {am && (
-            <div style={{ position: "absolute", left: Math.min(tip.x + 14, 200), top: Math.max(tip.y - 10, 0), pointerEvents: "none", background: "rgba(18,21,28,0.97)", border: "1px solid var(--line)", borderRadius: 12, padding: "10px 12px", minWidth: 150, boxShadow: "0 8px 28px rgba(0,0,0,0.5)", zIndex: 5, backdropFilter: "blur(8px)" }}>
-              <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{am.label}</div>
+            <div style={{ position: "absolute", left: Math.min(tip.x + 14, 210), top: Math.max(tip.y - 8, 0), pointerEvents: "none", background: "rgba(16,19,26,0.97)", border: "1px solid var(--line)", borderRadius: 12, padding: "10px 12px", minWidth: 156, boxShadow: "0 10px 30px rgba(0,0,0,0.55)", zIndex: 5, backdropFilter: "blur(8px)" }}>
+              <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 5 }}>{am.label}</div>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-2)", gap: 16 }}><span>This week</span><b style={{ color: "var(--text)" }}>{am.thisWeek} sets</b></div>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-2)", gap: 16 }}><span>Last week</span><span>{am.lastWeek}</span></div>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-2)", gap: 16 }}><span>Change</span><span style={{ color: am.change > 0 ? "#8fd989" : am.change < 0 ? "#f47e6e" : "var(--text-2)" }}>{am.change > 0 ? "+" : ""}{am.change}</span></div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-2)", gap: 16 }}><span>Previous</span><span>{am.lastWeek}</span></div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-2)", gap: 16 }}><span>Change</span><span style={{ color: (am.changePct ?? am.change) > 0 ? "#8fd989" : (am.changePct ?? am.change) < 0 ? "#f47e6e" : "var(--text-2)" }}>{am.changePct != null ? `${s$(am.changePct)}%` : `${s$(am.change)} sets`}</span></div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-2)", gap: 16 }}><span>Recommended</span><span>{am.recommended}</span></div>
               {am.target != null && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-2)", gap: 16 }}><span>Target</span><span>{am.thisWeek}/{am.target} · {am.progress}%</span></div>}
-              <div style={{ marginTop: 5, fontSize: 11, fontWeight: 600, color: am.status.color }}>{am.status.label}</div>
+              <div style={{ marginTop: 5, fontSize: 11, fontWeight: 700, color: am.status.color }}>{am.status.label}</div>
             </div>
           )}
         </div>
         <p className="muted small" style={{ textAlign: "center", margin: "4px 0 10px" }}>{active ? vmap[active].label : "Hover or tap a muscle"}</p>
-
-        {/* legend */}
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center" }}>
-          {VOLUME_BANDS.map(b => (
-            <span key={b.key} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--text-2)" }}>
-              <span style={{ width: 10, height: 10, borderRadius: 3, background: b.color, display: "inline-block" }} />{b.label}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, justifyContent: "center" }}>
+          {STATUS_LEGEND.map(l => (
+            <span key={l.key} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--text-2)" }}>
+              <span style={{ width: 11, height: 11, borderRadius: 3, background: l.color, opacity: l.opacity, display: "inline-block" }} />{l.label}
             </span>
           ))}
         </div>
-        <p className="muted small" style={{ marginTop: 10, lineHeight: 1.4 }}>Bands are general hypertrophy guidelines (estimated) — individual volume tolerance varies. Body map is a schematic, not anatomical.{vol.summary.unmappedSets > 0 ? ` ${vol.summary.unmappedSets} set${vol.summary.unmappedSets > 1 ? "s" : ""} couldn't be matched to a muscle.` : ""}</p>
-      </Card>
-
-      <Card title="Weekly volume summary">
-        <div className="gp-stat-row"><span className="muted small">Highest</span><span>{vol.summary.highest ? `${vol.summary.highest.label} (${vol.summary.highest.sets})` : "—"}</span></div>
-        <div className="gp-stat-row"><span className="muted small">Lowest trained</span><span>{vol.summary.lowest ? `${vol.summary.lowest.label} (${vol.summary.lowest.sets})` : "—"}</span></div>
-        <div className="gp-stat-row"><span className="muted small">Total hard sets</span><span>{vol.summary.totalSets}</span></div>
-        <div className="gp-stat-row"><span className="muted small">Muscles trained</span><span>{vol.summary.musclesTrained} / 17</span></div>
-      </Card>
-
-      {trend && (
-        <Card title={`Trend · ${vmap[active].label}`} sub="last 6 weeks">
-          <svg viewBox="0 0 300 90" style={{ width: "100%" }}>
-            {(() => {
-              const pts = trend.map((t, i) => [12 + i * (276 / (trend.length - 1)), 80 - (t.sets / tMax) * 64]);
-              const d = pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
-              return <>
-                <path d={d} fill="none" stroke="var(--accent, #5cc8df)" strokeWidth="2" />
-                {pts.map((p, i) => <circle key={i} cx={p[0]} cy={p[1]} r="3" fill="var(--accent, #5cc8df)" />)}
-                {trend.map((t, i) => <text key={"x" + i} x={12 + i * (276 / (trend.length - 1))} y="89" fontSize="8" fill="var(--text-2)" textAnchor="middle">{t.sets}</text>)}
-              </>;
-            })()}
-          </svg>
-          <p className="muted small" style={{ margin: 0 }}>Pick another muscle on the body to switch this trend.</p>
-        </Card>
-      )}
-
-      {vol.weakPoints.length > 0 && (
-        <Card title="Potential weak points" sub="below maintenance volume (<6 sets)" action={<TierBadge tier="estimate" />}>
-          {vol.weakPoints.map(w => (
-            <div key={w.label} className="gp-stat-row"><span className="small">{w.label}</span><span className="small" style={{ color: w.sets < 3 ? "#f47e6e" : "#f9c97e" }}>{w.sets} set{w.sets === 1 ? "" : "s"}{w.target ? ` · target ${w.target}` : ""}</span></div>
-          ))}
-        </Card>
-      )}
-
-      <Card title="Symmetry" sub="balance across movement patterns">
-        <div className="gp-stat-row"><span className="muted small">Push volume</span><span>{vol.symmetry.push}</span></div>
-        <div className="gp-stat-row"><span className="muted small">Pull volume</span><span>{vol.symmetry.pull}</span></div>
-        <div className="gp-stat-row"><span className="muted small">Push vs pull</span><span style={{ color: Math.abs(vol.symmetry.pushPullDiff) > 8 ? "#f9c97e" : "#8fd989" }}>{vol.symmetry.pushPullDiff > 0 ? "+" : ""}{vol.symmetry.pushPullDiff}</span></div>
-        <div style={{ borderTop: "1px solid var(--line)", margin: "8px 0", paddingTop: 8 }}>
-          <div className="gp-stat-row"><span className="muted small">Upper volume</span><span>{vol.symmetry.upper}</span></div>
-          <div className="gp-stat-row"><span className="muted small">Lower volume</span><span>{vol.symmetry.lower}</span></div>
-          <div className="gp-stat-row"><span className="muted small">Upper vs lower</span><span style={{ color: Math.abs(vol.symmetry.upperLowerDiff) > 15 ? "#f9c97e" : "#8fd989" }}>{vol.symmetry.upperLowerDiff > 0 ? "+" : ""}{vol.symmetry.upperLowerDiff}</span></div>
-        </div>
-        <p className="muted small" style={{ margin: 0, lineHeight: 1.4 }}>A large imbalance isn't automatically wrong — it depends on your goal and what you're bringing up.</p>
+        <p className="muted small" style={{ marginTop: 10, lineHeight: 1.4 }}>Colored by weekly volume vs each muscle's recommended range (estimated — individual tolerance varies). Map is a stylized anatomy, not a medical render.{s.unmappedSets > 0 ? ` ${s.unmappedSets} set${s.unmappedSets > 1 ? "s" : ""} couldn't be matched to a muscle.` : ""}</p>
       </Card>
     </>
   );
@@ -3452,8 +3480,6 @@ function TrendsView({ data, goals }) {
       <EnergyBalanceCard data={data} goals={goals} />
 
       <TrainingCard data={data} goals={goals} />
-
-      <VolumeTracker data={data} goals={goals} />
 
       <ConsistencyHeatmap data={data} />
 

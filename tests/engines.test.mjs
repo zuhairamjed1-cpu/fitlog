@@ -346,8 +346,12 @@ ok("goalplan: constraints rank a primary lever", !!cons.primary && cons.levers.l
     ok("volume: weekly set counts (Mon–Sun), primary 1.0 / secondary 0.5", v.weeklyVolume.chest === 4 && v.weeklyVolume.quads === 3 && v.weeklyVolume.sideDelts === 4 && v.weeklyVolume.triceps === 2, v.weeklyVolume);
     ok("volume: change vs last week + goal target/progress", (() => { const c = v.muscles.find(m => m.key === "chest"); return c.lastWeek === 2 && c.change === 2 && c.target === 18 && c.progress === 22; })(), 1);
     ok("volume: summary highest/lowest/total/trained", v.summary.highest.label === "Chest" || v.summary.highest.label === "Side Delts" ? v.summary.totalSets > 0 && v.summary.musclesTrained >= 3 : false, v.summary);
-    ok("volume: symmetry push/pull + upper/lower", typeof v.symmetry.push === "number" && typeof v.symmetry.pushPullDiff === "number" && v.symmetry.lower >= 3, v.symmetry);
-    ok("volume: weak points list muscles under maintenance", Array.isArray(v.weakPoints) && v.weakPoints.every(w => w.sets < 6), 1);
+    ok("volume: raw volume balance totals (no symmetry score)", typeof v.balance.push === "number" && typeof v.balance.pull === "number" && v.balance.lower >= 3 && v.symmetry === undefined, v.balance);
+    ok("volume: per-muscle recommended range + range-based status", (() => { const c = v.muscles.find(m => m.key === "chest"); return Array.isArray(c.range) && c.recommended === "10-20" && c.status.label === "Undertrained"; })(), 1);
+    ok("volume: 18 muscle groups incl. adductors", MUSCLE_KEYS.length === 18 && MUSCLE_KEYS.includes("adductors"), MUSCLE_KEYS.length);
+    ok("volume: weekOffset=1 selects the previous Mon–Sun week", (() => { const pv = computeVolume(data, {}, today, 1); return pv.weekStart === "2026-06-15" && pv.weeklyVolume.chest === 2; })(), 1);
+    ok("volume: weak points carry suggested target + exercises", (() => { const w = v.weakPoints.find(x => x.key === "rearDelts"); return w && w.suggestedTarget === "8-15" && w.exercises.includes("Face Pull"); })(), 1);
+    ok("volume: weak points list muscles under their recommended minimum", Array.isArray(v.weakPoints) && v.weakPoints.every(w => w.sets < w.range[0]), 1);
     ok("volume: warmup sets (RPE<5) are excluded", (() => { const d = { exercise: [{ date: "2026-06-22", text: "Bench Press\n60x10 @3\n60x10 @4\n100x5 @8\n100x5 @9" }] }; const r = computeVolume(d, {}, today); return r.weeklyVolume.chest === 2; })(), 1);
     ok("volume: trend returns N weekly buckets oldest→newest", (() => { const tr = volumeTrend(data, "chest", 4, today); return tr.length === 4 && tr[3].sets === 4 && tr[2].sets === 2; })(), 1);
     ok("volume: no workouts → not ready (honest empty state)", computeVolume({ exercise: [] }, {}, today).ready === false, 1);
