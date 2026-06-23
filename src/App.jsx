@@ -6557,7 +6557,7 @@ function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, setData, 
       case "water": return <WaterForm data={data} goals={goals} onAdd={addEntry("water")} onDelete={deleteEntry("water")} />;
       case "supps": return <SupplementForm data={data} onAdd={addEntry("supplements")} onDelete={deleteEntry("supplements")} />;
       case "weight": return <WeightForm data={data} goals={goals} onAdd={addEntry("weight")} onDelete={deleteEntry("weight")} />;
-      case "exercise": return <ExerciseForm onAdd={addEntry("exercise")} recent={data.exercise} />;
+      case "exercise": return <><ExerciseForm onAdd={addEntry("exercise")} recent={data.exercise} /><WorkoutAnalysis data={data} goals={goals} /></>;
       case "sports": return <SportsForm onAdd={addEntry("sports")} recent={data.sports} />;
       case "plan": return <PlanTab data={data} goals={goals} onSaveGoals={onSaveGoals} />;
       case "sleep": return <SleepSection data={data} goals={goals} addEntry={addEntry} onSaveGoals={onSaveGoals} />;
