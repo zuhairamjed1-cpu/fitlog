@@ -12,6 +12,7 @@ import { computeNicotineStats, computeNicotineCorrelations, computeNicotineTimin
 import { computeSkin, detectRoutineConflicts } from "./engines/skin";
 import { estimateGlycemicLoad, dayGlycemicLoad } from "./engines/glycemic";
 import { planFueling, reconcileFueling, sleepWindow, SESSION_TYPES } from "./engines/fueling";
+import { computeGoalPlan, formatGoalText, simulateGoal } from "./engines/goalplan";
 import { buildBrain, formatBrainText, prioritizeInsights } from "./brain/brain";
 import { sleepTST, estimateSleepNeed, computeSleep } from "./engines/sleep";
 import { computeRecovery } from "./engines/recovery";
@@ -19,7 +20,7 @@ import { computeRecovery } from "./engines/recovery";
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const TABS = ["Home", "Log", "History", "Coach", "Journal", "Settings", "Ejac"];
 const STORAGE_KEY = "fitlog_v5";
-const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], nicotine: [], nicotinePlans: [], journal: [], weight: [], ejac: [], skin: [], skinResearch: [], skinProcedures: [], plannedSessions: [], skinRoutineLogs: [], skinProductIntros: [], skinRoutineChanges: [], skinCoachPlans: [] };
+const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], nicotine: [], nicotinePlans: [], journal: [], weight: [], ejac: [], skin: [], skinResearch: [], skinProcedures: [], plannedSessions: [], skinRoutineLogs: [], skinProductIntros: [], skinRoutineChanges: [], skinCoachPlans: [], goalSnapshots: [], goalReports: [] };
 const defaultProfile = {
   // Body
   sex: "", age: "", heightCm: "", weightKg: "",
@@ -45,7 +46,7 @@ const defaultStrategy = {
   notes: "", // free text — anything else the AI should know about strategy right now
 };
 
-const defaultGoals = { calories: 2500, protein: 180, carbs: 250, fat: 80, goal: "Build Muscle", waterGoalMl: 2500, profile: defaultProfile, strategy: defaultStrategy, sleepScreen: null, sleepExperiment: null, skinRoutine: { am: [], pm: [] }, skinExperiment: null };
+const defaultGoals = { calories: 2500, protein: 180, carbs: 250, fat: 80, goal: "Build Muscle", waterGoalMl: 2500, profile: defaultProfile, strategy: defaultStrategy, sleepScreen: null, sleepExperiment: null, skinRoutine: { am: [], pm: [] }, skinExperiment: null, goalPlan: null };
 const fitnessGoals = ["Build Muscle", "Lose Fat", "Improve Endurance", "Maintain Weight", "Athletic Performance"];
 const mealTypes = ["Breakfast", "Lunch", "Dinner", "Snack"];
 const sportsOptions = ["Running","Football","Basketball","Tennis","Swimming","Cycling","Yoga","Boxing","Soccer","Volleyball","Badminton","Table Tennis","Golf","Martial Arts","Hiking","Walking","Rowing","Climbing","Other"];
@@ -5286,7 +5287,305 @@ function SkinSection({ data, goals, addEntry, deleteEntry, updateEntry, onSaveGo
   );
 }
 
-// ─── LOG HUB OVERLAY (the center ＋) ─────────────────────────────────────────
+// ─── GOAL PLAN (Phase 1: goal + reality check + trajectory + constraints) ────
+const GOAL_TYPES = [
+  { k: "leanbulk", label: "Lean Bulk" }, { k: "cut", label: "Cut" }, { k: "minicut", label: "Mini Cut" },
+  { k: "recomp", label: "Recomp" }, { k: "maintenance", label: "Maintenance" }, { k: "strength", label: "Strength" }, { k: "health", label: "Health" },
+];
+const GP_TABS = [{ k: "plan", label: "Plan" }, { k: "traj", label: "Trajectory" }, { k: "cons", label: "Constraints" }, { k: "fore", label: "Forecast" }, { k: "sim", label: "Simulate" }, { k: "report", label: "Report" }];
+const GP_EXP = [{ k: "novice", label: "Novice (<1yr)" }, { k: "intermediate", label: "Intermediate" }, { k: "advanced", label: "Advanced (3yr+)" }];
+
+function TierBadge({ tier }) {
+  const M = { measured: ["Measured", "#5cc8df"], calc: ["Calculated", "#8fd989"], estimate: ["Estimated", "#f9c97e"], forecast: ["Forecast", "#aab2c0"] };
+  const [label, color] = M[tier] || M.estimate;
+  return <span className="tier-badge" style={{ color, borderColor: `${color}55` }}>{label}</span>;
+}
+
+function GoalForm({ goals, currentWeight, onSave, onCancel }) {
+  const gp = goals.goalPlan || {};
+  const [type, setType] = useState(gp.type || "leanbulk");
+  const [startWeight, setSW] = useState(gp.startWeight ?? currentWeight ?? "");
+  const [goalWeight, setGW] = useState(gp.goalWeight ?? "");
+  const [startDate, setStart] = useState(gp.startDate || getTodayStr());
+  const [targetDate, setTarget] = useState(gp.targetDate || "");
+  const [experience, setExp] = useState(gp.experience || "intermediate");
+  const [freq, setFreq] = useState(gp.freq ?? 4);
+  function save() {
+    if (!goalWeight || !targetDate) { toast("Add a goal weight and target date"); return; }
+    onSave({ ...goals, goalPlan: { type, startWeight: +startWeight || currentWeight || null, goalWeight: +goalWeight, startDate, targetDate, experience, freq: +freq || 4, priorities: gp.priorities || [] } });
+    toast("◎ Goal saved"); haptic(8);
+  }
+  return (
+    <Card title={gp.goalWeight ? "Edit your goal" : "Set your goal"} sub="weight-based for now — your trajectory, reality check and constraints build from this">
+      <div className="gp-field"><label>Goal type</label><div className="gp-chips">{GOAL_TYPES.map(t => <button key={t.k} className={`gp-chip ${type === t.k ? "on" : ""}`} onClick={() => setType(t.k)}>{t.label}</button>)}</div></div>
+      <div className="gp-row2">
+        <div className="gp-field"><label>Start weight (kg)</label><input type="number" inputMode="decimal" value={startWeight} onChange={e => setSW(e.target.value)} placeholder={currentWeight ? String(currentWeight) : "—"} /></div>
+        <div className="gp-field"><label>Goal weight (kg)</label><input type="number" inputMode="decimal" value={goalWeight} onChange={e => setGW(e.target.value)} placeholder="—" /></div>
+      </div>
+      <div className="gp-row2">
+        <div className="gp-field"><label>Start date</label><input type="date" value={startDate} onChange={e => setStart(e.target.value)} /></div>
+        <div className="gp-field"><label>Target date</label><input type="date" value={targetDate} onChange={e => setTarget(e.target.value)} /></div>
+      </div>
+      <div className="gp-field"><label>Training experience</label><div className="gp-chips">{GP_EXP.map(t => <button key={t.k} className={`gp-chip ${experience === t.k ? "on" : ""}`} onClick={() => setExp(t.k)}>{t.label}</button>)}</div></div>
+      <div className="gp-field"><label>Training days / week</label><input type="number" inputMode="numeric" value={freq} onChange={e => setFreq(e.target.value)} /></div>
+      <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+        <button className="btn full" onClick={save}>Save goal</button>
+        {onCancel && <button className="btn-ghost" onClick={onCancel}>Cancel</button>}
+      </div>
+    </Card>
+  );
+}
+
+function TrajectoryChart({ traj, pts }) {
+  if (!traj) return null;
+  const W = 320, H = 150, pad = { l: 30, r: 12, t: 12, b: 18 };
+  const tw = traj.totalWeeks || 1;
+  const ys = [traj.startWeight, traj.goalWeight, traj.actualNow, traj.projectedEnd, ...pts.map(p => p.y)].filter(v => v != null);
+  let ymin = Math.min(...ys), ymax = Math.max(...ys); if (ymin === ymax) { ymin -= 1; ymax += 1; }
+  const padY = (ymax - ymin) * 0.12 || 1; ymin -= padY; ymax += padY;
+  const X = x => pad.l + (Math.max(0, Math.min(tw, x)) / tw) * (W - pad.l - pad.r);
+  const Y = y => pad.t + (1 - (y - ymin) / (ymax - ymin)) * (H - pad.t - pad.b);
+  const expLine = `M ${X(0)} ${Y(traj.startWeight)} L ${X(tw)} ${Y(traj.goalWeight)}`;
+  const actLine = pts.length ? "M " + pts.map(p => `${X(p.x)} ${Y(p.y)}`).join(" L ") : "";
+  const projLine = (traj.actualNow != null && traj.projectedEnd != null) ? `M ${X(traj.elapsed)} ${Y(traj.actualNow)} L ${X(tw)} ${Y(traj.projectedEnd)}` : "";
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="gp-chart" preserveAspectRatio="none">
+      <line x1={X(traj.elapsed)} y1={pad.t} x2={X(traj.elapsed)} y2={H - pad.b} stroke="var(--border-strong)" strokeWidth="1" strokeDasharray="3 3" />
+      <path d={expLine} stroke="var(--muted)" strokeWidth="1.5" fill="none" strokeDasharray="5 4" />
+      {projLine && <path d={projLine} stroke="#f9c97e" strokeWidth="1.5" fill="none" strokeDasharray="2 3" />}
+      {actLine && <path d={actLine} stroke="var(--accent)" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />}
+      {pts.map((p, i) => <circle key={i} cx={X(p.x)} cy={Y(p.y)} r="2.2" fill="var(--accent)" />)}
+      <text x={pad.l - 4} y={Y(ymax) + 4} textAnchor="end" className="gp-axis">{Math.round(ymax)}</text>
+      <text x={pad.l - 4} y={Y(ymin)} textAnchor="end" className="gp-axis">{Math.round(ymin)}</text>
+    </svg>
+  );
+}
+
+function GoalPlanSection({ data, goals, onSaveGoals, addEntry, deleteEntry }) {
+  const [tab, setTab] = useState("plan");
+  const [editing, setEditing] = useState(false);
+  const gp = useMemo(() => computeGoalPlan(data, goals), [data, goals]);
+  const lastW = (data.weight || []).filter(w => w && w.kg > 0).sort((a, b) => (b.date || "").localeCompare(a.date || ""))[0];
+  const currentWeight = (gp && gp.currentWeight) || (lastW && lastW.kg) || (goals.profile && goals.profile.weightKg) || null;
+
+  if (!goals.goalPlan || goals.goalPlan.goalWeight == null || editing) {
+    return <div className="gp-scope stack"><div className="gp-brand"><span className="gp-mark" />Goal Plan</div><GoalForm goals={goals} currentWeight={currentWeight} onSave={g => { onSaveGoals(g); setEditing(false); }} onCancel={goals.goalPlan ? () => setEditing(false) : null} /></div>;
+  }
+
+  const a = gp && gp.assess, t = gp && gp.trajectory, c = gp && gp.constraints;
+  const typeLabel = (GOAL_TYPES.find(x => x.k === goals.goalPlan.type) || {}).label || "Goal";
+  const VERDICT = { realistic: ["Realistic", "#8fd989"], aggressive: ["Aggressive", "#f9c97e"], unrealistic: ["Unrealistic", "#f47e6e"] };
+  const STATUS = { "on-track": ["On track", "#8fd989"], ahead: ["Ahead", "#5cc8df"], behind: ["Behind", "#f9c97e"], "no-data": ["Not enough data", "#aab2c0"] };
+
+  return (
+    <div className="gp-scope stack">
+      <div className="gp-brand"><span className="gp-mark" />Goal Plan</div>
+      <div className="skin-tabs">{GP_TABS.map(x => <button key={x.k} className={`skin-tab ${tab === x.k ? "on" : ""}`} onClick={() => { setTab(x.k); haptic(6); }}>{x.label}</button>)}</div>
+
+      {tab === "plan" && (
+        <>
+          <Card title={typeLabel} sub={`${goals.goalPlan.startWeight ?? "?"}kg → ${goals.goalPlan.goalWeight}kg`} action={<button className="btn-ghost btn-sm" onClick={() => setEditing(true)}>Edit</button>}>
+            <div className="gp-stat-row"><span className="muted small">Timeline</span><span>{a ? `${Math.round(a.weeks)} weeks` : "—"} <TierBadge tier="measured" /></span></div>
+            <div className="gp-stat-row"><span className="muted small">Required pace</span><span>{a && a.reqKgWk != null ? `${a.reqKgWk > 0 ? "+" : ""}${a.reqKgWk} kg/wk` : "—"} <TierBadge tier="calc" /></span></div>
+            <div className="gp-stat-row"><span className="muted small">Current weight</span><span>{currentWeight ?? "—"} kg <TierBadge tier="measured" /></span></div>
+          </Card>
+          {a ? (
+            <Card title="Biological reality check">
+              <div className="gp-verdict" style={{ color: (VERDICT[a.verdict] || VERDICT.realistic)[1], borderColor: `${(VERDICT[a.verdict] || VERDICT.realistic)[1]}55` }}>{(VERDICT[a.verdict] || VERDICT.realistic)[0]}</div>
+              <p className="muted small" style={{ lineHeight: 1.55, marginTop: 8 }}>{a.note}</p>
+              {a.dir === "gain" && a.expectedMuscleKg && (
+                <div className="gp-split">
+                  <div className="gp-stat-row"><span className="muted small">Expected muscle</span><span>{a.expectedMuscleKg[0]}–{a.expectedMuscleKg[1]} kg <TierBadge tier="forecast" /></span></div>
+                  <div className="gp-stat-row"><span className="muted small">Expected fat</span><span>{a.expectedFatKg[0]}–{a.expectedFatKg[1]} kg <TierBadge tier="forecast" /></span></div>
+                </div>
+              )}
+              {a.verdict !== "realistic" && a.realisticWeeks && (
+                <p className="small" style={{ lineHeight: 1.55, marginTop: 8, color: "var(--text-2)" }}>A realistic version: reach {goals.goalPlan.goalWeight}kg in <b>~{a.realisticWeeks} weeks</b>, or keep your date and target <b>~{a.realisticGoalWeight}kg</b> instead.</p>
+              )}
+              <p className="muted small" style={{ marginTop: 10, lineHeight: 1.45 }}>Rates are evidence-based starting points; muscle/fat split is a modeled range, not a measurement. Verify with the scale and the mirror over weeks.</p>
+            </Card>
+          ) : <Card><Empty icon="◎" title="Add a goal weight + dates" hint="Once your goal has a target weight and date, the reality check appears here." /></Card>}
+        </>
+      )}
+
+      {tab === "traj" && (
+        t ? (
+          <>
+            <Card title="Trajectory" sub="expected path vs your actual trend">
+              <div className="gp-verdict" style={{ color: (STATUS[t.status] || STATUS["no-data"])[1], borderColor: `${(STATUS[t.status] || STATUS["no-data"])[1]}55` }}>{(STATUS[t.status] || STATUS["no-data"])[0]}</div>
+              <div style={{ marginTop: 10 }}><TrajectoryChart traj={t} pts={gp.actualPts} /></div>
+              <div className="gp-legend"><span><i style={{ background: "var(--accent)" }} />Actual</span><span><i className="dash" style={{ background: "var(--muted)" }} />Expected</span><span><i className="dash" style={{ background: "#f9c97e" }} />Projected</span></div>
+            </Card>
+            <Card>
+              <div className="gp-stat-row"><span className="muted small">Should be near</span><span>{t.expectedNow ?? "—"} kg <TierBadge tier="calc" /></span></div>
+              <div className="gp-stat-row"><span className="muted small">Actual (trend)</span><span>{t.actualNow ?? "—"} kg <TierBadge tier="calc" /></span></div>
+              <div className="gp-stat-row"><span className="muted small">Off by</span><span>{t.deviation != null ? `${t.deviation > 0 ? "+" : ""}${t.deviation} kg` : "—"}</span></div>
+              <div className="gp-stat-row"><span className="muted small">Projected at target date</span><span>{t.projectedEnd != null ? `${t.projectedEnd} kg` : "—"} <TierBadge tier="forecast" /></span></div>
+              {t.projGap != null && <p className="muted small" style={{ marginTop: 8, lineHeight: 1.5 }}>At your current trend (~{t.rate} kg/wk) you'd land {t.projGap === 0 ? "right on" : `${Math.abs(t.projGap)}kg ${t.projGap > 0 ? "above" : "below"}`} your {t.goalWeight}kg goal. This is a projection of the current trend, not a guarantee.</p>}
+            </Card>
+          </>
+        ) : <Card><Empty icon="◎" title="Log your weight to see your trajectory" hint="A week or two of morning weigh-ins gives a trend to plot against your goal." /></Card>
+      )}
+
+      {tab === "cons" && (
+        c && c.levers.length ? (
+          <>
+            {c.primary && (
+              <Card title="Primary constraint" className="gp-primary">
+                <div className="gp-primary-name">{c.primary.label} <span className="muted small">{c.primary.score}/100</span></div>
+                <p className="small" style={{ lineHeight: 1.55, marginTop: 6 }}>{c.primary.rec}</p>
+                <p className="muted small" style={{ marginTop: 6 }}>This is your lowest-scoring lever — the highest-ROI thing to fix next.</p>
+              </Card>
+            )}
+            <Card title="What's limiting progress" sub="your levers, lowest first">
+              {c.levers.slice().sort((x, y) => x.score - y.score).map(l => (
+                <div key={l.key} className="gp-lever">
+                  <div className="gp-lever-top"><span className="gp-lever-name">{l.label} <TierBadge tier={l.tier} /></span><span className="gp-lever-score">{l.score}</span></div>
+                  <div className="gp-lever-bar"><div className="gp-lever-fill" style={{ width: `${l.score}%`, background: l.score < 60 ? "#f47e6e" : l.score < 80 ? "#f9c97e" : "#8fd989" }} /></div>
+                  <div className="muted small" style={{ marginTop: 3 }}>{l.detail}</div>
+                </div>
+              ))}
+            </Card>
+          </>
+        ) : <Card><Empty icon="◎" title="Log a couple of weeks" hint="Once there's some food, training and sleep logged, the constraint analysis shows what's holding you back." /></Card>
+      )}
+
+      {tab === "fore" && <GoalForecastTab gp={gp} data={data} addEntry={addEntry} />}
+      {tab === "sim" && <GoalSimulateTab gp={gp} goals={goals} />}
+      {tab === "report" && <GoalReportTab gp={gp} data={data} addEntry={addEntry} deleteEntry={deleteEntry} />}
+    </div>
+  );
+}
+
+const RISK_COLOR = { high: "#f47e6e", moderate: "#f9c97e", low: "#8fd989" };
+function GoalForecastTab({ gp, data, addEntry }) {
+  const p = gp && gp.probability, f = gp && gp.forecasts, risks = (gp && gp.risks) || [];
+  // snapshot today's probability once/day so a real trend builds over time
+  useEffect(() => {
+    if (!p) return;
+    const today = getTodayStr();
+    const snaps = data.goalSnapshots || [];
+    if (!snaps.some(s => s.date === today)) addEntry("goalSnapshots")({ id: Date.now(), date: today, pct: p.pct });
+    // eslint-disable-next-line
+  }, [p && p.pct]);
+  if (!p) return <Card><Empty icon="◎" title="Need a weight trend first" hint="Log your weight for a week or two — the probability and forecasts build on your real trend." /></Card>;
+  const snaps = (data.goalSnapshots || []).slice().sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+  const past = snaps.filter(s => s.date <= daysAgo(21))[0] || snaps[0];
+  const delta = past && past.pct != null ? p.pct - past.pct : null;
+  return (
+    <>
+      <Card title="Goal probability" sub="a transparent heuristic — not a trained model, not a guarantee">
+        <div className="gp-prob"><span className="gp-prob-num">{p.pct}%</span><span className="muted small">{delta != null ? `${delta > 0 ? "↑" : delta < 0 ? "↓" : "→"} ${delta > 0 ? "+" : ""}${delta}% vs ${formatShortDate(past.date)}` : "tracking starts now"} · confidence {p.confidence} <TierBadge tier="forecast" /></span></div>
+        <div className="gp-prob-bar"><div className="gp-prob-fill" style={{ width: `${p.pct}%` }} /></div>
+        <div style={{ marginTop: 10 }}>{p.inputs.map((i, k) => <div key={k} className="gp-stat-row"><span className="muted small">{i.label} <span style={{ opacity: .6 }}>({i.w})</span></span><span>{i.val}</span></div>)}</div>
+        <p className="muted small" style={{ marginTop: 10, lineHeight: 1.45 }}>Blends how your current trend projects onto the goal, your adherence, and whether the goal is biologically realistic. It moves as your data does.</p>
+      </Card>
+      {f && (
+        <Card title="Forecast" sub="if your current trend holds">
+          <div className="gp-stat-row"><span className="muted small">In 30 days</span><span>~{f.d30} kg <TierBadge tier="forecast" /></span></div>
+          <div className="gp-stat-row"><span className="muted small">In 90 days</span><span>~{f.d90} kg <TierBadge tier="forecast" /></span></div>
+          <div className="gp-stat-row"><span className="muted small">At target date</span><span>~{f.atGoalDate} kg vs {f.goalWeight} goal <TierBadge tier="forecast" /></span></div>
+          <p className="muted small" style={{ marginTop: 8, lineHeight: 1.45 }}>Straight projection of your ~{f.rate} kg/wk trend. Real trajectories curve — treat these as directional.</p>
+        </Card>
+      )}
+      <Card title="Risks" sub="flagged from your current data">
+        {risks.length ? risks.map(r => (
+          <div key={r.key} className="gp-risk">
+            <div className="gp-risk-top"><span className="gp-risk-name"><span className="gp-risk-dot" style={{ background: RISK_COLOR[r.level] }} />{r.label}</span><span className="gp-risk-level" style={{ color: RISK_COLOR[r.level] }}>{r.level}<TierBadge tier={r.tier} /></span></div>
+            <p className="muted small" style={{ lineHeight: 1.5, marginTop: 3 }}>{r.why}</p>
+          </div>
+        )) : <p className="muted small" style={{ lineHeight: 1.5 }}>No notable risks flagged right now — trajectory, recovery and pace all look within range. ✓</p>}
+      </Card>
+    </>
+  );
+}
+
+function GpStepper({ label, value, set, min, max, step, fmt, unit }) {
+  const dec = () => set(Math.max(min, +(value - step).toFixed(2)));
+  const inc = () => set(Math.min(max, +(value + step).toFixed(2)));
+  return (
+    <div className="gp-sim-row">
+      <span className="gp-sim-label">{label}</span>
+      <div className="gp-stepper">
+        <button onClick={dec} disabled={value <= min}>−</button>
+        <span className="gp-sim-val">{fmt ? fmt(value) : value}{unit || ""}</span>
+        <button onClick={inc} disabled={value >= max}>+</button>
+      </div>
+    </div>
+  );
+}
+
+function GoalSimulateTab({ gp, goals }) {
+  const cw = (gp && gp.currentWeight) || 75;
+  const baseProt = Math.min(2.4, Math.max(1.4, Math.round((((goals && goals.protein) || 1.8 * cw) / cw) * 5) / 5));
+  const baseSleep = Math.min(9, Math.max(5, Math.round(((goals && goals.profile && goals.profile.sleepNeedH) || 8) * 2) / 2));
+  const [cal, setCal] = useState(0);
+  const [cardio, setCardio] = useState(0);
+  const [prot, setProt] = useState(baseProt);
+  const [sleep, setSleep] = useState(baseSleep);
+  const sim = useMemo(() => simulateGoal({ gp, calDelta: cal, cardioPerWk: cardio, proteinGkg: prot, sleepH: sleep }), [gp, cal, cardio, prot, sleep]);
+  if (!gp || !gp.trajectory || gp.trajectory.projectedEnd == null) return <Card><Empty icon="◎" title="Need a weight trend first" hint="Log your weight for a week or two — the simulator projects changes onto your real trend." /></Card>;
+  return (
+    <>
+      <Card title="Simulate a change" sub="shift an input — see where you'd land at your goal date">
+        <GpStepper label="Calories / day" value={cal} set={setCal} min={-500} max={500} step={100} fmt={v => `${v > 0 ? "+" : ""}${v}`} />
+        <GpStepper label="Cardio sessions / wk" value={cardio} set={setCardio} min={0} max={7} step={1} fmt={v => `+${v}`} />
+        <GpStepper label="Protein" value={prot} set={setProt} min={1.4} max={2.4} step={0.2} unit=" g/kg" />
+        <GpStepper label="Sleep" value={sleep} set={setSleep} min={5} max={9} step={0.5} unit=" h" />
+        <button className="btn-ghost btn-sm" style={{ marginTop: 10 }} onClick={() => { setCal(0); setCardio(0); setProt(baseProt); setSleep(baseSleep); }}>Reset</button>
+      </Card>
+      {sim && (
+        <Card title="Projected outcome" sub="current trend vs these changes">
+          <div className="gp-sim-out">
+            <div className="gp-sim-col"><span className="muted small">Current trend</span><div className="gp-sim-big">{sim.baseProjected}<small> kg</small></div></div>
+            <span className="gp-sim-arrow">→</span>
+            <div className="gp-sim-col"><span className="muted small">With changes</span><div className="gp-sim-big" style={{ color: "var(--accent)" }}>{sim.simProjected}<small> kg</small></div></div>
+          </div>
+          <div style={{ marginTop: 6 }}>
+            <div className="gp-stat-row"><span className="muted small">Net energy shift</span><span>{sim.netDailyKcal > 0 ? "+" : ""}{sim.netDailyKcal} kcal/day</span></div>
+            <div className="gp-stat-row"><span className="muted small">Weight effect over {sim.weeksLeft} wks</span><span>{sim.deltaKg > 0 ? "+" : ""}{sim.deltaKg} kg <TierBadge tier="forecast" /></span></div>
+            <div className="gp-stat-row"><span className="muted small">vs {sim.goalWeight}kg goal</span><span>{sim.simGap > 0 ? "+" : ""}{sim.simGap} kg · {sim.closer}</span></div>
+          </div>
+          <div className="gp-sim-env"><b>{sim.env} environment</b> — {sim.envNote}</div>
+          {sim.changes.length > 0 && <p className="muted small" style={{ marginTop: 8 }}>Changing: {sim.changes.join(" · ")}.</p>}
+          <p className="muted small" style={{ marginTop: 8, lineHeight: 1.45 }}>Energy math is ~7700 kcal/kg over your time left; protein & sleep effects are directional, not precise. Confidence {sim.confidence}. A forecast, not a promise.</p>
+        </Card>
+      )}
+    </>
+  );
+}
+
+function GoalReportTab({ gp, data, addEntry, deleteEntry }) {
+  const [busy, setBusy] = useState(false);
+  const reports = (data.goalReports || []).slice().sort((a, b) => (b.date || "").localeCompare(a.date || "") || b.id - a.id);
+  async function generate() {
+    if (!gp || busy) return;
+    setBusy(true);
+    try {
+      const sys = "You are an elite, evidence-based physique coach writing a short weekly check-in from this athlete's computed data. Be specific and cite their actual numbers. Structure: 1) where they are vs plan, 2) adherence, 3) recovery, 4) their primary constraint, 5) the 30/90-day outlook, 6) then 2–4 recommended actions ranked highest-ROI first. Label estimates/forecasts as such; never present a projection as a fact. Keep it tight — no fluff, no markdown headers, short paragraphs.";
+      const text = await callClaude({ system: sys, conversationMessages: [{ role: "user", content: `Here is my data:\n${formatGoalText(gp)}\n\nWrite my weekly report.` }], maxTokens: 900 });
+      addEntry("goalReports")({ id: Date.now(), date: getTodayStr(), text: text || "Couldn't generate — try again." });
+      toast("◎ Report saved"); haptic(8);
+    } catch { toast("Couldn't generate — try again"); }
+    setBusy(false);
+  }
+  return (
+    <>
+      <Card title="Weekly coach report" sub="an AI read of your numbers + ranked next actions">
+        <button className="btn full" onClick={generate} disabled={busy || !gp}>{busy ? "Writing your report…" : "Generate this week's report"}</button>
+        <p className="muted small" style={{ marginTop: 8, lineHeight: 1.45 }}>Built from your trajectory, adherence, recovery, constraints and forecast. Educational coaching, not medical advice.</p>
+      </Card>
+      {reports.map(r => (
+        <Card key={r.id} action={<button className="btn-ghost btn-sm" onClick={() => deleteEntry("goalReports")(r.id)}>×</button>}>
+          <div className="muted small" style={{ marginBottom: 6, fontWeight: 600 }}>{formatShortDate(r.date)}</div>
+          <div className="gp-report-body">{r.text}</div>
+        </Card>
+      ))}
+    </>
+  );
+}
+
+
 // Full-screen sheet launched by the raised ＋. Shows logging options grouped by
 // intent; tapping one opens that existing form. Reuses every form component.
 function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, setData, initial, onClose }) {
@@ -5315,6 +5614,9 @@ function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, setData, 
     { title: "Skin", items: [
       { key: "skin", label: "Skin", icon: "✦", color: "#e89ab0" },
     ] },
+    { title: "Goal", items: [
+      { key: "goalplan", label: "Goal Plan", icon: "◎", color: "#7cc4a0" },
+    ] },
   ];
   const labelFor = k => { for (const g of groups) for (const it of g.items) if (it.key === k) return it.label; return "Log"; };
 
@@ -5331,6 +5633,7 @@ function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, setData, 
       case "nicotine": return <NicotineTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />;
       case "journal": return <JournalTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} setData={setData} />;
       case "skin": return <SkinSection data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} updateEntry={updateEntry} onSaveGoals={onSaveGoals} />;
+      case "goalplan": return <GoalPlanSection data={data} goals={goals} onSaveGoals={onSaveGoals} addEntry={addEntry} deleteEntry={deleteEntry} />;
       default: return null;
     }
   };

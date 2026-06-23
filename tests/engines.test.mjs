@@ -10,6 +10,7 @@ import { computeTraining, mapMuscles } from "../src/engines/training.js";
 import { computeSleep, estimateSleepNeed, sleepTST } from "../src/engines/sleep.js";
 import { computeRecovery } from "../src/engines/recovery.js";
 import { computeNicotineStats } from "../src/engines/nicotine.js";
+import { assessGoal, buildTrajectory, analyzeConstraints } from "../src/engines/goalplan.js";
 import { computeProteinDistribution } from "../src/engines/protein.js";
 import { computeSkin, detectRoutineConflicts } from "../src/engines/skin.js";
 import { estimateGlycemicLoad, dayGlycemicLoad } from "../src/engines/glycemic.js";
@@ -134,6 +135,20 @@ const brain = buildBrain(data, goals);
 ok("brain: builds with all engines", !!(brain.weight && brain.recovery && brain.sleepIntel && brain.energy && brain.training && brain.skin), 1);
 const txt = formatBrainText(brain);
 ok("brain: text has all sections", /== SLEEP/.test(txt) && /TDEE|ENERGY BALANCE/.test(txt) && /== TRAINING/.test(txt) && /== SKIN/.test(txt), 1);
+
+// ── goal plan ──
+const gpUnreal = assessGoal({ goalPlan: { startDate: "2026-03-01", targetDate: "2026-07-01", startWeight: 75, goalWeight: 85, experience: "intermediate" }, currentWeight: 75 });
+ok("goalplan: flags unrealistic bulk", gpUnreal.verdict === "unrealistic", gpUnreal.verdict);
+ok("goalplan: excess fat dominates unrealistic gain", gpUnreal.expectedFatKg[1] > gpUnreal.expectedMuscleKg[1], JSON.stringify(gpUnreal.expectedFatKg));
+ok("goalplan: suggests a realistic timeline", gpUnreal.realisticWeeks > 17, gpUnreal.realisticWeeks);
+const gpReal = assessGoal({ goalPlan: { startDate: "2026-03-01", targetDate: "2026-06-21", startWeight: 75, goalWeight: 78, experience: "intermediate" }, currentWeight: 75 });
+ok("goalplan: passes a sane lean bulk", gpReal.verdict === "realistic", gpReal.verdict);
+const gpLoss = assessGoal({ goalPlan: { startDate: "2026-03-01", targetDate: "2026-05-10", startWeight: 90, goalWeight: 82, experience: "intermediate" }, currentWeight: 90 });
+ok("goalplan: sustainable cut is realistic", gpLoss.verdict === "realistic" && gpLoss.dir === "loss", gpLoss.verdict);
+const traj = buildTrajectory({ goalPlan: { startDate: "2026-03-01", targetDate: "2026-06-21", startWeight: 75, goalWeight: 78 }, weightTrend: { current: 76.2, ratePerWeekKg: 0.15 }, today: "2026-04-05" });
+ok("goalplan: trajectory computes status + projection", ["on-track", "ahead", "behind"].includes(traj.status) && traj.projectedEnd != null, traj.status);
+const cons = analyzeConstraints({ data, goals, goalPlan: { freq: 4 }, recovery: { readiness: 70 } });
+ok("goalplan: constraints rank a primary lever", !!cons.primary && cons.levers.length >= 1, cons.levers.length);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
