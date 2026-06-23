@@ -24,6 +24,7 @@ import { proposeAdaptation } from "../src/engines/adaptation.js";
 import { computePhaseResult, blendRate, logDecision, evaluateDecisions } from "../src/engines/strategy.js";
 import { computeMacroTargets, macrosDiffer } from "../src/engines/macros.js";
 import { parseGoalMarkdown, buildRoadmapPhases } from "../src/engines/goalmd.js";
+import { computeCircadian, bioDayKey, bioDayNutrition } from "../src/engines/circadian.js";
 
 let pass = 0, fail = 0;
 const ok = (name, cond, got) => { if (cond) pass++; else { fail++; console.log("  ✗", name, "—", JSON.stringify(got)); } };
@@ -309,6 +310,23 @@ ok("goalplan: constraints rank a primary lever", !!cons.primary && cons.levers.l
   ok("interpretPlan: provenance marks plan vs derived", interp.provenance.goalWeight === "plan" && interp.provenance.startDate === "derived" && interp.provenance.calories === "derived", interp.provenance);
   ok("interpretPlan: produces a reality check (never a dead end)", interp.reality && interp.reality.verdict === "realistic" && interp.reality.reqKgWk > 0, interp.reality && interp.reality.verdict);
   ok("interpretPlan: a goal-only plan still completes", (() => { const g = interpretPlan(parseGoalMarkdown("Goal: lean bulk from 74kg to 80kg"), { currentWeight: 74, profile: { sex: "male", age: 22, heightCm: 178 }, today: "2026-06-23" }); return g.goalPlan.targetDate != null && g.goalPlan.phases.length >= 1; })(), 1);
+
+  // ── Circadian Engine ──
+  {
+    const sleep = [];
+    for (let i = 0; i < 20; i++) sleep.push({ date: `2026-06-${String(i + 1).padStart(2, "0")}`, bedtime: i % 2 ? "03:10" : "03:20", wakeTime: "11:00", quality: "Good" });
+    const c = computeCircadian({ sleep }, "2026-06-23");
+    ok("circadian: derives a ~3:15 AM biological-day end from sleep onset", c.ready && c.biologicalDayEnd === "3:15 AM" && c.biologicalDayStart === "11:00 AM", [c.biologicalDayEnd, c.biologicalDayStart]);
+    ok("circadian: boundary is calculated + confidence high on consistent data", c.tier === "calc" && c.confidence === "high" && c.sleepConsistency > 90, [c.confidence, c.sleepConsistency]);
+    const t = (d, h, m) => new Date(`2026-06-${d}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00`).getTime();
+    ok("circadian: 11PM, 1AM, 2:30AM all map to the SAME biological day", bioDayKey(t("01", 23, 0), c) === "2026-06-01" && bioDayKey(t("02", 1, 0), c) === "2026-06-01" && bioDayKey(t("02", 2, 30), c) === "2026-06-01", "grouped");
+    ok("circadian: after the boundary it's a new biological day", bioDayKey(t("02", 4, 0), c) === "2026-06-02", bioDayKey(t("02", 4, 0), c));
+    const diet = [{ date: "2026-06-01", time: "23:00", calories: 1000, protein: 80 }, { date: "2026-06-02", time: "01:00", calories: 1100, protein: 70 }, { date: "2026-06-02", time: "02:30", calories: 900, protein: 0 }];
+    const bn = bioDayNutrition(diet, c);
+    ok("circadian: nutrition sums across the wrap → 3000 kcal / 150g protein in one bio-day", bn["2026-06-01"] && bn["2026-06-01"].calories === 3000 && bn["2026-06-01"].protein === 150, bn["2026-06-01"]);
+    const none = computeCircadian({ sleep: [] }, "2026-06-23");
+    ok("circadian: no sleep data → not ready, low confidence, never hardcodes midnight", none.ready === false && none.confidence === "low" && none.boundaryMin == null, none.ready);
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

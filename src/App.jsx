@@ -15,6 +15,7 @@ import { planFueling, reconcileFueling, sleepWindow, SESSION_TYPES } from "./eng
 import { computeGoalPlan, formatGoalText, simulateGoal, analyzeRoadmap, assessGoal, interpretPlan } from "./engines/goalplan";
 import { computePhysiologyState } from "./engines/physiology";
 import { getPhases, activePhase, applyPhaseChange, generatePhases } from "./engines/phases";
+import { computeCircadian, todaysBioNutrition } from "./engines/circadian";
 import { proposeAdaptation } from "./engines/adaptation";
 import { computePhaseResult, summarizeDecisions, evaluateDecisions, logDecision } from "./engines/strategy";
 import { computeMacroTargets, macrosDiffer } from "./engines/macros";
@@ -6106,6 +6107,30 @@ function GoalPlanSection({ data, goals, onSaveGoals, addEntry, deleteEntry }) {
               <p className="small" style={{ lineHeight: 1.6, margin: 0 }}>{sumBits.join(" ")}</p>
             </Card>
           )}
+
+          {(() => {
+            const circ = computeCircadian(data, getTodayStr());
+            const confColor = { high: "#8fd989", moderate: "#f9c97e", low: "#f47e6e" };
+            if (!circ.ready) return (
+              <Card title="Biological day" sub="your day, by sleep — not midnight" action={<TierBadge tier="calc" />}>
+                <Empty icon="◐" title="Learning your rhythm" hint={circ.reason} />
+              </Card>
+            );
+            const bio = todaysBioNutrition(data.diet, circ);
+            const calToday = (data.diet || []).filter(d => d.date === getTodayStr()).reduce((a, d) => a + (d.calories || 0), 0);
+            return (
+              <Card title="Biological day" sub="your day runs wake → sleep, not midnight" action={<span style={{ display: "flex", gap: 6, alignItems: "center" }}><span className="small" style={{ color: confColor[circ.confidence] }}>{circ.confidence}</span><TierBadge tier="calc" /></span>}>
+                <div className="gp-stat-row"><span className="muted small">Day window</span><span>{circ.biologicalDayStart} → {circ.biologicalDayEnd}</span></div>
+                <div className="gp-stat-row"><span className="muted small">Avg sleep / wake</span><span>{circ.avgSleepTime} / {circ.avgWakeTime}</span></div>
+                <div className="gp-stat-row"><span className="muted small">Sleep consistency</span><span>{circ.sleepConsistency}/100</span></div>
+                <div style={{ borderTop: "1px solid var(--line)", marginTop: 8, paddingTop: 8 }}>
+                  <div className="gp-stat-row"><span className="muted small">This biological day</span><span>{bio.calories} kcal · {bio.protein}g P <TierBadge tier="measured" /></span></div>
+                  {Math.abs(bio.calories - calToday) > 50 && <p className="muted small" style={{ marginTop: 4, lineHeight: 1.45 }}>Calendar-day total is {calToday} kcal — the difference is late-night meals grouped into the right biological day (anything before {circ.biologicalDayEnd} counts toward the previous day).</p>}
+                </div>
+                <p className="muted small" style={{ marginTop: 8, lineHeight: 1.45 }}>Boundary is derived from your last {circ.windowDays} days of sleep logs and shifts as your schedule changes — it's calculated, not exact.</p>
+              </Card>
+            );
+          })()}
 
           {t && (
             <Card title="Goal trajectory" sub="expected path vs your actual trend" action={<span className="gp-verdict" style={{ fontSize: 12, padding: "2px 10px", color: (STATUS[t.status] || STATUS["no-data"])[1], borderColor: `${(STATUS[t.status] || STATUS["no-data"])[1]}55` }}>{(STATUS[t.status] || STATUS["no-data"])[0]}</span>}>

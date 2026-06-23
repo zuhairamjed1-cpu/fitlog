@@ -10,6 +10,7 @@ import { computeEnergyBalance } from "../engines/energy.js";
 import { computeTraining } from "../engines/training.js";
 import { computeSleep, estimateSleepNeed, sleepTST } from "../engines/sleep.js";
 import { computeRecovery } from "../engines/recovery.js";
+import { computeCircadian, todaysBioNutrition, bioDayKey } from "../engines/circadian.js";
 import { computeNicotineStats } from "../engines/nicotine.js";
 import { computeSkin } from "../engines/skin.js";
 import { computeCarbTiming } from "../engines/carbtiming.js";
@@ -392,6 +393,16 @@ export function buildBrain(data, goals) {
   return {
     // Real-time awareness
     now: { iso: now.toISOString(), date: today, dayName: todayName, time: timeNow, hour, timeOfDay, isWeekend },
+    circadian: (() => {
+      const c = computeCircadian(data, today);
+      const bio = todaysBioNutrition(data.diet, c);
+      return {
+        ready: c.ready, tier: c.tier, confidence: c.confidence,
+        biologicalDayStart: c.biologicalDayStart, biologicalDayEnd: c.biologicalDayEnd,
+        avgSleepTime: c.avgSleepTime, avgWakeTime: c.avgWakeTime, sleepConsistency: c.sleepConsistency,
+        bioDayNutrition: c.ready ? { calories: bio.calories, protein: bio.protein, carbs: bio.carbs, fat: bio.fat, meals: bio.meals } : null,
+      };
+    })(),
     goal: goals.goal,
     targets: { calories: goals.calories, protein: goals.protein, carbs: goals.carbs, fat: goals.fat, waterMl: goals.waterGoalMl },
     todayProgress: {
@@ -478,6 +489,10 @@ export function formatBrainText(brain) {
   lines.push(`Targets — ${brain.targets.calories}kcal | P${brain.targets.protein}g C${brain.targets.carbs}g F${brain.targets.fat}g | water ${brain.targets.waterMl}ml`);
   if (brain.plan) {
     lines.push(`Plan: ${brain.plan.split} | Today: ${brain.plan.todayLabel} | Tomorrow (${brain.plan.tomorrowName}): ${brain.plan.tomorrowLabel} | Training days: ${brain.plan.trainingDays.join(", ")}`);
+  }
+  if (brain.circadian && brain.circadian.ready) {
+    const cc = brain.circadian;
+    lines.push(`Biological day (Calculated, ${cc.confidence} confidence): runs ${cc.biologicalDayStart} → ${cc.biologicalDayEnd} (avg sleep ${cc.avgSleepTime}, wake ${cc.avgWakeTime}, consistency ${cc.sleepConsistency}/100). Late-night meals before ${cc.biologicalDayEnd} count toward the prior day. Prefer biological-day totals over calendar days.${cc.bioDayNutrition ? ` This biological day so far: ${cc.bioDayNutrition.calories}kcal, ${cc.bioDayNutrition.protein}g protein across ${cc.bioDayNutrition.meals} meals.` : ""}`);
   }
 
   // ─── ABOUT THE USER (profile + strategy) ─────────────────────────────────
