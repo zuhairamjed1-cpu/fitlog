@@ -11,6 +11,7 @@ import { computeTraining } from "../engines/training.js";
 import { computeSleep, estimateSleepNeed, sleepTST } from "../engines/sleep.js";
 import { computeRecovery } from "../engines/recovery.js";
 import { computeCircadian, todaysBioNutrition, bioDayKey } from "../engines/circadian.js";
+import { computeVolume } from "../engines/volume.js";
 import { computeNicotineStats } from "../engines/nicotine.js";
 import { computeSkin } from "../engines/skin.js";
 import { computeCarbTiming } from "../engines/carbtiming.js";
@@ -393,14 +394,24 @@ export function buildBrain(data, goals) {
   return {
     // Real-time awareness
     now: { iso: now.toISOString(), date: today, dayName: todayName, time: timeNow, hour, timeOfDay, isWeekend },
-    circadian: (() => {
-      const c = computeCircadian(data, today);
+    circadian: (() => {      const c = computeCircadian(data, today);
       const bio = todaysBioNutrition(data.diet, c);
       return {
         ready: c.ready, tier: c.tier, confidence: c.confidence,
         biologicalDayStart: c.biologicalDayStart, biologicalDayEnd: c.biologicalDayEnd,
         avgSleepTime: c.avgSleepTime, avgWakeTime: c.avgWakeTime, sleepConsistency: c.sleepConsistency,
         bioDayNutrition: c.ready ? { calories: bio.calories, protein: bio.protein, carbs: bio.carbs, fat: bio.fat, meals: bio.meals } : null,
+      };
+    })(),
+    weeklyVolume: (() => {
+      const v = computeVolume(data, goals, today);
+      if (!v.ready) return null;
+      return {
+        weekStart: v.weekStart,
+        belowTarget: v.muscles.filter(m => m.target && m.thisWeek < m.target).map(m => ({ muscle: m.label, sets: m.thisWeek, target: m.target })),
+        weakPoints: v.weakPoints.map(w => ({ muscle: w.label, sets: w.sets })),
+        highest: v.summary.highest, lowest: v.summary.lowest, totalSets: v.summary.totalSets, musclesTrained: v.summary.musclesTrained,
+        pushPullDiff: v.symmetry.pushPullDiff, upperLowerDiff: v.symmetry.upperLowerDiff,
       };
     })(),
     goal: goals.goal,
@@ -493,6 +504,12 @@ export function formatBrainText(brain) {
   if (brain.circadian && brain.circadian.ready) {
     const cc = brain.circadian;
     lines.push(`Biological day (Calculated, ${cc.confidence} confidence): runs ${cc.biologicalDayStart} → ${cc.biologicalDayEnd} (avg sleep ${cc.avgSleepTime}, wake ${cc.avgWakeTime}, consistency ${cc.sleepConsistency}/100). Late-night meals before ${cc.biologicalDayEnd} count toward the prior day. Prefer biological-day totals over calendar days.${cc.bioDayNutrition ? ` This biological day so far: ${cc.bioDayNutrition.calories}kcal, ${cc.bioDayNutrition.protein}g protein across ${cc.bioDayNutrition.meals} meals.` : ""}`);
+  }
+  if (brain.weeklyVolume) {
+    const wv = brain.weeklyVolume;
+    const bt = wv.belowTarget.length ? ` Below goal-plan target: ${wv.belowTarget.map(b => `${b.muscle} ${b.sets}/${b.target}`).join(", ")}.` : "";
+    const wk = wv.weakPoints.length ? ` Low/untrained (<6 sets): ${wv.weakPoints.slice(0, 4).map(w => `${w.muscle} ${w.sets}`).join(", ")}.` : "";
+    lines.push(`Weekly muscle volume (Estimated, Mon–Sun hard sets): ${wv.totalSets} total across ${wv.musclesTrained}/17 muscles${wv.highest ? `, most ${wv.highest.label} (${wv.highest.sets})` : ""}. Push−pull ${wv.pushPullDiff > 0 ? "+" : ""}${wv.pushPullDiff}, upper−lower ${wv.upperLowerDiff > 0 ? "+" : ""}${wv.upperLowerDiff}.${bt}${wk} Reference this when the user asks about training volume or weak points; note these set→muscle counts are estimates.`);
   }
 
   // ─── ABOUT THE USER (profile + strategy) ─────────────────────────────────

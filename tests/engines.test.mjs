@@ -25,6 +25,7 @@ import { computePhaseResult, blendRate, logDecision, evaluateDecisions } from ".
 import { computeMacroTargets, macrosDiffer } from "../src/engines/macros.js";
 import { parseGoalMarkdown, buildRoadmapPhases } from "../src/engines/goalmd.js";
 import { computeCircadian, bioDayKey, bioDayNutrition } from "../src/engines/circadian.js";
+import { computeVolume, mapExercise, classifyVolume, volumeTrend, MUSCLE_KEYS } from "../src/engines/volume.js";
 
 let pass = 0, fail = 0;
 const ok = (name, cond, got) => { if (cond) pass++; else { fail++; console.log("  ✗", name, "—", JSON.stringify(got)); } };
@@ -327,6 +328,30 @@ ok("goalplan: constraints rank a primary lever", !!cons.primary && cons.levers.l
     const none = computeCircadian({ sleep: [] }, "2026-06-23");
     ok("circadian: no sleep data → not ready, low confidence, never hardcodes midnight", none.ready === false && none.confidence === "low" && none.boundaryMin == null, none.ready);
   }
+
+  // ── Weekly Volume Engine ──
+  // ── Weekly Muscle Volume Engine ──
+  {
+    ok("volume: bench → chest primary, triceps+front delts secondary", (() => { const m = mapExercise("Bench Press"); return m.primary[0] === "chest" && m.secondary.includes("triceps") && m.secondary.includes("frontDelts"); })(), 1);
+    ok("volume: plural names map (Pull Ups→lats, Curls→biceps, Rows→back)", mapExercise("Pull Ups").primary[0] === "lats" && mapExercise("Barbell Curls").primary[0] === "biceps" && mapExercise("Cable Rows").primary.includes("upperBack"), 1);
+    ok("volume: classification bands", classifyVolume(3).label === "Very Low" && classifyVolume(8).label === "Maintenance" && classifyVolume(12).label === "Productive" && classifyVolume(18).label === "High" && classifyVolume(24).label === "Extremely High", 1);
+    const today = "2026-06-24";
+    const data = { exercise: [
+      { date: "2026-06-22", text: "Bench Press\n100x5\n100x5\n100x5\n100x5" },     // chest +4, tri/fdelt +2 each
+      { date: "2026-06-23", text: "Squat\n140x5\n140x5\n140x5" },                  // quads +3
+      { date: "2026-06-24", text: "Lateral Raise\n12x15\n12x15\n12x15\n12x15" },    // sideDelts +4
+      { date: "2026-06-16", text: "Bench Press\n100x5\n100x5" },                    // last week chest +2
+    ] };
+    const v = computeVolume(data, { goalPlan: { volumeTargets: { chest: 18 } } }, today);
+    ok("volume: weekly set counts (Mon–Sun), primary 1.0 / secondary 0.5", v.weeklyVolume.chest === 4 && v.weeklyVolume.quads === 3 && v.weeklyVolume.sideDelts === 4 && v.weeklyVolume.triceps === 2, v.weeklyVolume);
+    ok("volume: change vs last week + goal target/progress", (() => { const c = v.muscles.find(m => m.key === "chest"); return c.lastWeek === 2 && c.change === 2 && c.target === 18 && c.progress === 22; })(), 1);
+    ok("volume: summary highest/lowest/total/trained", v.summary.highest.label === "Chest" || v.summary.highest.label === "Side Delts" ? v.summary.totalSets > 0 && v.summary.musclesTrained >= 3 : false, v.summary);
+    ok("volume: symmetry push/pull + upper/lower", typeof v.symmetry.push === "number" && typeof v.symmetry.pushPullDiff === "number" && v.symmetry.lower >= 3, v.symmetry);
+    ok("volume: weak points list muscles under maintenance", Array.isArray(v.weakPoints) && v.weakPoints.every(w => w.sets < 6), 1);
+    ok("volume: warmup sets (RPE<5) are excluded", (() => { const d = { exercise: [{ date: "2026-06-22", text: "Bench Press\n60x10 @3\n60x10 @4\n100x5 @8\n100x5 @9" }] }; const r = computeVolume(d, {}, today); return r.weeklyVolume.chest === 2; })(), 1);
+    ok("volume: trend returns N weekly buckets oldest→newest", (() => { const tr = volumeTrend(data, "chest", 4, today); return tr.length === 4 && tr[3].sets === 4 && tr[2].sets === 2; })(), 1);
+    ok("volume: no workouts → not ready (honest empty state)", computeVolume({ exercise: [] }, {}, today).ready === false, 1);
+}
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
