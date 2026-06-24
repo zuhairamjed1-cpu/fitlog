@@ -22,6 +22,7 @@ import { computeHistoricalPhases } from "../src/engines/historyPhases.js";
 import { suggestTransitions, normalizePhaseKind } from "../src/engines/transitions.js";
 import { computeRecoveryCapacity } from "../src/engines/recoveryCapacity.js";
 import { computeFatigue } from "../src/engines/fatigue.js";
+import { newPhase, derivedPhases, activePhase as activePhaseV3, lensFor, alignmentFor, insertPhaseOp, deletePhaseOp, movePhaseOp, duplicatePhaseOp, planSpanWeeks, PHASE_TEMPLATES } from "../src/engines/phaseV3.js";
 import { getPhases, activePhase, phaseReqRate, generatePhases } from "../src/engines/phases.js";
 import { computePhysiologyState, computeRecoveryDebt } from "../src/engines/physiology.js";
 import { proposeAdaptation } from "../src/engines/adaptation.js";
@@ -418,6 +419,29 @@ ok("goalplan: constraints rank a primary lever", !!cons.primary && cons.levers.l
     ok("fatigue: acute readiness is Green/Amber/Red", ["Green", "Amber", "Red"].includes(f.readiness), f.readiness);
     ok("fatigue: <3 workouts → not ready (honest)", computeFatigue({ exercise: [{ date: "2026-06-22", text: "Bench\n100x5" }] }, goals, "2026-06-24").ready === false, 1);
 }
+}
+
+  // Goal Plan V3: Phase engine (deterministic derivation, lens, alignment, ops)
+  {
+    const profile = { sex: "male", age: 25, heightCm: 178, weightKg: 80 };
+    const phases = [{ ...newPhase("leanbulk"), id: "a", durationWeeks: 12 }, { ...newPhase("minicut"), id: "b", durationWeeks: 4 }, { ...newPhase("leanbulk"), id: "c", durationWeeks: 12 }];
+    const gp = { startDate: "2026-01-05", startWeight: 80, phases };
+    const d = derivedPhases(gp, profile, "2026-06-24");
+    ok("phaseV3: dates chain deterministically from startDate", d[0].start === "2026-01-05" && d[1].start === d[0].end && d[2].start === d[1].end, [d[0].end, d[1].start]);
+    ok("phaseV3: bodyweight projects across phases (start = previous end)", d[1].startWeight === d[0].endWeight && d[2].startWeight === d[1].endWeight, [d[0].endWeight, d[1].startWeight]);
+    ok("phaseV3: macros from projected weight + template (bulk surplus, cut deficit)", d[0].calories > d[0].maintenance && d[1].calories < d[1].maintenance && d[0].protein > 0 && d[0].carbs > 0 && d[0].fat > 0, [d[0].calories, d[0].maintenance]);
+    ok("phaseV3: active phase = the one whose derived range contains today", activePhaseV3(d, "2026-06-24").id === "c" && activePhaseV3(d, "2026-06-24").status === "active", activePhaseV3(d, "2026-06-24").id);
+    ok("phaseV3: insert shifts every later phase automatically", (() => { const p2 = insertPhaseOp(phases, 1, "cut"); const d2 = derivedPhases({ ...gp, phases: p2 }, profile, "2026-06-24"); return d2.length === 4 && d2[1].type === "cut" && d2[2].start === d2[1].end && d2[3].start === d2[2].end; })(), 1);
+    ok("phaseV3: delete / move / duplicate are pure and re-derive cleanly", (() => { const del = deletePhaseOp(phases, "b"); const mv = movePhaseOp(phases, 0, 2); const dup = duplicatePhaseOp(phases, "a"); return del.length === 2 && mv[2].id === "a" && dup.length === 4 && dup[1].id !== "a"; })(), 1);
+    ok("phaseV3: plan span = sum of phase durations (weeks)", planSpanWeeks(gp) === 28, planSpanWeeks(gp));
+    ok("phaseV3: lens carries phase thresholds (overridable)", (() => { const l = lensFor({ type: "minicut" }); return l.recoveryFloor === 65 && l.fatigueCeiling === 50 && l.dir === "loss" && l.proteinTarget === 2.4; })(), 1);
+    const lb = d.find(p => p.type === "leanbulk");
+    const mc = derivedPhases({ ...gp, phases: [newPhase("minicut")] }, profile, "2026-06-24")[0];
+    const aLB = alignmentFor(lb, { actualRateKgWk: 0.2, proteinGkg: 2.0, recovery: 62, fatigue: 55 });
+    const aMC = alignmentFor(mc, { actualRateKgWk: 0.2, proteinGkg: 2.0, recovery: 62, fatigue: 55 });
+    ok("phaseV3: ALIGNMENT - identical metrics read differently per phase (the lens)", aLB.verdict === "On Track" && aMC.verdict !== "On Track" && aLB.criteria[0].status === "good" && aMC.criteria[0].status !== "good", [aLB.verdict, aMC.verdict]);
+    ok("phaseV3: alignment degrades to unknown + no confidence when data thin", (() => { const a = alignmentFor(lb, {}); return a.criteria.every(c => c.status === "unknown") && a.confidence === "none"; })(), 1);
+    ok("phaseV3: 8 phase templates available", Object.keys(PHASE_TEMPLATES).length === 8 && PHASE_TEMPLATES.leanbulk && PHASE_TEMPLATES.strength && PHASE_TEMPLATES.hypertrophy, Object.keys(PHASE_TEMPLATES).length);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

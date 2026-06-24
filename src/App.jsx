@@ -21,6 +21,7 @@ import { computeHistoricalPhases } from "./engines/historyPhases";
 import { suggestTransitions } from "./engines/transitions";
 import { computeRecoveryCapacity } from "./engines/recoveryCapacity";
 import { computeFatigue } from "./engines/fatigue";
+import { PHASE_TEMPLATES, TEMPLATE_LIST, templateFor, newPhase, derivedPhases, activePhase as activePhaseV3, lensFor, alignmentFor, planSpanWeeks, planEndDate, addPhaseOp, insertPhaseOp, deletePhaseOp, duplicatePhaseOp, movePhaseOp, updatePhaseOp } from "./engines/phaseV3";
 import { ANTERIOR_POLY, POSTERIOR_POLY } from "./anatomyData";
 import { proposeAdaptation } from "./engines/adaptation";
 import { computePhaseResult, summarizeDecisions, evaluateDecisions, logDecision } from "./engines/strategy";
@@ -6499,6 +6500,561 @@ function PhaseTransitionCard({ data, goals }) {
   );
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// GOAL PLAN V3 — the planning brain. The active phase is the lens through which
+// every metric, trajectory, and report is interpreted. Fully replaces the old
+// Goal Plan. Phases are dynamic (durationWeeks; dates derived deterministically).
+// ═══════════════════════════════════════════════════════════════════════════
+
+const STATUS_DOT = { good: "#8fd989", warn: "#f9c97e", bad: "#f47e6e", unknown: "#5a6472" };
+const PHASE_TYPE_COLOR = { leanbulk: "#8fd989", bulk: "#5cc8df", minicut: "#f0a868", cut: "#f47e6e", maintenance: "#7d8aa0", recomp: "#a78bda", strength: "#e0b0ff", hypertrophy: "#8fd989" };
+const ptColor = t => PHASE_TYPE_COLOR[t] || "var(--accent)";
+
+// Current behaviour, measured from logs — handed to the lens for interpretation.
+function useCurrentMetrics(data, goals, activeP) {
+  return useMemo(() => {
+    const today = getTodayStr();
+    const m = { actualRateKgWk: null, proteinGkg: null, recovery: null, fatigue: null, readiness: null, weightNow: null };
+    const bw = (goals.profile && goals.profile.weightKg) ? parseFloat(goals.profile.weightKg) : null;
+    // actual weight rate within the active phase window
+    const ws = (data.weight || []).filter(w => w && w.date && (w.kg != null || w.weight != null)).map(w => ({ date: w.date, kg: w.kg != null ? w.kg : w.weight })).sort((a, b) => a.date.localeCompare(b.date));
+    if (ws.length) m.weightNow = ws[ws.length - 1].kg;
+    if (activeP && ws.length >= 2) {
+      const inPhase = ws.filter(w => w.date >= activeP.start && w.date <= today);
+      const span = inPhase.length >= 2 ? inPhase : ws.slice(-4);
+      if (span.length >= 2) { const wks = Math.max(0.5, (new Date(span[span.length - 1].date) - new Date(span[0].date)) / 6048e5); m.actualRateKgWk = +(((span[span.length - 1].kg - span[0].kg) / wks)).toFixed(2); }
+    }
+    // protein g/kg over last 7d
+    const wkAgo = (() => { const d = new Date(today + "T00:00:00"); d.setDate(d.getDate() - 6); return localDateStr(d); })();
+    const diet = (data.diet || []).filter(d => d && d.date && d.date >= wkAgo);
+    if (diet.length && (m.weightNow || bw)) { const byDay = {}; diet.forEach(e => (byDay[e.date] = (byDay[e.date] || 0) + (e.protein || 0))); const days = Object.values(byDay); const avgP = days.reduce((s, x) => s + x, 0) / days.length; m.proteinGkg = +(avgP / (m.weightNow || bw)).toFixed(1); }
+    const rec = computeRecoveryCapacity(data, goals, today); if (rec.ready) m.recovery = rec.score;
+    const fat = computeFatigue(data, goals, today); if (fat.ready) { m.fatigue = fat.finalFatigue; m.readiness = fat.readiness; }
+    return m;
+  }, [data, goals, activeP]);
+}
+
+function GoalPlanV3({ data, goals, onSaveGoals, addEntry, deleteEntry }) {
+  const gp = goals.goalPlanV3 || null;
+  const hasPlan = !!(gp && gp.active && gp.phases && gp.phases.length);
+  const [screen, setScreen] = useState(hasPlan ? "plan" : "entry");
+  const [tab, setTab] = useState("overview");
+
+  const apply = (plan) => { onSaveGoals({ ...goals, goalPlanV3: { ...plan, active: true } }); setScreen("plan"); setTab("overview"); toast("✦ Plan applied"); haptic(12); };
+  const replace = () => { setScreen("entry"); };
+
+  if (screen === "entry") return <V3Entry onBuild={() => setScreen("build")} onImport={() => setScreen("import")} hasPlan={hasPlan} onBack={hasPlan ? () => setScreen("plan") : null} />;
+  if (screen === "build") return <V3Build goals={goals} onApply={apply} onCancel={() => setScreen(hasPlan ? "plan" : "entry")} />;
+  if (screen === "import") return <V3Import goals={goals} onApply={apply} onCancel={() => setScreen(hasPlan ? "plan" : "entry")} />;
+  if (screen === "phases") return <V3PhaseManager gp={gp} goals={goals} onSave={p => { onSaveGoals({ ...goals, goalPlanV3: { ...gp, ...p } }); setScreen("plan"); }} onCancel={() => setScreen("plan")} />;
+
+  const derived = derivedPhases(gp, goals.profile || {}, getTodayStr());
+  const activeP = activePhaseV3(derived, getTodayStr());
+
+  return (
+    <div className="gp-scope stack">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+        <div className="gp-brand"><span className="gp-mark" />Goal Plan</div>
+        <span style={{ display: "flex", gap: 14 }}>
+          <button onClick={() => setScreen("phases")} style={{ background: "none", border: "none", color: "var(--accent)", fontSize: 13, fontWeight: 600, cursor: "pointer", padding: 0 }}>Edit phases</button>
+          <button onClick={replace} style={{ background: "none", border: "none", color: "var(--text-2)", fontSize: 13, cursor: "pointer", padding: 0 }}>Replace</button>
+        </span>
+      </div>
+
+      <div className="skin-tabs" style={{ marginBottom: 4 }}>
+        {[["overview", "Goal Overview"], ["trajectory", "Trajectory"], ["report", "Report"]].map(([k, l]) => (
+          <button key={k} className={`skin-tab ${tab === k ? "on" : ""}`} onClick={() => { setTab(k); haptic(6); }}>{l}</button>
+        ))}
+      </div>
+
+      {tab === "overview" && <V3Overview gp={gp} derived={derived} activeP={activeP} data={data} goals={goals} />}
+      {tab === "trajectory" && <V3Trajectory gp={gp} derived={derived} activeP={activeP} data={data} goals={goals} />}
+      {tab === "report" && <V3Report gp={gp} derived={derived} activeP={activeP} data={data} goals={goals} />}
+    </div>
+  );
+}
+
+// ── ENTRY — exactly two cards, zero analytics ──
+function V3Entry({ onBuild, onImport, hasPlan, onBack }) {
+  return (
+    <div className="gp-scope stack">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div className="gp-brand"><span className="gp-mark" />Goal Plan</div>
+        {onBack && <button onClick={onBack} style={{ background: "none", border: "none", color: "var(--text-2)", fontSize: 13, cursor: "pointer" }}>Cancel</button>}
+      </div>
+      <Card title="Build Plan On Website" sub="Define your goal and FitLog builds the phase structure">
+        <p className="muted small" style={{ lineHeight: 1.5, marginBottom: 12 }}>Set your start and goal weight and a target date. FitLog creates a starting phase you can shape in the Phase Manager — add, insert, reorder, and tune every phase.</p>
+        <button className="btn-primary" style={{ width: "100%" }} onClick={onBuild}>Build a plan →</button>
+      </Card>
+      <Card title="Import Markdown Plan" sub="Already have a plan written up? Bring it in">
+        <p className="muted small" style={{ lineHeight: 1.5, marginBottom: 12 }}>Upload or paste a markdown plan. FitLog parses the phases, dates, calories, macros, and targets, shows you an analysis, and only applies it when you say so.</p>
+        <button className="btn-primary" style={{ width: "100%" }} onClick={onImport}>Import markdown →</button>
+      </Card>
+    </div>
+  );
+}
+
+// ── BUILD — minimal: start/goal/target → seed phase(s) → refine in Phase Manager ──
+function V3Build({ goals, onApply, onCancel }) {
+  const prof = goals.profile || {};
+  const [sw, setSw] = useState(prof.weightKg || "");
+  const [gw, setGw] = useState("");
+  const [date, setDate] = useState(() => { const d = new Date(); d.setMonth(d.getMonth() + 4); return localDateStr(d); });
+  const today = getTodayStr();
+  const valid = sw && gw && date && date > today;
+  const build = () => {
+    const start = parseFloat(sw), goal = parseFloat(gw);
+    const weeks = Math.max(1, Math.round((new Date(date) - new Date(today)) / 6048e5));
+    const dir = Math.abs(goal - start) < 0.5 ? "maintain" : goal > start ? "gain" : "loss";
+    const type = dir === "gain" ? "leanbulk" : dir === "loss" ? "cut" : "maintenance";
+    const phases = [{ ...newPhase(type), durationWeeks: weeks }];
+    onApply({ source: "build", goalType: type, startDate: today, startWeight: start, goalWeight: goal, phases });
+  };
+  return (
+    <div className="gp-scope stack">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><div className="gp-brand"><span className="gp-mark" />Build Plan</div><button onClick={onCancel} style={{ background: "none", border: "none", color: "var(--text-2)", fontSize: 13, cursor: "pointer" }}>Cancel</button></div>
+      <Card title="Your goal" sub="the starting point — refine phases after">
+        <div className="field-grid three">
+          <label>Start weight (kg)<input type="number" inputMode="decimal" value={sw} onChange={e => setSw(e.target.value)} placeholder="80" /></label>
+          <label>Goal weight (kg)<input type="number" inputMode="decimal" value={gw} onChange={e => setGw(e.target.value)} placeholder="85" /></label>
+          <label>Target date<input type="date" value={date} onChange={e => setDate(e.target.value)} /></label>
+        </div>
+        <button className="btn-primary" style={{ width: "100%", marginTop: 12, opacity: valid ? 1 : 0.5 }} disabled={!valid} onClick={build}>Create plan & open phases →</button>
+        <p className="muted small" style={{ marginTop: 8 }}>This seeds one phase. You'll shape the full roadmap (add a cut, mini-cut, maintenance, etc.) in the Phase Manager.</p>
+      </Card>
+    </div>
+  );
+}
+
+// ── IMPORT — parse → Plan Analysis → Apply ──
+function mdToV3Phases(parsed, today) {
+  const phs = (parsed && parsed.phases) || [];
+  return phs.map(p => {
+    let weeks = p.weeks || null;
+    if (!weeks && p.startDate && p.endDate) weeks = Math.max(1, Math.round((new Date(p.endDate) - new Date(p.startDate)) / 6048e5));
+    const tpl = templateFor(p.type);
+    return { ...newPhase(p.type || "leanbulk"), name: p.name || tpl.label, durationWeeks: weeks || tpl.weeks, calories: p.calories != null ? p.calories : null };
+  });
+}
+function V3Import({ goals, onApply, onCancel }) {
+  const [text, setText] = useState("");
+  const [parsed, setParsed] = useState(null);
+  const today = getTodayStr();
+  const analyze = () => { const p = parseGoalMarkdown(text); setParsed(p); haptic(8); };
+  const onFile = e => { const f = e.target.files && e.target.files[0]; if (!f) return; const r = new FileReader(); r.onload = () => setText(String(r.result || "")); r.readAsText(f); };
+  const phases = parsed ? mdToV3Phases(parsed, today) : [];
+  const startW = (parsed && parsed.meta && parsed.meta.startWeight) || (goals.profile && goals.profile.weightKg ? parseFloat(goals.profile.weightKg) : null);
+  const gpPreview = { startDate: today, startWeight: startW, phases };
+  const derived = derivedPhases(gpPreview, goals.profile || {}, today);
+  const totalWeeks = phases.reduce((s, p) => s + p.durationWeeks, 0);
+  const endW = derived.length ? derived[derived.length - 1].endWeight : null;
+  const apply = () => onApply({ source: "import", goalType: phases[0] ? phases[0].type : "leanbulk", startDate: today, startWeight: startW, goalWeight: endW, phases });
+  return (
+    <div className="gp-scope stack">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><div className="gp-brand"><span className="gp-mark" />Import Plan</div><button onClick={onCancel} style={{ background: "none", border: "none", color: "var(--text-2)", fontSize: 13, cursor: "pointer" }}>Cancel</button></div>
+      <Card title="Paste or upload markdown" sub="phases, dates, calories, macros, targets">
+        <textarea value={text} onChange={e => setText(e.target.value)} placeholder="# My Plan&#10;## Phase 1 — Lean Bulk (12 weeks)&#10;Calories: 3000 ..." style={{ width: "100%", minHeight: 130, background: "var(--bg-2)", color: "var(--text)", border: "1px solid var(--line)", borderRadius: 10, padding: 10, fontSize: 13, fontFamily: "monospace" }} />
+        <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+          <label className="btn-ghost btn-sm" style={{ cursor: "pointer" }}>Upload .md<input type="file" accept=".md,.markdown,.txt" onChange={onFile} style={{ display: "none" }} /></label>
+          <button className="btn-primary btn-sm" style={{ flex: 1, opacity: text.trim() ? 1 : 0.5 }} disabled={!text.trim()} onClick={analyze}>Analyze plan</button>
+        </div>
+      </Card>
+      {parsed && (
+        <Card title="Plan Analysis" sub="review before applying" action={<TierBadge tier="estimate" />}>
+          {phases.length === 0 ? <Empty icon="⚠" title="No phases detected" hint="Couldn't find a phase table. Make sure phases have names and durations/dates, then re-analyze." /> : (
+            <>
+              <div className="gp-stat-row"><span className="muted small">Phases detected</span><span>{phases.length}</span></div>
+              <div className="gp-stat-row"><span className="muted small">Total duration</span><span>{totalWeeks} weeks (~{Math.round(totalWeeks / 4.345)} mo)</span></div>
+              <div className="gp-stat-row"><span className="muted small">Start → end weight</span><span>{startW ?? "?"} → {endW ?? "?"} kg</span></div>
+              <div className="gp-stat-row"><span className="muted small">Expected change</span><span>{startW != null && endW != null ? `${endW - startW > 0 ? "+" : ""}${(endW - startW).toFixed(1)} kg` : "—"}</span></div>
+              <div style={{ marginTop: 10, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+                <div className="small" style={{ fontWeight: 600, marginBottom: 6 }}>Phase breakdown</div>
+                {derived.map((p, i) => (
+                  <div key={i} className="gp-stat-row" style={{ padding: "3px 0" }}><span className="small">{i + 1}. {p.name}</span><span className="small muted">{p.durationWeeks}wk · {p.calories ?? "?"} kcal · {p.targetRateKgWk > 0 ? "+" : ""}{p.targetRateKgWk}kg/wk</span></div>
+                ))}
+              </div>
+              {!startW && <p className="small" style={{ color: "#f9c97e", marginTop: 8 }}>⚠ No starting weight found — add your weight in profile for accurate macros.</p>}
+              <button className="btn-primary" style={{ width: "100%", marginTop: 12 }} onClick={apply}>Apply plan</button>
+              <p className="muted small" style={{ marginTop: 8 }}>Once applied, this behaves exactly like a plan built on the website — roadmap, macros, and trajectory all update.</p>
+            </>
+          )}
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ── PHASE MANAGER — add/insert/delete/reorder/duplicate + live derived preview ──
+function V3PhaseManager({ gp, goals, onSave, onCancel }) {
+  const [phases, setPhases] = useState(() => (gp && gp.phases ? gp.phases.map(p => ({ ...p })) : []));
+  const [adding, setAdding] = useState(false);
+  const [dragI, setDragI] = useState(null);
+  const profile = goals.profile || {};
+  const startDate = (gp && gp.startDate) || getTodayStr();
+  const startWeight = (gp && gp.startWeight != null) ? gp.startWeight : (profile.weightKg ? parseFloat(profile.weightKg) : 80);
+  const derived = derivedPhases({ startDate, startWeight, phases }, profile, getTodayStr());
+
+  const addType = type => { setPhases(p => addPhaseOp(p, type)); setAdding(false); haptic(8); };
+  const del = id => { setPhases(p => deletePhaseOp(p, id)); haptic(6); };
+  const dup = id => { setPhases(p => duplicatePhaseOp(p, id)); haptic(6); };
+  const move = (from, to) => { if (to < 0 || to >= phases.length) return; setPhases(p => movePhaseOp(p, from, to)); haptic(6); };
+  const patch = (id, k, v) => setPhases(p => updatePhaseOp(p, id, { [k]: v }));
+  const onDrop = to => { if (dragI != null && dragI !== to) move(dragI, to); setDragI(null); };
+
+  return (
+    <div className="gp-scope stack">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><div className="gp-brand"><span className="gp-mark" />Phase Manager</div><button onClick={onCancel} style={{ background: "none", border: "none", color: "var(--text-2)", fontSize: 13, cursor: "pointer" }}>Cancel</button></div>
+
+      <Card title="Roadmap preview" sub="dates & macros recalculate live as you edit">
+        {derived.length === 0 ? <Empty icon="◷" title="No phases yet" hint="Add your first phase below." /> : derived.map((p, i) => (
+          <div key={p.id} style={{ display: "flex", gap: 10, padding: "8px 0", borderTop: i ? "1px solid var(--line)" : "none" }}>
+            <div style={{ width: 3, borderRadius: 3, background: (ptColor(p.type)), alignSelf: "stretch" }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ fontWeight: 600, fontSize: 13 }}>{i + 1}. {p.name}</span><span className="muted small">{formatShortDate(p.start)} → {formatShortDate(p.end)}</span></div>
+              <div className="muted small">{p.startWeight}→{p.endWeight}kg · {p.calories ?? "?"}kcal · P{p.protein}/C{p.carbs}/F{p.fat} · {p.targetRateKgWk > 0 ? "+" : ""}{p.targetRateKgWk}kg/wk</div>
+            </div>
+          </div>
+        ))}
+        <p className="muted small" style={{ marginTop: 8 }}>Plan length: {phases.reduce((s, p) => s + (p.durationWeeks || 0), 0)} weeks · ends {derived.length ? formatShortDate(derived[derived.length - 1].end) : "—"}</p>
+      </Card>
+
+      <Card title="Phases" sub="drag to reorder (desktop) or use the arrows">
+        {phases.map((p, i) => {
+          const tpl = templateFor(p.type);
+          return (
+            <div key={p.id} draggable onDragStart={() => setDragI(i)} onDragOver={e => e.preventDefault()} onDrop={() => onDrop(i)}
+              style={{ border: "1px solid var(--line)", borderRadius: 12, padding: 12, marginBottom: 10, background: dragI === i ? "var(--bg-2)" : "transparent" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                <span style={{ cursor: "grab", color: "var(--text-2)", fontSize: 16 }}>⋮⋮</span>
+                <select value={p.type} onChange={e => { const t = e.target.value; setPhases(ps => updatePhaseOp(ps, p.id, { type: t, name: templateFor(t).label })); }} style={{ flex: 1, background: "var(--bg-2)", color: "var(--text)", border: "1px solid var(--line)", borderRadius: 8, padding: "7px 9px", fontSize: 14, fontWeight: 600 }}>
+                  {TEMPLATE_LIST.map(t => <option key={t.type} value={t.type}>{t.label}</option>)}
+                </select>
+                <button onClick={() => move(i, i - 1)} className="btn-ghost btn-sm" style={{ padding: "4px 8px" }}>↑</button>
+                <button onClick={() => move(i, i + 1)} className="btn-ghost btn-sm" style={{ padding: "4px 8px" }}>↓</button>
+              </div>
+              <div className="field-grid three">
+                <label style={{ fontSize: 11 }}>Weeks<input type="number" inputMode="numeric" value={p.durationWeeks} onChange={e => patch(p.id, "durationWeeks", Math.max(1, +e.target.value || 1))} /></label>
+                <label style={{ fontSize: 11 }}>Rate kg/wk<input type="number" inputMode="decimal" step="0.05" value={p.targetRateKgWk ?? ""} placeholder={`${tpl.rateDefault}`} onChange={e => patch(p.id, "targetRateKgWk", e.target.value === "" ? null : parseFloat(e.target.value))} /></label>
+                <label style={{ fontSize: 11 }}>Calories<input type="number" inputMode="numeric" value={p.calories ?? ""} placeholder="auto" onChange={e => patch(p.id, "calories", e.target.value === "" ? null : +e.target.value)} /></label>
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <button onClick={() => dup(p.id)} className="btn-ghost btn-sm" style={{ flex: 1 }}>Duplicate</button>
+                <button onClick={() => setPhases(ps => { const a = [...ps]; a.splice(i + 1, 0, newPhase("maintenance")); return a; })} className="btn-ghost btn-sm" style={{ flex: 1 }}>Insert after</button>
+                <button onClick={() => del(p.id)} className="btn-ghost btn-sm" style={{ color: "#f47e6e" }}>Delete</button>
+              </div>
+              <p className="muted small" style={{ marginTop: 6 }}>Template defaults: {tpl.rateDefault > 0 ? "+" : ""}{tpl.rateDefault}kg/wk · protein {tpl.proteinDefault}g/kg · recovery floor {tpl.recoveryFloor} · fatigue ceiling {tpl.fatigueCeiling}. Override anything above.</p>
+            </div>
+          );
+        })}
+
+        {adding ? (
+          <div style={{ border: "1px dashed var(--line)", borderRadius: 12, padding: 12 }}>
+            <div className="muted small" style={{ marginBottom: 8 }}>Pick a template</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              {TEMPLATE_LIST.map(t => <button key={t.type} onClick={() => addType(t.type)} className="btn-ghost btn-sm">{t.label}</button>)}
+            </div>
+            <button onClick={() => setAdding(false)} className="btn-ghost btn-sm" style={{ marginTop: 8 }}>Cancel</button>
+          </div>
+        ) : (
+          <button onClick={() => setAdding(true)} className="btn-primary" style={{ width: "100%" }}>+ Add phase</button>
+        )}
+      </Card>
+
+      <button className="btn-primary" style={{ width: "100%", opacity: phases.length ? 1 : 0.5 }} disabled={!phases.length} onClick={() => onSave({ phases })}>Save roadmap</button>
+    </div>
+  );
+}
+
+// ── OVERVIEW ──
+function V3Overview({ gp, derived, activeP, data, goals }) {
+  const lastW = (data.weight || []).filter(w => w && (w.kg != null || w.weight != null)).sort((a, b) => (b.date || "").localeCompare(a.date || ""))[0];
+  const currentWeight = lastW ? (lastW.kg != null ? lastW.kg : lastW.weight) : (gp.startWeight ?? null);
+  const today = getTodayStr();
+  const endDate = planEndDate(derived);
+  const daysRemaining = endDate ? Math.max(0, Math.round((new Date(endDate) - new Date(today)) / 864e5)) : null;
+  const goalW = derived.length ? derived[derived.length - 1].endWeight : gp.goalWeight;
+  const rate = activeP ? activeP.targetRateKgWk : null;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      <Card title="Primary Goal" sub={gp.source === "import" ? "imported plan" : "your plan"}>
+        <div className="gp-stat-row"><span className="muted small">Goal</span><span>{gp.startWeight ?? "?"}kg → {goalW ?? "?"}kg</span></div>
+        <div className="gp-stat-row"><span className="muted small">Current weight</span><span>{currentWeight ?? "—"} kg <TierBadge tier="measured" /></span></div>
+        <div className="gp-stat-row"><span className="muted small">Current phase</span><span style={{ color: activeP ? (ptColor(activeP.type)) : "var(--text-2)", fontWeight: 600 }}>{activeP ? activeP.name : "—"}</span></div>
+        <div className="gp-stat-row"><span className="muted small">Weekly target rate</span><span>{rate != null ? `${rate > 0 ? "+" : ""}${rate} kg/wk` : "—"}</span></div>
+        <div className="gp-stat-row"><span className="muted small">Monthly target rate</span><span>{rate != null ? `${rate > 0 ? "+" : ""}${(rate * 4.345).toFixed(1)} kg/mo` : "—"}</span></div>
+        <div className="gp-stat-row"><span className="muted small">Days remaining</span><span>{daysRemaining != null ? `${daysRemaining} days` : "—"}</span></div>
+      </Card>
+
+      <Card title="Current Phase Nutrition" sub={activeP ? `${activeP.name} — auto-selected for today` : "no active phase"} action={activeP ? <TierBadge tier="calc" /> : null}>
+        {!activeP ? <Empty icon="◷" title="No active phase" hint="Your plan's dates don't cover today. Open Edit phases to adjust." /> : (
+          <>
+            <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+              {[["Calories", activeP.calories, ""], ["Protein", activeP.protein, "g"], ["Carbs", activeP.carbs, "g"], ["Fat", activeP.fat, "g"]].map(([l, v, u]) => (
+                <div key={l} style={{ flex: 1, background: "var(--bg-2)", borderRadius: 10, padding: "9px 8px", textAlign: "center" }}>
+                  <div style={{ fontSize: 18, fontWeight: 800 }}>{v ?? "—"}<span className="muted" style={{ fontSize: 11, fontWeight: 400 }}>{u}</span></div>
+                  <div className="muted" style={{ fontSize: 10 }}>{l}</div>
+                </div>
+              ))}
+            </div>
+            <p className="muted small" style={{ marginTop: 4 }}>Targets for the <b style={{ color: "var(--text)" }}>{activeP.name}</b> phase{activeP.maintenance ? `, vs ~${activeP.maintenance} kcal maintenance` : ""}. Updates automatically when the active phase changes.</p>
+          </>
+        )}
+      </Card>
+
+      <Card title="Roadmap Timeline" sub="the single source of truth — every phase, derived">
+        {derived.length === 0 ? <Empty icon="◷" title="No phases" hint="Open Edit phases to build your roadmap." /> : derived.map((p, i) => (
+          <div key={p.id} style={{ display: "flex", gap: 12, padding: "11px 0", borderTop: i ? "1px solid var(--line)" : "none", opacity: p.status === "done" ? 0.6 : 1 }}>
+            <div style={{ width: 4, borderRadius: 4, background: ptColor(p.type), alignSelf: "stretch" }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
+                <span style={{ fontWeight: 700 }}>{p.name}{p.status === "active" && <span style={{ fontSize: 10, marginLeft: 7, padding: "1px 7px", borderRadius: 999, background: "rgba(143,217,137,0.18)", color: "#8fd989", fontWeight: 700 }}>ACTIVE</span>}</span>
+                <span className="muted small" style={{ whiteSpace: "nowrap" }}>{formatShortDate(p.start)} → {formatShortDate(p.end)}</span>
+              </div>
+              <div className="muted small" style={{ marginTop: 2 }}>{p.calories ?? "?"} kcal · {p.targetRateKgWk > 0 ? "+" : ""}{p.targetRateKgWk} kg/wk · expected {p.expectedChangeKg > 0 ? "+" : ""}{p.expectedChangeKg} kg → {p.endWeight}kg</div>
+            </div>
+          </div>
+        ))}
+      </Card>
+    </div>
+  );
+}
+
+// ── TRAJECTORY ──
+function V3PhaseProgress({ activeP, metrics }) {
+  if (!activeP) return <Card title="Phase Progress"><Empty icon="◷" title="No active phase" hint="Your plan doesn't cover today." /></Card>;
+  const today = getTodayStr();
+  const totalDays = Math.max(1, Math.round((new Date(activeP.end) - new Date(activeP.start)) / 864e5));
+  const elapsed = Math.max(0, Math.min(totalDays, Math.round((new Date(today) - new Date(activeP.start)) / 864e5)));
+  const remaining = totalDays - elapsed;
+  const pct = Math.round((elapsed / totalDays) * 100);
+  const L = activeP.lens;
+  const actual = metrics.actualRateKgWk;
+  let verdict = "On Track", vColor = "#8fd989";
+  if (actual != null) {
+    const tol = 0.1, band = [L.rateBand[0] - tol, L.rateBand[1] + tol];
+    if (actual < band[0]) { verdict = L.dir === "gain" ? "Behind" : "Ahead"; vColor = L.dir === "gain" ? "#f9c97e" : "#5cc8df"; }
+    else if (actual > band[1]) { verdict = L.dir === "gain" ? "Ahead" : "Behind"; vColor = L.dir === "gain" ? "#5cc8df" : "#f9c97e"; }
+  } else verdict = "—", vColor = "var(--text-2)";
+  return (
+    <Card title="Phase Progress" sub={`${activeP.name} — judged against this phase`} action={<TierBadge tier="calc" />}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+        <span style={{ fontSize: 20, fontWeight: 800 }}>{activeP.name}</span>
+        <span style={{ fontWeight: 800, color: vColor }}>{verdict}</span>
+      </div>
+      <div style={{ height: 8, borderRadius: 8, background: "var(--bg-2)", overflow: "hidden", marginBottom: 4 }}><div style={{ width: `${pct}%`, height: "100%", background: ptColor(activeP.type), borderRadius: 8 }} /></div>
+      <div style={{ display: "flex", justifyContent: "space-between" }} className="muted small"><span>{formatShortDate(activeP.start)}</span><span>{pct}%</span><span>{formatShortDate(activeP.end)}</span></div>
+      <div style={{ marginTop: 12 }}>
+        <div className="gp-stat-row"><span className="muted small">Days elapsed / remaining</span><span>{elapsed} / {remaining}</span></div>
+        <div className="gp-stat-row"><span className="muted small">Planned rate</span><span>{activeP.targetRateKgWk > 0 ? "+" : ""}{activeP.targetRateKgWk} kg/wk</span></div>
+        <div className="gp-stat-row"><span className="muted small">Actual rate (this phase)</span><span style={{ color: vColor }}>{actual != null ? `${actual > 0 ? "+" : ""}${actual} kg/wk` : "— need 2+ weigh-ins"}</span></div>
+        <div className="gp-stat-row"><span className="muted small">Phase target band</span><span>{L.rateBand[0]} … {L.rateBand[1]} kg/wk</span></div>
+      </div>
+    </Card>
+  );
+}
+
+function V3Trajectory({ gp, derived, activeP, data, goals }) {
+  const metrics = useCurrentMetrics(data, goals, activeP);
+  const rec = useMemo(() => computeRecoveryCapacity(data, goals, getTodayStr()), [data, goals]);
+  const fat = useMemo(() => computeFatigue(data, goals, getTodayStr()), [data, goals]);
+  const hist = useMemo(() => computeHistoricalPhases(data, goals.profile || {}, getTodayStr()), [data, goals]);
+  const trans = activeP ? suggestTransitions(activeP.name, {}) : (hist.ready && hist.current ? suggestTransitions(hist.current, {}) : null);
+  const L = activeP ? activeP.lens : null;
+  // weight trajectory: planned from active phase, actual points
+  const wpts = (data.weight || []).filter(w => w && (w.kg != null || w.weight != null)).map(w => ({ date: w.date, kg: w.kg != null ? w.kg : w.weight }));
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      <V3PhaseProgress activeP={activeP} metrics={metrics} />
+
+      <Card title="Weight Trajectory" sub={activeP ? `planned vs actual vs forecast — ${activeP.name} target` : "planned vs actual"} action={<TierBadge tier="forecast" />}>
+        {!activeP || wpts.length < 1 ? <Empty icon="◷" title="Not enough weight data" hint="Log your weight to see planned vs actual vs forecast against this phase." /> : (
+          <V3WeightChart phase={activeP} pts={wpts} />
+        )}
+      </Card>
+
+      <Card title="Recovery & Fatigue" sub={activeP ? `evaluated against ${activeP.name} requirements` : "two sides of one decision"} action={<TierBadge tier="estimate" />}>
+        <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+          <div style={{ flex: 1, background: "var(--bg-2)", borderRadius: 12, padding: "12px 10px", textAlign: "center" }}>
+            <div className="muted" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".04em" }}>Recovery</div>
+            <div style={{ fontSize: 26, fontWeight: 800, color: rec.ready ? rec.bandColor : "var(--text-2)" }}>{rec.ready ? rec.score : "—"}</div>
+            <div className="small" style={{ color: rec.ready ? rec.bandColor : "var(--text-2)" }}>{rec.ready ? rec.band : "no data"}</div>
+            {rec.ready && L && <div className="small" style={{ marginTop: 3, color: rec.score >= L.recoveryFloor ? "#8fd989" : "#f47e6e" }}>{rec.score >= L.recoveryFloor ? "✓ meets" : "below"} floor {L.recoveryFloor}</div>}
+          </div>
+          <div style={{ flex: 1, background: "var(--bg-2)", borderRadius: 12, padding: "12px 10px", textAlign: "center" }}>
+            <div className="muted" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".04em" }}>Fatigue</div>
+            <div style={{ fontSize: 26, fontWeight: 800, color: fat.ready ? fat.bandColor : "var(--text-2)" }}>{fat.ready ? fat.finalFatigue : "—"}</div>
+            <div className="small" style={{ color: fat.ready ? fat.bandColor : "var(--text-2)" }}>{fat.ready ? fat.band : "no data"}</div>
+            {fat.ready && L && <div className="small" style={{ marginTop: 3, color: fat.finalFatigue <= L.fatigueCeiling ? "#8fd989" : "#f47e6e" }}>{fat.finalFatigue <= L.fatigueCeiling ? "✓ under" : "over"} ceiling {L.fatigueCeiling}</div>}
+          </div>
+        </div>
+        {fat.ready && (
+          <>
+            <div className="gp-stat-row"><span className="muted small">Acute readiness</span><span style={{ color: fat.readinessColor, fontWeight: 700 }}>{fat.readiness}</span></div>
+            <div className="gp-stat-row"><span className="muted small">Recovery formula</span><span className="small muted">0.35 Sleep · 0.30 Nutr · 0.20 Stress · 0.15 Rest</span></div>
+            <div className="gp-stat-row"><span className="muted small">Fatigue layers</span><span className="small muted">Perf {fat.layers.performance} · Well {fat.layers.wellness} · Load {fat.layers.load}</span></div>
+            {fat.deload.recommended ? (
+              <div style={{ marginTop: 10, padding: "10px 12px", borderRadius: 10, background: "rgba(244,126,110,0.1)", border: "1px solid rgba(244,126,110,0.35)" }}>
+                <div style={{ fontWeight: 700, color: "#f47e6e", fontSize: 13 }}>⚠ Deload recommended</div>
+                <p className="small" style={{ margin: "4px 0 0", color: "var(--text-2)", lineHeight: 1.45 }}>{fat.deload.corroborators.join("; ")}.</p>
+              </div>
+            ) : <div style={{ marginTop: 10, padding: "8px 12px", borderRadius: 10, background: "rgba(143,217,137,0.08)", border: "1px solid rgba(143,217,137,0.25)" }}><span className="small" style={{ color: "#8fd989" }}>✓ No deload indicated.</span></div>}
+          </>
+        )}
+        <p className="muted small" style={{ marginTop: 10, lineHeight: 1.45 }}>Recovery and fatigue are separate models shown together. {rec.note}</p>
+      </Card>
+
+      <Card title="Historical Context" sub="what you're coming out of — and what's next" action={hist.ready ? <TierBadge tier="estimate" /> : null}>
+        {!hist.ready ? <Empty icon="◷" title="Not enough history" hint={hist.reason} /> : (
+          <>
+            <p className="small" style={{ lineHeight: 1.5, marginBottom: 10 }}>You're currently coming out of a <b style={{ color: "var(--text)" }}>{hist.current}</b> phase. Here's the reconstructed history:</p>
+            {hist.phases.slice(-4).map((p, i) => (
+              <div key={i} style={{ display: "flex", gap: 10, padding: "7px 0", borderTop: i ? "1px solid var(--line)" : "none" }}>
+                <div style={{ width: 3, borderRadius: 3, background: PHASE_COLOR2(p.key), alignSelf: "stretch" }} />
+                <div style={{ flex: 1 }}><div style={{ display: "flex", justifyContent: "space-between" }}><span className="small" style={{ fontWeight: 600 }}>{p.label}</span><span className="muted small">{formatShortDate(p.start)}→{formatShortDate(p.end)}</span></div><div className="muted small">{p.avgRateKgWk != null ? `${p.avgRateKgWk > 0 ? "+" : ""}${p.avgRateKgWk}kg/wk · ` : ""}TDEE ~{p.estMaintenance ?? "?"}</div></div>
+              </div>
+            ))}
+            {trans && trans.recommended && (
+              <div style={{ marginTop: 12, padding: "11px 12px", borderRadius: 10, background: "var(--bg-2)" }}>
+                <div className="small" style={{ fontWeight: 700, marginBottom: 4 }}>What would make sense next</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}><span className="small muted">{trans.fromLabel}</span><span className="muted">→</span><span style={{ fontSize: 13, fontWeight: 700, color: "#8fd989" }}>{trans.recommendedLabel}</span></div>
+                <p className="small" style={{ color: "var(--text-2)", lineHeight: 1.45, margin: 0 }}>{(trans.options.find(o => o.to === trans.recommended) || {}).why}</p>
+                <p className="muted small" style={{ marginTop: 6 }}>{trans.note}</p>
+              </div>
+            )}
+          </>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+const PHASE_COLOR2 = key => ({ aggressiveDeficit: "#f47e6e", deficit: "#f0a868", maintenance: "#7d8aa0", leanBulk: "#8fd989", aggressiveSurplus: "#5cc8df" }[key] || "var(--line)");
+
+function V3WeightChart({ phase, pts }) {
+  const w = 320, h = 150, pad = 28;
+  const start = new Date(phase.start), end = new Date(phase.end), today = new Date(getTodayStr());
+  const x = d => pad + ((new Date(d) - start) / (end - start)) * (w - pad * 2);
+  const inPhase = pts.filter(p => p.date >= phase.start).sort((a, b) => a.date.localeCompare(b.date));
+  const allKg = [phase.startWeight, phase.endWeight, ...inPhase.map(p => p.kg)];
+  const minW = Math.min(...allKg) - 0.5, maxW = Math.max(...allKg) + 0.5;
+  const y = kg => h - pad - ((kg - minW) / (maxW - minW || 1)) * (h - pad * 2);
+  const plannedPath = `M ${x(phase.start)} ${y(phase.startWeight)} L ${x(phase.end)} ${y(phase.endWeight)}`;
+  const actualPath = inPhase.length >= 2 ? "M " + inPhase.map(p => `${x(p.date)} ${y(p.kg)}`).join(" L ") : null;
+  // forecast: from last actual at current trend to end
+  let forecastPath = null;
+  if (inPhase.length >= 2) { const first = inPhase[0], last = inPhase[inPhase.length - 1]; const wks = Math.max(0.5, (new Date(last.date) - new Date(first.date)) / 6048e5); const rate = (last.kg - first.kg) / wks; const endKg = last.kg + rate * ((end - new Date(last.date)) / 6048e5); forecastPath = `M ${x(last.date)} ${y(last.kg)} L ${x(phase.end)} ${y(endKg)}`; }
+  return (
+    <>
+      <svg viewBox={`0 0 ${w} ${h}`} style={{ width: "100%" }}>
+        <line x1={x(getTodayStr())} y1={pad} x2={x(getTodayStr())} y2={h - pad} stroke="var(--line)" strokeDasharray="3 3" />
+        <path d={plannedPath} fill="none" stroke="#7d8aa0" strokeWidth="2" strokeDasharray="5 4" />
+        {forecastPath && <path d={forecastPath} fill="none" stroke="#f9c97e" strokeWidth="2" strokeDasharray="2 3" />}
+        {actualPath && <path d={actualPath} fill="none" stroke={ptColor(phase.type)} strokeWidth="2.5" />}
+        {inPhase.map((p, i) => <circle key={i} cx={x(p.date)} cy={y(p.kg)} r="2.5" fill={ptColor(phase.type)} />)}
+      </svg>
+      <div style={{ display: "flex", gap: 14, justifyContent: "center", flexWrap: "wrap", marginTop: 4 }}>
+        <span className="small muted">— — Planned</span><span className="small" style={{ color: ptColor(phase.type) }}>— Actual</span><span className="small" style={{ color: "#f9c97e" }}>·· Forecast</span>
+      </div>
+    </>
+  );
+}
+
+// ── REPORT ──
+function V3Report({ gp, derived, activeP, data, goals }) {
+  const metrics = useCurrentMetrics(data, goals, activeP);
+  const align = useMemo(() => alignmentFor(activeP, metrics), [activeP, metrics]);
+  const fat = useMemo(() => computeFatigue(data, goals, getTodayStr()), [data, goals]);
+  const corr = useMemo(() => computeCorrelations(data), [data]);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      {/* GOAL ALIGNMENT — the hero card */}
+      <div style={{ borderRadius: 18, padding: 2, background: activeP ? `linear-gradient(135deg, ${align.color}55, transparent)` : "transparent" }}>
+        <Card title="Goal Alignment" sub={activeP ? `are you doing what ${activeP.name} needs?` : "no active phase"}>
+          {!activeP || !align.ready ? <Empty icon="◎" title="Need an active phase + data" hint="Once a phase is active and you've logged weight, nutrition, sleep and training, this becomes your executive summary." /> : (
+            <>
+              <div style={{ textAlign: "center", padding: "8px 0 14px" }}>
+                <div style={{ fontSize: 34, fontWeight: 900, color: align.color, letterSpacing: "-0.02em" }}>{align.verdict}</div>
+                <div className="muted small">{activeP.name} · {align.confidence} confidence</div>
+              </div>
+              {align.criteria.map(c => (
+                <div key={c.key} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderTop: "1px solid var(--line)" }}>
+                  <span style={{ width: 9, height: 9, borderRadius: "50%", background: STATUS_DOT[c.status], flexShrink: 0 }} />
+                  <span style={{ flex: 1, fontWeight: 600, fontSize: 13 }}>{c.label}</span>
+                  <span className="small" style={{ color: "var(--text)" }}>{c.actual}</span>
+                  <span className="small muted" style={{ width: 90, textAlign: "right" }}>need {c.target}</span>
+                </div>
+              ))}
+              <p className="muted small" style={{ marginTop: 10, lineHeight: 1.45 }}>Every line is judged against what a <b style={{ color: "var(--text)" }}>{activeP.name}</b> phase expects. Change the active phase and these verdicts change with it.</p>
+            </>
+          )}
+        </Card>
+      </div>
+
+      <Card title="Correlations" sub="what moves with what — meaningful links only" action={corr.ready ? <TierBadge tier="calc" /> : null}>
+        {!corr.ready ? <Empty icon="◷" title="Not enough data yet" hint={corr.reason || "A few weeks of overlapping sleep, nutrition, and training logs are needed to find real relationships."} /> : (
+          corr.links.length === 0 ? <p className="muted small">No statistically meaningful relationships stand out yet — keep logging.</p> : corr.links.map((l, i) => (
+            <div key={i} style={{ padding: "9px 0", borderTop: i ? "1px solid var(--line)" : "none" }}>
+              <div style={{ display: "flex", justifyContent: "space-between" }}><span className="small" style={{ fontWeight: 600 }}>{l.a} ↔ {l.b}</span><span className="small" style={{ color: l.dir > 0 ? "#8fd989" : "#f47e6e" }}>{l.dir > 0 ? "+" : ""}{l.r}</span></div>
+              <p className="muted small" style={{ margin: "2px 0 0" }}>{l.text}</p>
+            </div>
+          ))
+        )}
+      </Card>
+
+      <Card title="AI Coach Report" sub="weekly · specific to your phase & data">
+        <V3CoachReport activeP={activeP} metrics={metrics} align={align} fat={fat} data={data} goals={goals} />
+      </Card>
+    </div>
+  );
+}
+
+// lightweight correlation pass over daily series (Pearson), meaningful pairs only
+function computeCorrelations(data) {
+  const days = {};
+  const put = (date, k, v) => { if (v == null) return; (days[date] = days[date] || {})[k] = (days[date][k] || 0) + v; };
+  (data.sleep || []).forEach(s => { if (s && s.date && s.duration != null) (days[s.date] = days[s.date] || {}).sleep = s.duration; });
+  (data.diet || []).forEach(e => { if (e && e.date) { put(e.date, "cal", e.calories || 0); put(e.date, "protein", e.protein || 0); } });
+  const dates = Object.keys(days).sort();
+  if (dates.length < 14) return { ready: false, reason: "Need ~2 weeks of overlapping logs." };
+  const pearson = (xs, ys) => { const n = xs.length; if (n < 8) return null; const mx = xs.reduce((a, b) => a + b, 0) / n, my = ys.reduce((a, b) => a + b, 0) / n; let num = 0, dx = 0, dy = 0; for (let i = 0; i < n; i++) { const a = xs[i] - mx, b = ys[i] - my; num += a * b; dx += a * a; dy += b * b; } return dx && dy ? num / Math.sqrt(dx * dy) : null; };
+  const series = k => dates.map(d => days[d][k]).map(v => (v == null ? NaN : v));
+  const pairs = [[["sleep", "Sleep"], ["cal", "Calories"]], [["sleep", "Sleep"], ["protein", "Protein"]], [["protein", "Protein"], ["cal", "Calories"]]];
+  const links = [];
+  pairs.forEach(([[ka, la], [kb, lb]]) => {
+    const A = [], B = []; dates.forEach(d => { if (days[d][ka] != null && days[d][kb] != null) { A.push(days[d][ka]); B.push(days[d][kb]); } });
+    const r = pearson(A, B);
+    if (r != null && Math.abs(r) >= 0.35) links.push({ a: la, b: lb, r: +r.toFixed(2), dir: r > 0 ? 1 : -1, text: `${Math.abs(r) >= 0.6 ? "Strong" : "Moderate"} ${r > 0 ? "positive" : "negative"} link in your logs.` });
+  });
+  return { ready: true, links };
+}
+
+function V3CoachReport({ activeP, metrics, align, fat, data, goals }) {
+  const recs = [];
+  if (!activeP) return <Empty icon="◎" title="No active phase" hint="Apply a plan to get phase-specific coaching." />;
+  const L = activeP.lens;
+  if (align.ready) {
+    align.criteria.forEach(c => {
+      if (c.status === "bad" || c.status === "warn") {
+        if (c.key === "rate") recs.push(`Your weight rate (${c.actual}) is off the ${activeP.name} target of ${c.target}. ${L.dir === "gain" ? "Add ~150–200 kcal/day if you're under." : L.dir === "loss" ? "Tighten the deficit ~150–200 kcal/day if you're not losing fast enough." : "Adjust intake toward maintenance."}`);
+        if (c.key === "protein") recs.push(`Protein is ${c.actual} vs a ${c.target} target for this phase — add a ~40g serving/day.`);
+        if (c.key === "recovery") recs.push(`Recovery (${c.actual}) is below the floor (${c.target}) a ${activeP.name} needs — prioritise sleep duration and consistency this week.`);
+        if (c.key === "fatigue") recs.push(`Fatigue (${c.actual}) is over the ceiling (${c.target}) for this phase.${fat.ready && fat.deload.recommended ? " A deload is indicated." : " Pull back volume slightly."}`);
+      }
+    });
+  }
+  if (fat.ready && fat.deload.recommended && !recs.some(r => /deload/i.test(r))) recs.push(`Deload recommended: ${fat.deload.corroborators.join("; ")}.`);
+  if (!recs.length) recs.push(`You're aligned with the ${activeP.name} phase across the metrics FitLog can see. Keep the current approach and keep logging weight, food, sleep, and training.`);
+  return (
+    <>
+      <p className="small" style={{ lineHeight: 1.5, marginBottom: 8 }}>For your active <b style={{ color: "var(--text)" }}>{activeP.name}</b> phase, here's what your data says to do:</p>
+      {recs.map((r, i) => <p key={i} className="small" style={{ margin: "6px 0", paddingLeft: 14, position: "relative", lineHeight: 1.5 }}><span style={{ position: "absolute", left: 0, color: "var(--accent)" }}>›</span>{r}</p>)}
+      <p className="muted small" style={{ marginTop: 8 }}>Generated from your goal, active phase, nutrition, recovery, fatigue, sleep and weight trend. Not generic advice — it changes with your phase and your numbers.</p>
+    </>
+  );
+}
+
 function GoalPlanSection({ data, goals, onSaveGoals, addEntry, deleteEntry }) {
   const [tab, setTab] = useState("traj");
   const [editing, setEditing] = useState(false);
@@ -6868,7 +7424,7 @@ function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, setData, 
       case "nicotine": return <NicotineTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />;
       case "journal": return <JournalTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} setData={setData} />;
       case "skin": return <SkinSection data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} updateEntry={updateEntry} onSaveGoals={onSaveGoals} />;
-      case "goalplan": return <GoalPlanSection data={data} goals={goals} onSaveGoals={onSaveGoals} addEntry={addEntry} deleteEntry={deleteEntry} />;
+      case "goalplan": return <GoalPlanV3 data={data} goals={goals} onSaveGoals={onSaveGoals} addEntry={addEntry} deleteEntry={deleteEntry} />;
       default: return null;
     }
   };
