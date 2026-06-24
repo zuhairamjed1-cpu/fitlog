@@ -6858,7 +6858,7 @@ function V3Trajectory({ gp, derived, activeP, data, goals }) {
   const rec = useMemo(() => computeRecoveryCapacity(data, goals, getTodayStr()), [data, goals]);
   const fat = useMemo(() => computeFatigue(data, goals, getTodayStr()), [data, goals]);
   const hist = useMemo(() => computeHistoricalPhases(data, goals.profile || {}, getTodayStr()), [data, goals]);
-  const trans = activeP ? suggestTransitions(activeP.name, {}) : (hist.ready && hist.current ? suggestTransitions(hist.current, {}) : null);
+  const trans = activeP ? suggestTransitions(activeP.name, {}) : (hist.ready && hist.current ? suggestTransitions(hist.current.label, {}) : null);
   const L = activeP ? activeP.lens : null;
   // weight trajectory: planned from active phase, actual points
   const wpts = (data.weight || []).filter(w => w && (w.kg != null || w.weight != null)).map(w => ({ date: w.date, kg: w.kg != null ? w.kg : w.weight }));
@@ -6907,7 +6907,7 @@ function V3Trajectory({ gp, derived, activeP, data, goals }) {
       <Card title="Historical Context" sub="what you're coming out of — and what's next" action={hist.ready ? <TierBadge tier="estimate" /> : null}>
         {!hist.ready ? <Empty icon="◷" title="Not enough history" hint={hist.reason} /> : (
           <>
-            <p className="small" style={{ lineHeight: 1.5, marginBottom: 10 }}>You're currently coming out of a <b style={{ color: "var(--text)" }}>{hist.current}</b> phase. Here's the reconstructed history:</p>
+            <p className="small" style={{ lineHeight: 1.5, marginBottom: 10 }}>You're currently coming out of a <b style={{ color: "var(--text)" }}>{hist.current && hist.current.label}</b> phase. Here's the reconstructed history:</p>
             {hist.phases.slice(-4).map((p, i) => (
               <div key={i} style={{ display: "flex", gap: 10, padding: "7px 0", borderTop: i ? "1px solid var(--line)" : "none" }}>
                 <div style={{ width: 3, borderRadius: 3, background: PHASE_COLOR2(p.key), alignSelf: "stretch" }} />
