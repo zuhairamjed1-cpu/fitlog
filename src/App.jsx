@@ -6904,14 +6904,19 @@ function V3Trajectory({ gp, derived, activeP, data, goals }) {
         <p className="muted small" style={{ marginTop: 10, lineHeight: 1.45 }}>Recovery and fatigue are separate models shown together. {rec.note}</p>
       </Card>
 
-      <Card title="Historical Context" sub="what you're coming out of — and what's next" action={hist.ready ? <TierBadge tier="estimate" /> : null}>
+      <Card title="Historical Context" sub="what you're coming out of — calories classify, weight validates" action={hist.ready ? <TierBadge tier="estimate" /> : null}>
         {!hist.ready ? <Empty icon="◷" title="Not enough history" hint={hist.reason} /> : (
           <>
-            <p className="small" style={{ lineHeight: 1.5, marginBottom: 10 }}>You're currently coming out of a <b style={{ color: "var(--text)" }}>{hist.current && hist.current.label}</b> phase. Here's the reconstructed history:</p>
-            {hist.phases.slice(-4).map((p, i) => (
-              <div key={i} style={{ display: "flex", gap: 10, padding: "7px 0", borderTop: i ? "1px solid var(--line)" : "none" }}>
-                <div style={{ width: 3, borderRadius: 3, background: PHASE_COLOR2(p.key), alignSelf: "stretch" }} />
-                <div style={{ flex: 1 }}><div style={{ display: "flex", justifyContent: "space-between" }}><span className="small" style={{ fontWeight: 600 }}>{p.label}</span><span className="muted small">{formatShortDate(p.start)}→{formatShortDate(p.end)}</span></div><div className="muted small">{p.avgRateKgWk != null ? `${p.avgRateKgWk > 0 ? "+" : ""}${p.avgRateKgWk}kg/wk · ` : ""}TDEE ~{p.estMaintenance ?? "?"}</div></div>
+            <V3HistoryChart hist={hist} />
+            <V3AdaptChart hist={hist} />
+            <p className="small" style={{ lineHeight: 1.5, margin: "10px 0 10px" }}>You're currently coming out of a <b style={{ color: HIST_COLOR[hist.current && hist.current.key] || "var(--text)" }}>{hist.current && hist.current.label}</b> phase. Maintenance started at {hist.maintenanceBaseline} kcal and moves with bodyweight + adaptation:</p>
+            {hist.phases.slice(-5).map((p, i) => (
+              <div key={i} style={{ display: "flex", gap: 10, padding: "8px 0", borderTop: i ? "1px solid var(--line)" : "none" }}>
+                <div style={{ width: 3, borderRadius: 3, background: HIST_COLOR[p.key] || "var(--line)", alignSelf: "stretch" }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}><span className="small" style={{ fontWeight: 700 }}>{p.label}</span><span className="muted small" style={{ whiteSpace: "nowrap" }}>{formatShortDate(p.start)} → {formatShortDate(p.end)}</span></div>
+                  <div className="muted small" style={{ marginTop: 1 }}>{p.avgCalories} kcal · maint {p.maintenanceStart}→{p.maintenanceEnd} · balance {p.delta > 0 ? "+" : ""}{p.delta}{p.weightChange != null ? ` · ${p.weightStart}→${p.weightEnd}kg` : ""} · <span style={{ color: HIST_BAND_COLOR[p.confidenceBand] }}>{p.confidence}% {p.confidenceBand}</span></div>
+                </div>
               </div>
             ))}
             {trans && trans.recommended && (
@@ -6925,6 +6930,82 @@ function V3Trajectory({ gp, derived, activeP, data, goals }) {
           </>
         )}
       </Card>
+    </div>
+  );
+}
+
+const HIST_COLOR = { aggressiveCut: "#f47e6e", cut: "#f0a868", maintenance: "#7d8aa0", leanBulk: "#8fd989", bulk: "#4a9d5f" };
+const HIST_BAND_COLOR = { High: "#8fd989", Medium: "#f9c97e", Low: "#f0a868" };
+
+function V3HistoryChart({ hist }) {
+  const [hover, setHover] = useState(null);
+  const trend = hist.calorieTrend.filter(p => p.rolling != null);
+  if (trend.length < 2) return null;
+  const mAt = {}; hist.maintenanceTrend.forEach(p => (mAt[p.date] = p.maintenance));
+  const wAt = {}; hist.weightTrend.forEach(p => (wAt[p.date] = p.kg));
+  const W = 340, H = 176, padL = 38, padR = 30, padT = 12, padB = 22;
+  const d0 = new Date(trend[0].date), d1 = new Date(trend[trend.length - 1].date);
+  const span = (d1 - d0) || 1;
+  const x = iso => padL + ((new Date(iso) - d0) / span) * (W - padL - padR);
+  const cals = trend.map(p => p.rolling).concat(hist.maintenanceTrend.map(p => p.maintenance));
+  const lo = Math.min(...cals) - 120, hi = Math.max(...cals) + 120;
+  const y = c => padT + (1 - (c - lo) / (hi - lo || 1)) * (H - padT - padB);
+  const wkg = hist.weightTrend.filter(p => p.kg != null).map(p => p.kg);
+  const hasW = wkg.length >= 2;
+  const wLo = hasW ? Math.min(...wkg) - 0.5 : 0, wHi = hasW ? Math.max(...wkg) + 0.5 : 1;
+  const wy = kg => padT + (1 - (kg - wLo) / (wHi - wLo || 1)) * (H - padT - padB);
+  const calLine = "M " + trend.map(p => `${x(p.date).toFixed(1)} ${y(p.rolling).toFixed(1)}`).join(" L ");
+  const maintLine = "M " + hist.maintenanceTrend.map(p => `${x(p.date).toFixed(1)} ${y(p.maintenance).toFixed(1)}`).join(" L ");
+  const wPts = hist.weightTrend.filter(p => p.kg != null);
+  const wLine = hasW ? "M " + wPts.map(p => `${x(p.date).toFixed(1)} ${wy(p.kg).toFixed(1)}`).join(" L ") : null;
+  const yTicks = [lo, (lo + hi) / 2, hi].map(Math.round);
+  return (
+    <div style={{ position: "relative", marginBottom: 12 }}>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%" }} onMouseLeave={() => setHover(null)}>
+        {hist.phases.map((p, i) => { const x0 = x(p.start), x1 = x(p.end); return (
+          <rect key={i} x={x0} y={padT} width={Math.max(1, x1 - x0)} height={H - padT - padB} fill={HIST_COLOR[p.key] || "#7d8aa0"} opacity={hover === i ? 0.3 : 0.14} onMouseEnter={() => setHover(i)} style={{ cursor: "pointer" }} />
+        ); })}
+        {yTicks.map((c, i) => <g key={i}><line x1={padL} y1={y(c)} x2={W - padR} y2={y(c)} stroke="var(--line)" strokeWidth="0.5" opacity="0.5" /><text x={4} y={y(c) + 3} fill="var(--text-2)" fontSize="8">{c}</text></g>)}
+        {hist.detectedTransitions.map((tr, i) => <line key={i} x1={x(tr.date)} y1={padT} x2={x(tr.date)} y2={H - padB} stroke="var(--text)" strokeWidth="0.6" strokeDasharray="2 2" opacity="0.4" />)}
+        <path d={maintLine} fill="none" stroke="#cbd3e1" strokeWidth="1.6" strokeDasharray="5 3" />
+        {wLine && <path d={wLine} fill="none" stroke="#a78bda" strokeWidth="1.6" opacity="0.85" />}
+        <path d={calLine} fill="none" stroke="var(--accent)" strokeWidth="2" />
+        {hasW && [wLo + 0.5, wHi - 0.5].map((kg, i) => <text key={i} x={W - padR + 3} y={wy(kg) + 3} fill="#a78bda" fontSize="8">{kg.toFixed(0)}</text>)}
+      </svg>
+      <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap", marginTop: 2 }}>
+        <span className="small" style={{ color: "var(--accent)" }}>— calories</span>
+        <span className="small" style={{ color: "#cbd3e1" }}>— — dynamic maintenance</span>
+        {hasW && <span className="small" style={{ color: "#a78bda" }}>— weight</span>}
+      </div>
+      {hover != null && hist.phases[hover] && (() => { const p = hist.phases[hover]; return (
+        <div style={{ marginTop: 8, padding: "10px 12px", borderRadius: 10, background: "var(--bg-2)", border: `1px solid ${HIST_COLOR[p.key]}55` }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}><span style={{ fontWeight: 700, color: HIST_COLOR[p.key] }}>{p.label}</span><span className="muted small">{formatShortDate(p.start)} → {formatShortDate(p.end)}</span></div>
+          <div className="muted small" style={{ marginTop: 3, lineHeight: 1.5 }}>{p.avgCalories} kcal · balance {p.delta > 0 ? "+" : ""}{p.delta}<br />maintenance {p.maintenanceStart}→{p.maintenanceEnd} · adaptation {p.adaptationStart}→{p.adaptationEnd}{p.weightChange != null ? ` · weight ${p.weightStart}→${p.weightEnd}kg` : ""}<br /><span style={{ color: HIST_BAND_COLOR[p.confidenceBand] }}>{p.confidence}% {p.confidenceBand}</span></div>
+        </div>
+      ); })()}
+    </div>
+  );
+}
+
+function V3AdaptChart({ hist }) {
+  const at = hist.adaptationTrend;
+  if (!at || at.length < 2) return null;
+  const W = 340, H = 70, padL = 38, padR = 30, padT = 8, padB = 14;
+  const d0 = new Date(at[0].date), d1 = new Date(at[at.length - 1].date);
+  const span = (d1 - d0) || 1;
+  const x = iso => padL + ((new Date(iso) - d0) / span) * (W - padL - padR);
+  const lo = -250, hi = 20;
+  const y = v => padT + (1 - (v - lo) / (hi - lo)) * (H - padT - padB);
+  const line = "M " + at.map(p => `${x(p.date).toFixed(1)} ${y(p.adaptation).toFixed(1)}`).join(" L ");
+  return (
+    <div style={{ marginTop: 6 }}>
+      <div className="muted small" style={{ fontWeight: 600, marginBottom: 2 }}>Adaptive thermogenesis over time</div>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%" }}>
+        {[0, -100, -200].map((v, i) => <g key={i}><line x1={padL} y1={y(v)} x2={W - padR} y2={y(v)} stroke="var(--line)" strokeWidth="0.5" opacity="0.5" /><text x={4} y={y(v) + 3} fill="var(--text-2)" fontSize="8">{v}</text></g>)}
+        <path d={`${line} L ${x(at[at.length - 1].date)} ${y(0)} L ${x(at[0].date)} ${y(0)} Z`} fill="#f0a868" opacity="0.12" />
+        <path d={line} fill="none" stroke="#f0a868" strokeWidth="1.8" />
+      </svg>
+      <p className="muted small" style={{ margin: "2px 0 0" }}>Metabolic adaptation accumulates during cuts (toward −250) and recovers toward 0 at maintenance/surplus.</p>
     </div>
   );
 }

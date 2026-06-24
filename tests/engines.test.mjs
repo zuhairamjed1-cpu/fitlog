@@ -368,15 +368,26 @@ ok("goalplan: constraints rank a primary lever", !!cons.primary && cons.levers.l
     ok("volume: no workouts → not ready (honest empty state)", computeVolume({ exercise: [] }, {}, today).ready === false, 1);
 }
 
-  // ── Goal Plan V2: Historical Phase Analysis ──
+  // ── Goal Plan V3: Historical Phase Analysis (dynamic maintenance) ──
   {
-    const diet = [], weight = [];
-    let w = 85;
-    for (let i = 98; i >= 0; i--) { const d = new Date("2026-06-24T00:00:00"); d.setDate(d.getDate() - i); const iso = d.toISOString().slice(0, 10); const losing = i > 42; diet.push({ date: iso, calories: losing ? 2100 : 3000, protein: 180 }); if (i % 7 === 0) { weight.push({ date: iso, weight: +w.toFixed(1) }); w += losing ? -0.4 : 0.25; } }
-    const r = computeHistoricalPhases({ diet, weight }, { sex: "male", age: 25, heightCm: 178 }, "2026-06-24");
-    ok("history: reconstructs deficit→lean-bulk timeline from intake + measured weight", r.ready && r.phases.some(p => p.key === "deficit") && r.phases.some(p => p.key === "leanBulk"), r.phases.map(p => p.label));
-    ok("history: deficit phase back-calculates maintenance above intake (measured tier)", (() => { const d = r.phases.find(p => p.key === "deficit"); return d && d.tier === "measured" && d.estMaintenance > d.avgCalories && d.avgRateKgWk < 0; })(), 1);
-    ok("history: empty data → not ready (no fabricated phases)", computeHistoricalPhases({ diet: [], weight: [] }, {}, "2026-06-24").ready === false, 1);
+    // Long cut at 2100 kcal, NO weight → maintenance must fall via adaptation
+    const diet = []; for (let i = 139; i >= 0; i--) { const d = new Date("2026-06-24T00:00:00"); d.setDate(d.getDate() - i); diet.push({ date: d.toISOString().slice(0, 10), calories: 2100, protein: 180 }); }
+    const r = computeHistoricalPhases({ diet, weight: [] }, {}, "2026-06-24");
+    const mt = r.maintenanceTrend, at = r.adaptationTrend;
+    ok("history: 2730 is only the PRIOR, maintenance is dynamic (falls over a cut)", r.ready && r.maintenanceBaseline === 2730 && mt[mt.length - 1].maintenance < mt[0].maintenance, [mt[0].maintenance, mt[mt.length - 1].maintenance]);
+    ok("history: adaptation accrues negative during sustained deficit, capped ≥ -250", at[at.length - 1].adaptation < 0 && at[at.length - 1].adaptation >= -250, at[at.length - 1].adaptation);
+    ok("history: classification uses dynamic maintenance, not fixed 2730", (() => { const p = r.phases[0]; return p.estMaintenance < 2730 && p.delta === p.avgCalories - p.estMaintenance && p.delta > (p.avgCalories - 2730); })(), [r.phases[0].delta, r.phases[0].avgCalories - 2730]);
+    ok("history: phase carries maintenanceStart/End, adaptationStart/End, balance, rationale", (() => { const p = r.phases[0]; return p.maintenanceStart > p.maintenanceEnd && p.adaptationEnd <= 0 && typeof p.averageEnergyBalance === "number" && typeof p.rationale === "string" && p.rationale.length > 20; })(), 1);
+
+    // Weight co-estimator: eating 2500 but losing 0.4 kg/wk → must read as a deficit
+    const d2 = [], w2 = []; let w = 80;
+    for (let i = 99; i >= 0; i--) { const dd = new Date("2026-06-24T00:00:00"); dd.setDate(dd.getDate() - i); const iso = dd.toISOString().slice(0, 10); d2.push({ date: iso, calories: 2500, protein: 180 }); if (i % 3 === 0) { w2.push({ date: iso, weight: +w.toFixed(2) }); w -= 0.057 * 3; } }
+    const rc = computeHistoricalPhases({ diet: d2, weight: w2 }, {}, "2026-06-24");
+    ok("history: weight is a co-estimator — losing on 2500 reads as a deficit (not maintenance)", rc.ready && rc.phases.some(p => p.key === "cut" || p.key === "aggressiveCut") && rc.phases[0].delta < -150, [rc.phases[0].label, rc.phases[0].delta]);
+
+    ok("history: output shape (maintenanceTrend, adaptationTrend, weightTrend, transitions)", Array.isArray(r.maintenanceTrend) && r.maintenanceTrend.length > 0 && Array.isArray(r.adaptationTrend) && Array.isArray(r.weightTrend) && Array.isArray(r.detectedTransitions) && r.timeline === r.phases, 1);
+    ok("history: confidence band present; sparse-weight still classifies", ["High", "Medium", "Low"].includes(r.phases[0].confidenceBand), r.phases[0].confidenceBand);
+    ok("history: <10 logged days → not ready (no fabricated phases)", computeHistoricalPhases({ diet: [{ date: "2026-06-20", calories: 2000 }], weight: [] }, {}, "2026-06-24").ready === false, 1);
   }
 
   // ── Goal Plan V2: Phase Transition Engine ──
