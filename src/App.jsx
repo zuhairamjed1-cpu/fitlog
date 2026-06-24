@@ -17,6 +17,10 @@ import { computePhysiologyState } from "./engines/physiology";
 import { getPhases, activePhase, applyPhaseChange, generatePhases } from "./engines/phases";
 import { computeCircadian, todaysBioNutrition } from "./engines/circadian";
 import { computeVolume, STATUS_LEGEND, MUSCLES, MUSCLE_KEYS, MUSCLE_RANGE, REGION_LABEL, resolveMuscle, listExerciseMappings } from "./engines/volume";
+import { computeHistoricalPhases } from "./engines/historyPhases";
+import { suggestTransitions } from "./engines/transitions";
+import { computeRecoveryCapacity } from "./engines/recoveryCapacity";
+import { computeFatigue } from "./engines/fatigue";
 import { ANTERIOR_POLY, POSTERIOR_POLY } from "./anatomyData";
 import { proposeAdaptation } from "./engines/adaptation";
 import { computePhaseResult, summarizeDecisions, evaluateDecisions, logDecision } from "./engines/strategy";
@@ -5596,7 +5600,7 @@ const GOAL_TYPES = [
   { k: "leanbulk", label: "Lean Bulk" }, { k: "cut", label: "Cut" }, { k: "minicut", label: "Mini Cut" },
   { k: "recomp", label: "Recomp" }, { k: "maintenance", label: "Maintenance" }, { k: "strength", label: "Strength" }, { k: "health", label: "Health" },
 ];
-const GP_TABS = [{ k: "overview", label: "Overview" }, { k: "road", label: "Roadmap" }, { k: "fore", label: "Forecast" }, { k: "report", label: "Reports" }, { k: "history", label: "History" }];
+const GP_TABS = [{ k: "overview", label: "Overview" }, { k: "road", label: "Roadmap" }, { k: "traj", label: "Trajectory" }, { k: "fore", label: "Forecast" }, { k: "report", label: "Reports" }, { k: "history", label: "History" }];
 const GP_EXP = [{ k: "novice", label: "Novice (<1yr)" }, { k: "intermediate", label: "Intermediate" }, { k: "advanced", label: "Advanced (3yr+)" }];
 
 function TierBadge({ tier }) {
@@ -6319,6 +6323,182 @@ function GoalHistoryTab({ data, goals }) {
   );
 }
 
+// ─── STRATEGIC BRAIN CARDS (Goal Plan V2) ───────────────────────────────────
+const PHASE_COLOR = { aggressiveDeficit: "#f47e6e", deficit: "#f0a868", maintenance: "#7d8aa0", leanBulk: "#8fd989", aggressiveSurplus: "#5cc8df" };
+const fmtRange = (a, b) => `${formatShortDate(a)} → ${formatShortDate(b)}`;
+
+function HistoricalPhasesCard({ data, goals }) {
+  const h = useMemo(() => computeHistoricalPhases(data, goals.profile || {}, getTodayStr()), [data, goals]);
+  return (
+    <Card title="Historical Phases" sub="where you've been — reconstructed from intake + weight" action={h.ready ? <TierBadge tier="estimate" /> : null}>
+      {!h.ready ? <Empty icon="◷" title="Not enough history yet" hint={h.reason || "Log nutrition and weight over a few weeks and FitLog will reconstruct your past deficit / maintenance / surplus phases."} /> : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+          {h.phases.map((p, i) => (
+            <div key={i} style={{ display: "flex", gap: 12, padding: "11px 0", borderTop: i ? "1px solid var(--line)" : "none" }}>
+              <div style={{ width: 4, borderRadius: 4, background: PHASE_COLOR[p.key] || "var(--line)", alignSelf: "stretch" }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
+                  <span style={{ fontWeight: 700 }}>{p.label}</span>
+                  <span className="muted small" style={{ whiteSpace: "nowrap" }}>{fmtRange(p.start, p.end)}</span>
+                </div>
+                <div className="muted small" style={{ marginTop: 2 }}>
+                  {p.weeks}wk{p.avgRateKgWk != null ? ` · ${p.avgRateKgWk > 0 ? "+" : ""}${p.avgRateKgWk} kg/wk` : ""}{p.avgCalories ? ` · ~${p.avgCalories.toLocaleString()} kcal` : ""}{p.estMaintenance ? ` · TDEE ~${p.estMaintenance.toLocaleString()}` : ""}
+                  <span style={{ marginLeft: 6, color: p.tier === "measured" ? "#8fd989" : "#f0a868" }}>· {p.tier === "measured" ? "Measured" : "Estimated"}</span>
+                </div>
+              </div>
+            </div>
+          ))}
+          <p className="muted small" style={{ marginTop: 10, lineHeight: 1.45 }}>Current state: <b style={{ color: "var(--text)" }}>{h.current ? h.current.label : "—"}</b>. Phases backed by logged weight are <span style={{ color: "#8fd989" }}>Measured</span>; intake-only stretches are <span style={{ color: "#f0a868" }}>Estimated</span>.</p>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function ScoreBar({ label, value, color }) {
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 3 }}><span className="muted">{label}</span><span style={{ color: value == null ? "var(--text-2)" : "var(--text)", fontWeight: 600 }}>{value == null ? "n/a" : value}</span></div>
+      <div style={{ height: 6, borderRadius: 6, background: "var(--bg-2)", overflow: "hidden" }}><div style={{ width: `${value == null ? 0 : value}%`, height: "100%", background: value == null ? "transparent" : color, borderRadius: 6, transition: "width .4s ease" }} /></div>
+    </div>
+  );
+}
+
+function RecoveryCapacityCard({ data, goals }) {
+  const r = useMemo(() => computeRecoveryCapacity(data, goals, getTodayStr()), [data, goals]);
+  return (
+    <Card title="Recovery Capacity" sub="how well set up to recover & adapt — not fatigue" action={r.ready ? <TierBadge tier="estimate" /> : null}>
+      {!r.ready ? <Empty icon="◌" title="No recovery data yet" hint={r.reason || "Log sleep or nutrition and your recovery capacity will appear here."} /> : (
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 14 }}>
+            <div style={{ position: "relative", width: 76, height: 76, flexShrink: 0 }}>
+              <svg viewBox="0 0 36 36" style={{ width: 76, height: 76, transform: "rotate(-90deg)" }}>
+                <circle cx="18" cy="18" r="15.5" fill="none" stroke="var(--bg-2)" strokeWidth="3.5" />
+                <circle cx="18" cy="18" r="15.5" fill="none" stroke={r.bandColor} strokeWidth="3.5" strokeLinecap="round" strokeDasharray={`${(r.score / 100) * 97.4} 97.4`} style={{ transition: "stroke-dasharray .5s ease" }} />
+              </svg>
+              <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+                <span style={{ fontSize: 22, fontWeight: 800, lineHeight: 1 }}>{r.score}</span>
+                <span className="muted" style={{ fontSize: 9 }}>/ 100</span>
+              </div>
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 18, fontWeight: 800, color: r.bandColor }}>{r.band}</div>
+              <div className="muted small" style={{ marginTop: 2 }}>{r.confidence} confidence{r.limiter ? ` · limited by ${r.limiter}` : ""}</div>
+              {r.eaCapped && <div className="small" style={{ color: "#f47e6e", marginTop: 4 }}>⚠ Capped — energy availability critically low</div>}
+            </div>
+          </div>
+          <ScoreBar label="Sleep (35%)" value={r.components.sleep} color="#5cc8df" />
+          <ScoreBar label="Nutrition (30%)" value={r.components.nutrition} color="#8fd989" />
+          <ScoreBar label="Stress (20%)" value={r.components.stress} color="#a78bda" />
+          <ScoreBar label="Rest (15%)" value={r.components.rest} color="#f0a868" />
+          <p className="muted small" style={{ marginTop: 6, lineHeight: 1.45 }}>{r.note}</p>
+        </>
+      )}
+    </Card>
+  );
+}
+
+const FATIGUE_STATE_COLOR = { Fresh: "#8fd989", Accumulating: "#f9c97e", Overreached: "#f47e6e" };
+function FatigueCard({ data, goals }) {
+  const [showMuscles, setShowMuscles] = useState(false);
+  const f = useMemo(() => computeFatigue(data, goals, getTodayStr()), [data, goals]);
+  if (!f.ready) return <Card title="Fatigue" sub="is accumulated stress impairing adaptation?"><Empty icon="◍" title="Not enough training logged" hint={f.reason || "Log a few workouts and your fatigue picture builds here."} /></Card>;
+  const trained = f.perMuscle.filter(m => m.recentSets > 0);
+  return (
+    <Card title="Fatigue" sub="accumulated stress vs adaptation — separate from recovery" action={<TierBadge tier="estimate" />}>
+      <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 12 }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+            <span style={{ fontSize: 30, fontWeight: 800, color: f.bandColor }}>{f.finalFatigue}</span>
+            <span style={{ fontSize: 16, fontWeight: 700, color: f.bandColor }}>{f.band}</span>
+          </div>
+          <div className="muted small">{f.confidence} confidence · estimated</div>
+        </div>
+        <div style={{ textAlign: "center" }}>
+          <div style={{ width: 56, height: 56, borderRadius: "50%", background: `${f.readinessColor}22`, border: `2px solid ${f.readinessColor}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <span style={{ fontSize: 11, fontWeight: 800, color: f.readinessColor }}>{f.readiness}</span>
+          </div>
+          <div className="muted" style={{ fontSize: 10, marginTop: 3 }}>readiness</div>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        {[["Performance", f.layers.performance, "50%"], ["Wellness", f.layers.wellness, "30%"], ["Load", f.layers.load, "20%"]].map(([l, v, w]) => (
+          <div key={l} style={{ flex: 1, background: "var(--bg-2)", borderRadius: 10, padding: "8px 10px" }}>
+            <div className="muted" style={{ fontSize: 10 }}>{l} <span style={{ opacity: .6 }}>{w}</span></div>
+            <div style={{ fontSize: 17, fontWeight: 700 }}>{v}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="gp-stat-row"><span className="muted small">e1RM trend (Epley·Brzycki)</span><span style={{ color: f.performance.e1rmTrendPct == null ? "var(--text-2)" : f.performance.e1rmTrendPct >= 0 ? "#8fd989" : "#f47e6e" }}>{f.performance.e1rmTrendPct == null ? "—" : `${f.performance.e1rmTrendPct > 0 ? "+" : ""}${f.performance.e1rmTrendPct}%`}</span></div>
+      <div className="gp-stat-row"><span className="muted small">Load ratio (acute ÷ chronic)</span><span style={{ color: f.load.ratio == null ? "var(--text-2)" : f.load.ratio >= 1.3 ? "#f9c97e" : "var(--text)" }}>{f.load.ratio == null ? "—" : `${f.load.ratio}×`}</span></div>
+
+      {f.deload.recommended ? (
+        <div style={{ marginTop: 10, padding: "10px 12px", borderRadius: 10, background: "rgba(244,126,110,0.1)", border: "1px solid rgba(244,126,110,0.35)" }}>
+          <div style={{ fontWeight: 700, color: "#f47e6e", fontSize: 13 }}>⚠ Deload recommended</div>
+          <p className="small" style={{ margin: "4px 0 0", color: "var(--text-2)", lineHeight: 1.45 }}>Performance is declining and: {f.deload.corroborators.join("; ")}.</p>
+        </div>
+      ) : (
+        <div style={{ marginTop: 10, padding: "8px 12px", borderRadius: 10, background: "rgba(143,217,137,0.08)", border: "1px solid rgba(143,217,137,0.25)" }}>
+          <span className="small" style={{ color: "#8fd989" }}>✓ No deload indicated — train as planned.</span>
+        </div>
+      )}
+
+      {f.overreached.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <div className="muted small" style={{ marginBottom: 5 }}>Overreached muscles</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{f.overreached.map(m => <span key={m} style={{ fontSize: 11, padding: "3px 9px", borderRadius: 999, background: "rgba(244,126,110,0.15)", border: "1px solid rgba(244,126,110,0.35)", color: "#f9b3a8" }}>{m}</span>)}</div>
+        </div>
+      )}
+
+      <button className="btn-ghost btn-sm" style={{ marginTop: 12 }} onClick={() => setShowMuscles(s => !s)}>{showMuscles ? "Hide per-muscle ▾" : "Per-muscle fatigue ▸"}</button>
+      {showMuscles && (
+        <div style={{ marginTop: 8 }}>
+          {trained.length === 0 && <p className="muted small">Nothing trained in the last 3 days — all muscles Fresh.</p>}
+          {trained.sort((a, b) => b.recentSets - a.recentSets).map(m => (
+            <div key={m.key} className="gp-stat-row" style={{ padding: "3px 0" }}>
+              <span className="small" style={{ flex: 1 }}>{m.label}</span>
+              <span className="small muted" style={{ width: 70, textAlign: "right" }}>{m.recentSets} sets</span>
+              <span className="small" style={{ width: 96, textAlign: "right", color: FATIGUE_STATE_COLOR[m.state], fontWeight: 600 }}>{m.state}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <p className="muted small" style={{ marginTop: 10, lineHeight: 1.45 }}>{f.note}</p>
+    </Card>
+  );
+}
+
+function PhaseTransitionCard({ data, goals }) {
+  const h = useMemo(() => computeHistoricalPhases(data, goals.profile || {}, getTodayStr()), [data, goals]);
+  const current = h.ready && h.current ? h.current.label : (goals.goal || null);
+  const t = useMemo(() => current ? suggestTransitions(current, { weeksInPhase: h.ready && h.current ? h.current.weeks : null }) : null, [current, h]);
+  if (!t) return null;
+  return (
+    <Card title="What's Next" sub="phase transition options — suggestions only">
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
+        <span style={{ padding: "5px 12px", borderRadius: 999, background: "var(--bg-2)", fontWeight: 600, fontSize: 13 }}>{t.fromLabel}</span>
+        <span className="muted">→</span>
+        <span style={{ padding: "5px 12px", borderRadius: 999, background: "rgba(143,217,137,0.15)", border: "1px solid rgba(143,217,137,0.4)", color: "#8fd989", fontWeight: 700, fontSize: 13 }}>{t.recommendedLabel}</span>
+      </div>
+      {t.options.map((o, i) => {
+        const rec = o.to === t.recommended;
+        return (
+          <div key={i} style={{ padding: "9px 0", borderTop: i ? "1px solid var(--line)" : "none" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+              <span style={{ fontWeight: 700, fontSize: 13 }}>{o.label}</span>
+              {rec && <span style={{ fontSize: 10, padding: "1px 7px", borderRadius: 999, background: "rgba(143,217,137,0.18)", color: "#8fd989", fontWeight: 700 }}>RECOMMENDED</span>}
+            </div>
+            <p className="small" style={{ margin: "3px 0 0", color: "var(--text-2)", lineHeight: 1.45 }}>{o.why}</p>
+          </div>
+        );
+      })}
+      <p className="muted small" style={{ marginTop: 10 }}>{t.note}</p>
+    </Card>
+  );
+}
+
 function GoalPlanSection({ data, goals, onSaveGoals, addEntry, deleteEntry }) {
   const [tab, setTab] = useState("overview");
   const [editing, setEditing] = useState(false);
@@ -6480,6 +6660,15 @@ function GoalPlanSection({ data, goals, onSaveGoals, addEntry, deleteEntry }) {
           {phases.length > 0 && <Card title="Timeline" sub="your roadmap at a glance"><PlanTimeline phases={phases} /></Card>}
           <GoalRoadmapTab goals={goals} currentWeight={currentWeight} />
         </>
+      )}
+
+      {tab === "traj" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+          <FatigueCard data={data} goals={goals} />
+          <RecoveryCapacityCard data={data} goals={goals} />
+          <HistoricalPhasesCard data={data} goals={goals} />
+          <PhaseTransitionCard data={data} goals={goals} />
+        </div>
       )}
 
       {tab === "fore" && (
