@@ -3417,8 +3417,10 @@ function ExerciseMappingCard({ data, goals, onSaveGoals }) {
   const reset = norm => { const em = { ...(goals.exerciseMap || {}) }; delete em[norm]; onSaveGoals({ ...goals, exerciseMap: em }); setEdit(null); haptic(6); };
 
   return (
-    <Card title="Exercise Mapping" sub="Manage how exercises are categorized" action={<button className="btn-ghost btn-sm" onClick={() => setOpen(o => !o)}>{open ? "Hide ▾" : "Show ▸"}</button>}>
-      {open && <>
+    <Card title="Exercise Mapping" sub="Your logged exercises — categorized" action={list.length > 0 && <button className="btn-ghost btn-sm" onClick={() => setOpen(o => !o)}>{open ? "Hide ▾" : "Show ▸"}</button>}>
+      {list.length === 0 ? (
+        <Empty icon="◌" title="No exercises logged yet" hint="Log workouts and FitLog automatically builds your exercise mapping database — only the exercises you actually use." />
+      ) : open ? <>
       <input type="text" value={q} onChange={e => setQ(e.target.value)} placeholder="Search exercises…"
         style={{ width: "100%", background: "var(--bg-2)", color: "var(--text)", border: "1px solid var(--line)", borderRadius: 10, padding: "9px 12px", fontSize: 14, margin: "10px 0" }} />
       <div style={{ maxHeight: 360, overflowY: "auto", margin: "0 -4px" }}>
@@ -3438,15 +3440,15 @@ function ExerciseMappingCard({ data, goals, onSaveGoals }) {
             </div>
           </div>
         ) : (
-          <button key={x.norm} onClick={() => setEdit({ norm: x.norm, sel: x.muscle })}
+          <button key={x.norm} onClick={() => setEdit({ norm: x.norm, sel: x.muscle || MUSCLE_KEYS[0] })}
             style={{ display: "flex", width: "100%", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "9px 8px", borderRadius: 8, background: "transparent", border: "none", borderBottom: "1px solid var(--line)", cursor: "pointer", textAlign: "left" }}>
             <span className="small" style={{ color: "var(--text)" }}>{x.name}{x.overridden ? " ✎" : ""}</span>
-            <span className="small" style={{ color: "var(--text-2)", whiteSpace: "nowrap" }}>{MUSCLES[x.muscle].label} ›</span>
+            <span className="small" style={{ color: x.muscle ? "var(--text-2)" : "#f9c97e", whiteSpace: "nowrap" }}>{x.muscle ? MUSCLES[x.muscle].label : "Set muscle"} ›</span>
           </button>
         ))}
       </div>
-      <p className="muted small" style={{ marginTop: 10, lineHeight: 1.45 }}>Every workout metric — Training Analysis, Weak Points, the Muscle Map, Goal-Plan volume — reads from this list. Edit a mapping and it updates everywhere.</p>
-      </>}
+      <p className="muted small" style={{ marginTop: 10, lineHeight: 1.45 }}>This list grows as you log new exercises — each gets an auto-suggested muscle you can change. Every workout metric (Training Analysis, Weak Points, the Muscle Map, Goal-Plan volume) reads from it.</p>
+      </> : null}
     </Card>
   );
 }

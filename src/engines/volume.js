@@ -178,27 +178,22 @@ export function resolveMuscle(rawName, overrides) {
   return mapExercise(rawName);
 }
 
-// Built-in catalog (display name → muscle), derived from mapExercise so it's always consistent.
-const CATALOG_NAMES = ["Bench Press", "Incline Bench Press", "Dumbbell Bench Press", "Chest Press", "Push Up", "Cable Fly", "Pec Deck", "Dips", "Overhead Press", "Arnold Press", "Lateral Raise", "Cable Lateral Raise", "Front Raise", "Face Pull", "Reverse Pec Deck", "Rear Delt Fly", "Lat Pulldown", "Pull Up", "Chin Up", "Straight Arm Pulldown", "Pullover", "Barbell Row", "Dumbbell Row", "Cable Row", "Chest Supported Row", "T-Bar Row", "Shrug", "Rack Pull", "Bicep Curl", "Hammer Curl", "Preacher Curl", "Incline Curl", "Tricep Pushdown", "Overhead Tricep Extension", "Skull Crusher", "Close Grip Bench Press", "Wrist Curl", "Reverse Curl", "Squat", "Front Squat", "Leg Press", "Hack Squat", "Lunge", "Bulgarian Split Squat", "Leg Extension", "Romanian Deadlift", "Deadlift", "Leg Curl", "Hip Thrust", "Glute Bridge", "Back Extension", "Standing Calf Raise", "Seated Calf Raise", "Cable Crunch", "Hanging Leg Raise", "Plank", "Russian Twist", "Cable Woodchop", "Adduction Machine"];
-export const EXERCISE_CATALOG = CATALOG_NAMES.map(name => ({ name, norm: normExercise(name), muscle: mapExercise(name) })).filter(x => x.muscle);
-
-// All exercises FitLog knows about (catalog + ones the user has logged) with their
-// current primary muscle (after overrides). Powers the Exercise Mapping card.
+// The user's personal exercise dictionary — built ONLY from logged workouts.
+// New exercises appear automatically the first time they're logged, with an
+// attempted auto-classification as a suggested default the user can change.
 export function listExerciseMappings(data, goals) {
   const overrides = (goals && goals.exerciseMap) || {};
   const seen = new Map();
-  EXERCISE_CATALOG.forEach(c => seen.set(c.norm, { name: c.name, norm: c.norm, source: "catalog" }));
   (data && data.exercise || []).forEach(e => {
     const p = e._parsed || parseWorkout(e.text || "");
     (p.exercises || []).forEach(ex => {
       const n = normExercise(ex.name);
       if (!n) return;
-      if (!seen.has(n)) seen.set(n, { name: (ex.name || "").replace(/\s+/g, " ").trim(), norm: n, source: "logged" });
+      if (!seen.has(n)) seen.set(n, { name: (ex.name || "").replace(/\s+/g, " ").trim(), norm: n });
     });
   });
   return [...seen.values()]
-    .map(o => ({ ...o, muscle: overrides[o.norm] || mapExercise(o.name), overridden: overrides[o.norm] != null }))
-    .filter(o => o.muscle)
+    .map(o => ({ ...o, muscle: overrides[o.norm] || mapExercise(o.name) || null, overridden: overrides[o.norm] != null }))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
