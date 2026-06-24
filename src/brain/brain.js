@@ -509,7 +509,7 @@ export function formatBrainText(brain) {
     const wv = brain.weeklyVolume;
     const bt = wv.belowTarget.length ? ` Below goal-plan target: ${wv.belowTarget.map(b => `${b.muscle} ${b.sets}/${b.target}`).join(", ")}.` : "";
     const wk = wv.weakPoints.length ? ` Low/untrained (<6 sets): ${wv.weakPoints.slice(0, 4).map(w => `${w.muscle} ${w.sets}`).join(", ")}.` : "";
-    lines.push(`Weekly muscle volume (Estimated, Mon–Sun hard sets): ${wv.totalSets} total across ${wv.musclesTrained}/18 muscles${wv.highest ? `, most ${wv.highest.label} (${wv.highest.sets})` : ""}. Volume balance — push ${wv.push} / pull ${wv.pull}, upper ${wv.upper} / lower ${wv.lower}.${bt}${wk} Reference this when the user asks about training volume or weak points; note these set→muscle counts are estimates.`);
+    lines.push(`Weekly muscle volume (Estimated, Mon–Sun hard sets): ${wv.totalSets} total across ${wv.musclesTrained}/28 muscles${wv.highest ? `, most ${wv.highest.label} (${wv.highest.sets})` : ""}. Volume balance — push ${wv.push} / pull ${wv.pull}, upper ${wv.upper} / lower ${wv.lower}.${bt}${wk} Reference this when the user asks about training volume or weak points; note these set→muscle counts are estimates.`);
   }
 
   // ─── ABOUT THE USER (profile + strategy) ─────────────────────────────────

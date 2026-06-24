@@ -16,7 +16,7 @@ import { computeGoalPlan, formatGoalText, simulateGoal, analyzeRoadmap, assessGo
 import { computePhysiologyState } from "./engines/physiology";
 import { getPhases, activePhase, applyPhaseChange, generatePhases } from "./engines/phases";
 import { computeCircadian, todaysBioNutrition } from "./engines/circadian";
-import { computeVolume, STATUS_LEGEND, MUSCLES, MUSCLE_KEYS, resolveMuscle, listExerciseMappings } from "./engines/volume";
+import { computeVolume, STATUS_LEGEND, MUSCLES, MUSCLE_KEYS, MUSCLE_RANGE, REGION_LABEL, resolveMuscle, listExerciseMappings } from "./engines/volume";
 import { ANTERIOR_POLY, POSTERIOR_POLY } from "./anatomyData";
 import { proposeAdaptation } from "./engines/adaptation";
 import { computePhaseResult, summarizeDecisions, evaluateDecisions, logDecision } from "./engines/strategy";
@@ -3190,34 +3190,34 @@ function EnergyBalanceCard({ data, goals }) {
 }
 
 // ─── ANATOMICAL MUSCLE MAP ───────────────────────────────────────────────────
-// Real anatomical muscle polygons (react-body-highlighter, MIT — see anatomyData.js),
-// mapped to FitLog's engine muscles and colored by weekly volume vs each muscle's
-// recommended range. ESTIMATE tier. A few engine muscles (side delts, mid back,
-// adductors) have no distinct polygon in the source art and appear in the analysis
-// tables rather than on the map.
+// Real anatomical muscle polygons (react-body-highlighter, MIT — see anatomyData.js).
+// The art has broad regions, so each polygon is colored by the AGGREGATE volume of
+// the detailed muscles that roll up to it; the tooltip and Training Analysis show
+// the fine-grained split. ESTIMATE tier.
 const ANATOMY_DATA = { front: ANTERIOR_POLY, back: POSTERIOR_POLY };
-const ANATOMY_MAP = {
-  front: { CHEST: "chest", FRONT_DELTOIDS: "frontDelts", BICEPS: "biceps", TRICEPS: "triceps", FOREARM: "forearms", ABS: "abs", OBLIQUES: "obliques", QUADRICEPS: "quads", CALVES: "calves" },
-  back: { TRAPEZIUS: "traps", BACK_DELTOIDS: "rearDelts", UPPER_BACK: "lats", LOWER_BACK: "erectors", TRICEPS: "triceps", FOREARM: "forearms", GLUTEAL: "glutes", HAMSTRING: "hamstrings", CALVES: "calves", LEFT_SOLEUS: "calves", RIGHT_SOLEUS: "calves" },
+const POLY_TO_REGION = {
+  CHEST: "CHEST", FRONT_DELTOIDS: "FRONT_DELTOIDS", BICEPS: "BICEPS", TRICEPS: "TRICEPS",
+  FOREARM: "FOREARM", ABS: "ABS", OBLIQUES: "OBLIQUES", QUADRICEPS: "QUADRICEPS",
+  CALVES: "CALVES", LEFT_SOLEUS: "CALVES", RIGHT_SOLEUS: "CALVES", TRAPEZIUS: "TRAPEZIUS",
+  BACK_DELTOIDS: "BACK_DELTOIDS", UPPER_BACK: "UPPER_BACK", LOWER_BACK: "LOWER_BACK",
+  GLUTEAL: "GLUTEAL", HAMSTRING: "HAMSTRING", ABDUCTOR: "ABDUCTORS", ABDUCTORS: "ABDUCTORS", NECK: "NECK",
 };
 
-function AnatomyBody({ view, vmap, active, onPick }) {
-  const data = ANATOMY_DATA[view], map = ANATOMY_MAP[view];
+function AnatomyBody({ view, regions, active, onPick }) {
+  const data = ANATOMY_DATA[view];
   const tr = { transition: "fill .35s ease, fill-opacity .35s ease, stroke .12s ease", cursor: "pointer" };
-  const colorOf = key => { const m = vmap[key]; const s = m ? m.status : null; return { fill: s ? s.color : "#3a4150", op: s ? s.opacity : 0.4 }; };
+  const colorOf = rk => { const r = rk ? regions[rk] : null; const s = r ? r.status : null; return { fill: s ? s.color : "#3a4150", op: s ? s.opacity : 0.4 }; };
   return (
     <svg viewBox="0 0 100 200" style={{ width: "100%", maxWidth: 270, display: "block", margin: "0 auto" }}>
-      {/* base figure (all regions, dim) */}
       <g>{Object.entries(data).map(([m, polys]) => polys.map((p, i) => (
         <polygon key={"b" + m + i} points={p} fill="#242932" stroke="#0e1118" strokeWidth="0.35" />
       )))}</g>
-      {/* tracked muscles, colored */}
       {Object.entries(data).map(([m, polys]) => {
-        const key = map[m]; if (!key) return null;
-        const c = colorOf(key), on = active === key;
+        const rk = POLY_TO_REGION[m]; if (!rk || !regions[rk]) return null;
+        const c = colorOf(rk), on = active === rk;
         return polys.map((p, i) => (
           <polygon key={m + i} points={p} fill={c.fill} fillOpacity={c.op} stroke={on ? "#fff" : "#0e1118"} strokeWidth={on ? 0.9 : 0.35} style={tr}
-            onMouseEnter={() => onPick(key)} onClick={() => onPick(key)} />
+            onMouseEnter={() => onPick(rk)} onClick={() => onPick(rk)} />
         ));
       })}
     </svg>
@@ -3235,10 +3235,15 @@ function WorkoutAnalysis({ data, goals }) {
 
   if (!vol.ready) return <Card title="Training Analysis"><Empty icon="◫" title="No workouts logged yet" hint="Log a workout above — your weekly training analysis and muscle map appear here." /></Card>;
 
-  const am = active ? vmap[active] : null;
+  const ar = active ? vol.regions[active] : null;
   const s = vol.summary, b = vol.balance;
   const s$ = n => (n > 0 ? "+" : "") + n;
-  const musclesByVol = vol.muscles.slice().sort((a, c) => c.thisWeek - a.thisWeek);
+  const intelGroups = useMemo(() => {
+    const g = {};
+    vol.muscles.forEach(m => { const rk = MUSCLES[m.key].region; (g[rk] = g[rk] || { region: rk, label: vol.regions[rk].label, total: vol.regions[rk].thisWeek, status: vol.regions[rk].status, items: [] }).items.push(m); });
+    Object.values(g).forEach(x => x.items.sort((a, c) => c.thisWeek - a.thisWeek));
+    return Object.values(g).sort((a, c) => c.total - a.total);
+  }, [vol]);
 
   return (
     <>
@@ -3268,15 +3273,23 @@ function WorkoutAnalysis({ data, goals }) {
 
         {tab === "intel" && (
           <>
-            {musclesByVol.map(m => (
-              <div key={m.key} className="gp-stat-row" style={{ padding: "3px 0" }}>
-                <span className="small" style={{ flex: 1 }}>{m.label}</span>
-                <span className="small" style={{ width: 52, textAlign: "right", color: "var(--text-2)" }}>{m.thisWeek} set{m.thisWeek === 1 ? "" : "s"}</span>
-                <span className="small" style={{ width: 64, textAlign: "right", color: "var(--text-2)" }}>{m.recommended}</span>
-                <span className="small" style={{ width: 88, textAlign: "right", color: m.status.color, fontWeight: 600 }}>{m.status.label}</span>
+            {intelGroups.map(g => (
+              <div key={g.region} style={{ marginBottom: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 3 }}>
+                  <span style={{ fontWeight: 700, fontSize: 13 }}>{g.label}</span>
+                  <span className="small" style={{ color: g.status.color, fontWeight: 600 }}>{g.total} · {g.status.label}</span>
+                </div>
+                {g.items.map(m => (
+                  <div key={m.key} className="gp-stat-row" style={{ padding: "2px 0" }}>
+                    <span className="small" style={{ flex: 1, paddingLeft: 10, color: "var(--text-2)" }}>{m.label}</span>
+                    <span className="small" style={{ width: 48, textAlign: "right" }}>{m.thisWeek} set{m.thisWeek === 1 ? "" : "s"}</span>
+                    <span className="small" style={{ width: 56, textAlign: "right", color: "var(--text-2)" }}>{m.recommended}</span>
+                    <span className="small" style={{ width: 84, textAlign: "right", color: m.status.color, fontWeight: 600 }}>{m.status.label}</span>
+                  </div>
+                ))}
               </div>
             ))}
-            <div style={{ borderTop: "1px solid var(--line)", marginTop: 10, paddingTop: 10 }}>
+            <div style={{ borderTop: "1px solid var(--line)", marginTop: 6, paddingTop: 10 }}>
               <div className="small" style={{ fontWeight: 600, marginBottom: 6 }}>Volume balance <span className="muted" style={{ fontWeight: 400 }}>(hard sets)</span></div>
               <div className="gp-stat-row"><span className="muted small">Push / Pull</span><span>{b.push} / {b.pull}</span></div>
               <div className="gp-stat-row"><span className="muted small">Upper / Lower</span><span>{b.upper} / {b.lower}</span></div>
@@ -3304,20 +3317,25 @@ function WorkoutAnalysis({ data, goals }) {
         <button className={`seg-btn ${view === "back" ? "active" : ""}`} style={{ padding: "3px 10px", fontSize: 12 }} onClick={() => { setView("back"); setActive(null); }}>Back</button>
       </span>}>
         <div style={{ position: "relative" }} onMouseMove={e => { const r = e.currentTarget.getBoundingClientRect(); setTip({ x: e.clientX - r.left, y: e.clientY - r.top }); }} onMouseLeave={() => setActive(null)}>
-          <AnatomyBody view={view} vmap={vmap} active={active} onPick={setActive} />
-          {am && (
-            <div style={{ position: "absolute", left: Math.min(tip.x + 14, 210), top: Math.max(tip.y - 8, 0), pointerEvents: "none", background: "rgba(16,19,26,0.97)", border: "1px solid var(--line)", borderRadius: 12, padding: "10px 12px", minWidth: 156, boxShadow: "0 10px 30px rgba(0,0,0,0.55)", zIndex: 5, backdropFilter: "blur(8px)" }}>
-              <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 5 }}>{am.label}</div>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-2)", gap: 16 }}><span>This week</span><b style={{ color: "var(--text)" }}>{am.thisWeek} sets</b></div>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-2)", gap: 16 }}><span>Previous</span><span>{am.lastWeek}</span></div>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-2)", gap: 16 }}><span>Change</span><span style={{ color: (am.changePct ?? am.change) > 0 ? "#8fd989" : (am.changePct ?? am.change) < 0 ? "#f47e6e" : "var(--text-2)" }}>{am.changePct != null ? `${s$(am.changePct)}%` : `${s$(am.change)} sets`}</span></div>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-2)", gap: 16 }}><span>Recommended</span><span>{am.recommended}</span></div>
-              {am.target != null && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-2)", gap: 16 }}><span>Target</span><span>{am.thisWeek}/{am.target} · {am.progress}%</span></div>}
-              <div style={{ marginTop: 5, fontSize: 11, fontWeight: 700, color: am.status.color }}>{am.status.label}</div>
+          <AnatomyBody view={view} regions={vol.regions} active={active} onPick={setActive} />
+          {ar && (
+            <div style={{ position: "absolute", left: Math.min(tip.x + 14, 200), top: Math.max(tip.y - 8, 0), pointerEvents: "none", background: "rgba(16,19,26,0.97)", border: "1px solid var(--line)", borderRadius: 12, padding: "10px 12px", minWidth: 164, boxShadow: "0 10px 30px rgba(0,0,0,0.55)", zIndex: 5, backdropFilter: "blur(8px)" }}>
+              <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 5 }}>{ar.label}</div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-2)", gap: 16 }}><span>This week</span><b style={{ color: "var(--text)" }}>{ar.thisWeek} sets</b></div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-2)", gap: 16 }}><span>Previous</span><span>{ar.lastWeek}</span></div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-2)", gap: 16 }}><span>Change</span><span style={{ color: (ar.changePct ?? ar.change) > 0 ? "#8fd989" : (ar.changePct ?? ar.change) < 0 ? "#f47e6e" : "var(--text-2)" }}>{ar.changePct != null ? `${s$(ar.changePct)}%` : `${s$(ar.change)} sets`}</span></div>
+              <div style={{ marginTop: 4, fontSize: 11, fontWeight: 700, color: ar.status.color }}>{ar.status.label} · rec {ar.recommended}</div>
+              {ar.muscles.length > 1 && (
+                <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px solid var(--line)" }}>
+                  {ar.muscles.map(m => (
+                    <div key={m.key} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--text-2)", gap: 14 }}><span style={{ color: m.thisWeek ? m.status.color : "var(--text-2)" }}>{m.label}</span><span>{m.thisWeek}</span></div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
-        <p className="muted small" style={{ textAlign: "center", margin: "4px 0 10px" }}>{active ? vmap[active].label : "Hover or tap a muscle"}</p>
+        <p className="muted small" style={{ textAlign: "center", margin: "4px 0 10px" }}>{active ? vol.regions[active].label : "Hover or tap a muscle"}</p>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 10, justifyContent: "center" }}>
           {STATUS_LEGEND.map(l => (
             <span key={l.key} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--text-2)" }}>
@@ -3347,16 +3365,18 @@ function WorkoutScreen({ data, goals, addEntry, onSaveGoals }) {
         if (m) { muscles.add(MUSCLES[m].label); (MUSCLES[m].side === "front" ? (ant += w) : (post += w)); }
       });
     });
+    const planned = (data.plannedSessions || []).find(s => s.date === today);
+    const plannedName = planned ? ((SESSION_TYPES[planned.type] || {}).label || planned.type) : null;
     const labeled = todayEntries.find(e => e.label && e.label !== "Workout");
-    const name = labeled ? labeled.label : sets > 0 ? (ant >= post ? "Anterior day" : "Posterior day") : "New session";
-    return { name, sets, volume: Math.round(volume), muscles: [...muscles], any: todayEntries.length > 0 };
-  }, [data.exercise, goals.exerciseMap, today]);
+    const name = plannedName || (labeled && labeled.label) || (sets > 0 ? (ant >= post ? "Anterior day" : "Posterior day") : "New session");
+    return { name, sets, volume: Math.round(volume), muscles: [...muscles], any: todayEntries.length > 0, planned: !!plannedName };
+  }, [data.exercise, data.plannedSessions, goals.exerciseMap, today]);
 
   const header = (
     <div style={{ marginBottom: 14 }}>
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
         <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: "-0.01em" }}>{sessionHeader.name}</div>
-        <div className="muted small">{sessionHeader.any ? "today" : "nothing logged yet today"}</div>
+        <div className="muted small">{sessionHeader.planned ? "from your plan" : sessionHeader.any ? "today" : "nothing logged yet today"}</div>
       </div>
       <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
         <div style={{ flex: 1, minWidth: 90, background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 12, padding: "10px 12px" }}>
@@ -3377,17 +3397,18 @@ function WorkoutScreen({ data, goals, addEntry, onSaveGoals }) {
   );
 
   return (
-    <>
+    <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
       <ExerciseForm onAdd={addEntry("exercise")} recent={data.exercise} hideRecent header={header} />
       <WorkoutAnalysis data={data} goals={goals} />
       <ExerciseMappingCard data={data} goals={goals} onSaveGoals={onSaveGoals} />
       <RecentWorkoutsCard recent={data.exercise} />
-    </>
+    </div>
   );
 }
 
 // ─── CARD 4 — Exercise Mapping (one exercise → one primary muscle, editable) ──
 function ExerciseMappingCard({ data, goals, onSaveGoals }) {
+  const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [edit, setEdit] = useState(null); // { norm, sel }
   const list = useMemo(() => listExerciseMappings(data, goals), [data, goals]);
@@ -3396,9 +3417,10 @@ function ExerciseMappingCard({ data, goals, onSaveGoals }) {
   const reset = norm => { const em = { ...(goals.exerciseMap || {}) }; delete em[norm]; onSaveGoals({ ...goals, exerciseMap: em }); setEdit(null); haptic(6); };
 
   return (
-    <Card title="Exercise Mapping" sub="how FitLog categorizes each exercise — one primary muscle">
+    <Card title="Exercise Mapping" sub="Manage how exercises are categorized" action={<button className="btn-ghost btn-sm" onClick={() => setOpen(o => !o)}>{open ? "Hide ▾" : "Show ▸"}</button>}>
+      {open && <>
       <input type="text" value={q} onChange={e => setQ(e.target.value)} placeholder="Search exercises…"
-        style={{ width: "100%", background: "var(--bg-2)", color: "var(--text)", border: "1px solid var(--line)", borderRadius: 10, padding: "9px 12px", fontSize: 14, marginBottom: 10 }} />
+        style={{ width: "100%", background: "var(--bg-2)", color: "var(--text)", border: "1px solid var(--line)", borderRadius: 10, padding: "9px 12px", fontSize: 14, margin: "10px 0" }} />
       <div style={{ maxHeight: 360, overflowY: "auto", margin: "0 -4px" }}>
         {filtered.length === 0 && <p className="muted small" style={{ padding: "8px 4px" }}>No exercises match “{q}”.</p>}
         {filtered.map(x => edit && edit.norm === x.norm ? (
@@ -3424,18 +3446,20 @@ function ExerciseMappingCard({ data, goals, onSaveGoals }) {
         ))}
       </div>
       <p className="muted small" style={{ marginTop: 10, lineHeight: 1.45 }}>Every workout metric — Training Analysis, Weak Points, the Muscle Map, Goal-Plan volume — reads from this list. Edit a mapping and it updates everywhere.</p>
+      </>}
     </Card>
   );
 }
 
 // ─── CARD 5 — Recent Workouts (timeline) ────────────────────────────────────
 function RecentWorkoutsCard({ recent }) {
+  const [open, setOpen] = useState(false);
   const items = useMemo(() => (recent || []).slice().sort((a, b) => (b.ts || 0) - (a.ts || 0) || (b.date || "").localeCompare(a.date || "")).slice(0, 10), [recent]);
   if (!items.length) return null;
   const durOf = txt => { const m = (txt || "").match(/(\d+)\s*h\s*(\d+)?\s*m|\b(\d+)\s*min/i); if (!m) return null; if (m[3]) return `${m[3]}m`; return `${m[1]}h${m[2] ? " " + m[2] + "m" : ""}`; };
   return (
-    <Card title="Recent Workouts" sub="your last sessions">
-      {items.map((w, i) => {
+    <Card title="Recent Workouts" sub="View previous training sessions" action={<button className="btn-ghost btn-sm" onClick={() => setOpen(o => !o)}>{open ? "Hide ▾" : "Show ▸"}</button>}>
+      {open && items.map((w, i) => {
         const p = w._parsed || parseWorkout(w.text || "");
         const dur = durOf(w.text);
         return (

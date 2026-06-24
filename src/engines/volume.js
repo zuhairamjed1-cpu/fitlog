@@ -11,49 +11,72 @@ import { localDateStr, daysAgo } from "../lib/dates.js";
 import { parseWorkout } from "./workout.js";
 
 // 17 trackable groups, with display label, push/pull/legs/core role, and body side.
+// Detailed muscle taxonomy. `region` = which body-art polygon this rolls up to
+// (the art has broad regions only, so the map colors by region while the data,
+// tooltips and Training Analysis carry the fine-grained split). role = push/pull/
+// legs/core (volume balance), side = front/back (anterior/posterior).
 export const MUSCLES = {
-  chest: { label: "Chest", role: "push", side: "front" },
-  frontDelts: { label: "Front Delts", role: "push", side: "front" },
-  sideDelts: { label: "Side Delts", role: "push", side: "front" },
-  rearDelts: { label: "Rear Delts", role: "pull", side: "back" },
-  triceps: { label: "Triceps", role: "push", side: "back" },
-  biceps: { label: "Biceps", role: "pull", side: "front" },
-  forearms: { label: "Forearms", role: "pull", side: "front" },
-  lats: { label: "Lats", role: "pull", side: "back" },
-  upperBack: { label: "Upper Back", role: "pull", side: "back" },
-  traps: { label: "Traps", role: "pull", side: "back" },
-  erectors: { label: "Spinal Erectors", role: "pull", side: "back" },
-  abs: { label: "Abs", role: "core", side: "front" },
-  obliques: { label: "Obliques", role: "core", side: "front" },
-  glutes: { label: "Glutes", role: "legs", side: "back" },
-  quads: { label: "Quads", role: "legs", side: "front" },
-  adductors: { label: "Adductors", role: "legs", side: "front" },
-  hamstrings: { label: "Hamstrings", role: "legs", side: "back" },
-  calves: { label: "Calves", role: "legs", side: "back" },
+  upperChest: { label: "Upper Chest", role: "push", side: "front", region: "CHEST" },
+  midChest: { label: "Mid Chest", role: "push", side: "front", region: "CHEST" },
+  lowerChest: { label: "Lower Chest", role: "push", side: "front", region: "CHEST" },
+  frontDelts: { label: "Front Delts", role: "push", side: "front", region: "FRONT_DELTOIDS" },
+  sideDelts: { label: "Side Delts", role: "push", side: "front", region: "FRONT_DELTOIDS" },
+  rearDelts: { label: "Rear Delts", role: "pull", side: "back", region: "BACK_DELTOIDS" },
+  lats: { label: "Lats", role: "pull", side: "back", region: "UPPER_BACK" },
+  upperBack: { label: "Upper Back", role: "pull", side: "back", region: "UPPER_BACK" },
+  midBack: { label: "Mid Back", role: "pull", side: "back", region: "UPPER_BACK" },
+  lowerBack: { label: "Lower Back", role: "pull", side: "back", region: "LOWER_BACK" },
+  traps: { label: "Traps", role: "pull", side: "back", region: "TRAPEZIUS" },
+  biceps: { label: "Biceps", role: "pull", side: "front", region: "BICEPS" },
+  brachialis: { label: "Brachialis", role: "pull", side: "front", region: "BICEPS" },
+  triceps: { label: "Triceps", role: "push", side: "back", region: "TRICEPS" },
+  forearms: { label: "Forearms", role: "pull", side: "front", region: "FOREARM" },
+  upperAbs: { label: "Upper Abs", role: "core", side: "front", region: "ABS" },
+  lowerAbs: { label: "Lower Abs", role: "core", side: "front", region: "ABS" },
+  obliques: { label: "Obliques", role: "core", side: "front", region: "OBLIQUES" },
+  serratus: { label: "Serratus", role: "core", side: "front", region: "OBLIQUES" },
+  neck: { label: "Neck", role: "core", side: "front", region: "NECK" },
+  glutes: { label: "Glutes", role: "legs", side: "back", region: "GLUTEAL" },
+  quads: { label: "Quads", role: "legs", side: "front", region: "QUADRICEPS" },
+  adductors: { label: "Adductors", role: "legs", side: "front", region: "QUADRICEPS" },
+  abductors: { label: "Abductors", role: "legs", side: "back", region: "ABDUCTORS" },
+  hipFlexors: { label: "Hip Flexors", role: "legs", side: "front", region: "QUADRICEPS" },
+  hamstrings: { label: "Hamstrings", role: "legs", side: "back", region: "HAMSTRING" },
+  calves: { label: "Calves", role: "legs", side: "back", region: "CALVES" },
+  tibialis: { label: "Tibialis Anterior", role: "legs", side: "front", region: "CALVES" },
 };
 export const MUSCLE_KEYS = Object.keys(MUSCLES);
 
+// Friendly labels for the broad body-art regions (shown on the map tooltip header).
+export const REGION_LABEL = {
+  CHEST: "Chest", FRONT_DELTOIDS: "Front / Side Delts", BACK_DELTOIDS: "Rear Delts",
+  TRICEPS: "Triceps", BICEPS: "Biceps / Brachialis", FOREARM: "Forearms", ABS: "Abs",
+  OBLIQUES: "Obliques / Serratus", QUADRICEPS: "Quads & Hips", CALVES: "Calves / Tibialis",
+  TRAPEZIUS: "Traps", UPPER_BACK: "Lats & Back", LOWER_BACK: "Lower Back", GLUTEAL: "Glutes",
+  HAMSTRING: "Hamstrings", ABDUCTORS: "Abductors", NECK: "Neck",
+};
+
 // Per-muscle evidence-based weekly working-set ranges (general MEV→MRV guidance,
-// not universal truth). Status is judged relative to each muscle's own range.
+// not universal truth). Sub-divided heads carry smaller ranges than a whole muscle.
 export const MUSCLE_RANGE = {
-  chest: [10, 20], frontDelts: [6, 12], sideDelts: [10, 20], rearDelts: [8, 15],
-  triceps: [10, 18], biceps: [10, 18], forearms: [6, 14], lats: [10, 20],
-  upperBack: [10, 20], traps: [8, 16], erectors: [6, 14], abs: [8, 18],
-  obliques: [6, 14], glutes: [8, 16], quads: [10, 20], adductors: [4, 12],
-  hamstrings: [10, 18], calves: [10, 18],
+  upperChest: [6, 12], midChest: [6, 12], lowerChest: [4, 8],
+  frontDelts: [4, 10], sideDelts: [8, 16], rearDelts: [6, 14],
+  lats: [10, 20], upperBack: [6, 14], midBack: [6, 12], lowerBack: [4, 12], traps: [6, 16],
+  biceps: [8, 16], brachialis: [4, 10], triceps: [8, 16], forearms: [4, 12],
+  upperAbs: [6, 14], lowerAbs: [6, 14], obliques: [4, 12], serratus: [3, 8], neck: [2, 8],
+  glutes: [8, 16], quads: [10, 20], adductors: [4, 10], abductors: [4, 10], hipFlexors: [3, 8],
+  hamstrings: [8, 18], calves: [8, 18], tibialis: [3, 8],
 };
 
 // Suggested fixes for an undertrained muscle (used by Weak Points).
 export const MUSCLE_FIXES = {
-  chest: ["Incline Press", "Cable Fly"], frontDelts: ["Overhead Press", "Front Raise"],
-  sideDelts: ["Lateral Raise", "Cable Lateral Raise"], rearDelts: ["Face Pull", "Reverse Pec Deck"],
-  triceps: ["Pushdown", "Overhead Extension"], biceps: ["Incline Curl", "Hammer Curl"],
-  forearms: ["Wrist Curl", "Farmer Carry"], lats: ["Lat Pulldown", "Pull Up"],
-  upperBack: ["Chest-Supported Row", "Cable Row"], traps: ["Shrug", "Rack Pull"],
-  erectors: ["Back Extension", "Deadlift"], abs: ["Cable Crunch", "Hanging Leg Raise"],
-  obliques: ["Cable Woodchop", "Side Plank"], glutes: ["Hip Thrust", "Bulgarian Split Squat"],
-  quads: ["Squat", "Leg Press"], adductors: ["Adduction Machine", "Copenhagen Plank"],
-  hamstrings: ["Romanian Deadlift", "Leg Curl"], calves: ["Standing Calf Raise", "Seated Calf Raise"],
+  upperChest: ["Incline Press", "Incline Dumbbell Press"], midChest: ["Flat Bench Press", "Cable Fly"], lowerChest: ["Weighted Dips", "Decline Press"],
+  frontDelts: ["Overhead Press", "Front Raise"], sideDelts: ["Lateral Raise", "Cable Lateral Raise"], rearDelts: ["Face Pull", "Reverse Pec Deck"],
+  lats: ["Lat Pulldown", "Pull Up"], upperBack: ["Barbell Row", "Cable Row"], midBack: ["Chest-Supported Row", "Seal Row"], lowerBack: ["Back Extension", "Deadlift"], traps: ["Shrug", "Rack Pull"],
+  biceps: ["Incline Curl", "Preacher Curl"], brachialis: ["Hammer Curl", "Reverse Curl"], triceps: ["Pushdown", "Overhead Extension"], forearms: ["Wrist Curl", "Farmer Carry"],
+  upperAbs: ["Cable Crunch", "Crunch"], lowerAbs: ["Hanging Leg Raise", "Reverse Crunch"], obliques: ["Cable Woodchop", "Side Plank"], serratus: ["Cable Pullover", "Serratus Punch"], neck: ["Neck Curl", "Neck Extension"],
+  glutes: ["Hip Thrust", "Bulgarian Split Squat"], quads: ["Squat", "Leg Press"], adductors: ["Adduction Machine", "Copenhagen Plank"], abductors: ["Abduction Machine", "Cable Kickback"], hipFlexors: ["Hanging Knee Raise", "Captain's Chair"],
+  hamstrings: ["Romanian Deadlift", "Leg Curl"], calves: ["Standing Calf Raise", "Seated Calf Raise"], tibialis: ["Tibialis Raise", "Toe Raise"],
 };
 
 // Status relative to a muscle's own recommended range, with a body-map fill opacity.
@@ -98,37 +121,51 @@ export function mapExercise(rawName) {
   if (!n) return null;
   // legs
   if (/\b(leg curls?|lying curls?|seated leg curls?|hamstring curls?|nordic)\b/.test(n)) return "hamstrings";
-  if (/\b(romanian|rdl|stiff leg|good morning)\b/.test(n)) return "hamstrings";
+  if (/\b(romanian|rdl|stiff leg)\b/.test(n)) return "hamstrings";
+  if (/\b(good mornings?)\b/.test(n)) return "lowerBack";
   if (/\b(leg extensions?|quad extensions?|knee extensions?)\b/.test(n)) return "quads";
   if (/\b(adduction|adductor|copenhagen|thigh squeeze)\b/.test(n)) return "adductors";
+  if (/\b(abduction|abductor)\b/.test(n)) return "abductors";
+  if (/\b(hip flexor|captains? chair|knee tucks?)\b/.test(n)) return "hipFlexors";
+  if (/\b(tibialis|toe raises?|dorsiflexion)\b/.test(n)) return "tibialis";
   if (/\bcalf\b|\bcalves\b|\bcalf raises?\b|soleus\b/.test(n)) return "calves";
-  if (/\b(hip thrusts?|glute bridges?|kickbacks?|glute|abduction)\b/.test(n)) return "glutes";
+  if (/\b(hip thrusts?|glute bridges?|kickbacks?|glute)\b/.test(n)) return "glutes";
   if (/\b(leg press|hack squats?)\b/.test(n)) return "quads";
   if (/\b(front squats?|squats?|lunges?|split squats?|bulgarian|step ups?)\b/.test(n)) return "quads";
   // posterior chain / pulls
-  if (/\b(deadlifts?|trap bar|sumo)\b/.test(n)) return "erectors";
-  if (/\b(back extensions?|hyperextensions?|45 extensions?)\b/.test(n)) return "erectors";
+  if (/\b(deadlifts?|trap bar|sumo)\b/.test(n)) return "lowerBack";
+  if (/\b(back extensions?|hyperextensions?|45 extensions?)\b/.test(n)) return "lowerBack";
   if (/\b(face pulls?|rear delts?|reverse flys?|reverse flyes?|reverse pec|rear flys?)\b/.test(n)) return "rearDelts";
   if (/\b(shrugs?|rack pulls?)\b/.test(n)) return "traps";
   if (/\b(pullovers?)\b/.test(n)) return "lats";
   if (/\b(pulldowns?|pull downs?|lat pulls?|pull ups?|pullups?|chin ups?|chinups?|straight arm)\b/.test(n)) return "lats";
-  if (/\b(rows?|t bar|seal rows?|pendlay|meadows)\b/.test(n)) return "upperBack";
+  if (/\b(chest supported|seal rows?|chest supported rows?)\b/.test(n)) return "midBack";
+  if (/\b(rows?|t bar|pendlay|meadows)\b/.test(n)) return "upperBack";
   // shoulders
   if (/\b(lateral raises?|side raises?|lat raises?|side delts?|cable raises?|y raises?)\b/.test(n)) return "sideDelts";
   if (/\b(front raises?)\b/.test(n)) return "frontDelts";
   if (/\b(overhead press|shoulder press|ohp|military|arnold|push press|strict press|seated press)\b/.test(n)) return "frontDelts";
   // arms
   if (/\b(wrist curls?|reverse curls?|forearm|grip|farmers?)\b/.test(n)) return "forearms";
-  if (/\b(hammer curls?|curls?)\b/.test(n)) return "biceps";
-  if (/\b(triceps?|pushdowns?|push downs?|skull|close grip|overhead extensions?|kickbacks?|dips?)\b/.test(n)) return "triceps";
-  // chest
-  if (/\b(flys?|flyes?|pec decks?|pec dec)\b/.test(n)) return "chest";
-  if (/\b(incline bench|incline press|incline|bench|chest press|decline press|chest|push ups?|pushups?)\b/.test(n)) return "chest";
+  if (/\b(hammer curls?)\b/.test(n)) return "brachialis";
+  if (/\b(curls?|preacher|bicep)\b/.test(n)) return "biceps";
+  if (/\b(triceps?|pushdowns?|push downs?|skull|close grip|overhead extensions?|kickbacks?|dips?)\b/.test(n)) {
+    if (/\b(dips?|weighted dips?)\b/.test(n)) return "lowerChest"; // dips bias lower chest
+    return "triceps";
+  }
+  // chest (split by incline / decline / flat)
+  if (/\b(incline)\b/.test(n)) return "upperChest";
+  if (/\b(decline)\b/.test(n)) return "lowerChest";
+  if (/\b(flys?|flyes?|pec decks?|pec dec)\b/.test(n)) return "midChest";
+  if (/\b(bench|chest press|chest|push ups?|pushups?)\b/.test(n)) return "midChest";
   // core
+  if (/\b(serratus)\b/.test(n)) return "serratus";
   if (/\b(obliques?|side bends?|russian twists?|woodchops?|twists?)\b/.test(n)) return "obliques";
-  if (/\b(crunch|crunches|sit ups?|situps?|planks?|leg raises?|knee raises?|hanging|ab wheel|cable crunch|core|abs?)\b/.test(n)) return "abs";
+  if (/\b(leg raises?|knee raises?|hanging|reverse crunch|toes to bar|lower abs?)\b/.test(n)) return "lowerAbs";
+  if (/\b(crunch|crunches|sit ups?|situps?|planks?|ab wheel|cable crunch|core|abs?)\b/.test(n)) return "upperAbs";
+  if (/\bneck\b/.test(n)) return "neck";
   // generic fallbacks
-  if (/\bpress(es)?\b/.test(n)) return "chest";
+  if (/\bpress(es)?\b/.test(n)) return "midChest";
   if (/\bextensions?\b/.test(n)) return "triceps";
   if (/\braises?\b/.test(n)) return "sideDelts";
   return null;
@@ -265,9 +302,26 @@ export function computeVolume(data, goals, today, weekOffset = 0) {
     posterior: sumKeys(MUSCLE_KEYS.filter(k => MUSCLES[k].side === "back")),
   };
 
+  // aggregate detailed muscles up to broad body-art regions (for map coloring + tooltip)
+  const regionKeys = [...new Set(MUSCLE_KEYS.map(k => MUSCLES[k].region))];
+  const regions = {};
+  regionKeys.forEach(rk => {
+    const subs = MUSCLE_KEYS.filter(k => MUSCLES[k].region === rk);
+    const sets = subs.reduce((s, k) => s + weeklyVolume[k], 0);
+    const last = subs.reduce((s, k) => s + round(lastWk.vol[k]), 0);
+    const rmin = subs.reduce((s, k) => s + MUSCLE_RANGE[k][0], 0);
+    const rmax = subs.reduce((s, k) => s + MUSCLE_RANGE[k][1], 0);
+    regions[rk] = {
+      region: rk, label: REGION_LABEL[rk] || rk, thisWeek: sets, lastWeek: last, change: sets - last,
+      changePct: last > 0 ? Math.round(((sets - last) / last) * 100) : null,
+      range: [rmin, rmax], recommended: `${rmin}-${rmax}`, status: statusFor(sets, [rmin, rmax]),
+      muscles: subs.map(k => ({ key: k, label: MUSCLES[k].label, thisWeek: weeklyVolume[k], status: statusFor(weeklyVolume[k], MUSCLE_RANGE[k]) })),
+    };
+  });
+
   return {
     ready: true, tier: "estimate", weekOffset, weekStart: selMon, prevWeekStart: prevMon,
-    weeklyVolume, muscles, summary, weakPoints, balance, hasTargets: Object.keys(targets).length > 0,
+    weeklyVolume, muscles, summary, weakPoints, balance, regions, hasTargets: Object.keys(targets).length > 0,
   };
 }
 
