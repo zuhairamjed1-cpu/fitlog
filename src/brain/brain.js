@@ -12,6 +12,10 @@ import { computeSleep, estimateSleepNeed, sleepTST } from "../engines/sleep.js";
 import { computeRecovery } from "../engines/recovery.js";
 import { computeCircadian, todaysBioNutrition, bioDayKey } from "../engines/circadian.js";
 import { computeVolume } from "../engines/volume.js";
+import { computeHistoricalPhases } from "../engines/historyPhases.js";
+import { suggestTransitions } from "../engines/transitions.js";
+import { computeRecoveryCapacity } from "../engines/recoveryCapacity.js";
+import { computeFatigue } from "../engines/fatigue.js";
 import { computeNicotineStats } from "../engines/nicotine.js";
 import { computeSkin } from "../engines/skin.js";
 import { computeCarbTiming } from "../engines/carbtiming.js";
@@ -415,6 +419,19 @@ export function buildBrain(data, goals) {
       };
     })(),
     goal: goals.goal,
+    strategicBrain: (() => {
+      const hist = computeHistoricalPhases(data, goals.profile || {}, today);
+      const rec = computeRecoveryCapacity(data, goals, today);
+      const fat = computeFatigue(data, goals, today);
+      const currentKind = hist.ready && hist.current ? hist.current.label : (goals.goal || "");
+      const trans = currentKind ? suggestTransitions(currentKind, { weeksInPhase: hist.ready && hist.current ? hist.current.weeks : null }) : null;
+      return {
+        historicalPhases: hist.ready ? { tier: hist.tier, phases: hist.phases.map(p => ({ phase: p.label, start: p.start, end: p.end, weeks: p.weeks, avgCalories: p.avgCalories, rateKgWk: p.avgRateKgWk, estMaintenance: p.estMaintenance, tier: p.tier })), current: hist.current ? hist.current.label : null } : null,
+        recoveryCapacity: rec.ready ? { score: rec.score, band: rec.band, confidence: rec.confidence, limiter: rec.limiter, eaCapped: rec.eaCapped, components: rec.components, tier: "estimate" } : null,
+        fatigue: fat.ready ? { score: fat.finalFatigue, band: fat.band, confidence: fat.confidence, readiness: fat.readiness, e1rmTrendPct: fat.performance.e1rmTrendPct, loadRatio: fat.load.ratio, deloadRecommended: fat.deload.recommended, deloadCorroborators: fat.deload.corroborators, overreachedMuscles: fat.overreached, tier: "estimate" } : null,
+        transitionSuggestion: trans ? { from: trans.fromLabel, recommended: trans.recommendedLabel, options: trans.options.map(o => o.label) } : null,
+      };
+    })(),
     targets: { calories: goals.calories, protein: goals.protein, carbs: goals.carbs, fat: goals.fat, waterMl: goals.waterGoalMl },
     todayProgress: {
       cal: todayCal, protein: todayP, carbs: todayC, fat: todayF,
@@ -512,8 +529,26 @@ export function formatBrainText(brain) {
     lines.push(`Weekly muscle volume (Estimated, Mon–Sun hard sets): ${wv.totalSets} total across ${wv.musclesTrained}/28 muscles${wv.highest ? `, most ${wv.highest.label} (${wv.highest.sets})` : ""}. Volume balance — push ${wv.push} / pull ${wv.pull}, upper ${wv.upper} / lower ${wv.lower}.${bt}${wk} Reference this when the user asks about training volume or weak points; note these set→muscle counts are estimates.`);
   }
 
+  if (brain.strategicBrain) {
+    const sb = brain.strategicBrain;
+    if (sb.historicalPhases && sb.historicalPhases.phases.length) {
+      const ph = sb.historicalPhases.phases.slice(-5).map(p => `${p.phase} (${formatShortDate(p.start)}→${formatShortDate(p.end)}${p.rateKgWk != null ? `, ${p.rateKgWk > 0 ? "+" : ""}${p.rateKgWk}kg/wk` : ""})`).join(" → ");
+      lines.push(`Where they came from — historical phases (${sb.historicalPhases.tier}, from intake + measured weight): ${ph}. Current physiological state: ${sb.historicalPhases.current}. Use this to ground any forward recommendation in where they actually are.`);
+    }
+    if (sb.recoveryCapacity) {
+      const rc = sb.recoveryCapacity;
+      lines.push(`Recovery capacity (Estimated, ${rc.confidence} confidence): ${rc.score}/100 — ${rc.band}${rc.limiter ? `, limited by ${rc.limiter}` : ""}${rc.eaCapped ? ", CAPPED by critically-low energy availability" : ""}. This is capacity to recover, NOT fatigue. Stress/mood isn't logged so that component is neutral.`);
+    }
+    if (sb.fatigue) {
+      const ft = sb.fatigue;
+      lines.push(`Fatigue (Estimated, ${ft.confidence} confidence): ${ft.score}/100 — ${ft.band}. Acute readiness ${ft.readiness}.${ft.e1rmTrendPct != null ? ` e1RM trend ${ft.e1rmTrendPct > 0 ? "+" : ""}${ft.e1rmTrendPct}%.` : ""}${ft.loadRatio != null ? ` Load ratio ${ft.loadRatio} (acute÷chronic).` : ""}${ft.deloadRecommended ? ` DELOAD recommended — ${ft.deloadCorroborators.join("; ")}.` : " No deload indicated."}${ft.overreachedMuscles.length ? ` Overreached: ${ft.overreachedMuscles.join(", ")}.` : ""} Energy/mood/soreness aren't logged, so wellness is a sleep proxy.`);
+    }
+    if (sb.transitionSuggestion && sb.transitionSuggestion.recommended) {
+      lines.push(`Phase transition (suggestion only, never auto-applied): from ${sb.transitionSuggestion.from}, a sensible next phase is ${sb.transitionSuggestion.recommended} (options: ${sb.transitionSuggestion.options.join(", ")}).`);
+    }
+  }
+
   // ─── ABOUT THE USER (profile + strategy) ─────────────────────────────────
-  // These are facts the user has explicitly told their coach. Reference and respect them.
   const p = brain.profile || {};
   const s = brain.strategy || {};
   const profileBits = [];

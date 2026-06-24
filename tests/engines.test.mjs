@@ -18,6 +18,10 @@ import { lookupGI } from "../src/engines/gi-database.js";
 import { computeCarbTiming } from "../src/engines/carbtiming.js";
 import { planFueling, reconcileFueling, sleepWindow } from "../src/engines/fueling.js";
 import { buildBrain, formatBrainText } from "../src/brain/brain.js";
+import { computeHistoricalPhases } from "../src/engines/historyPhases.js";
+import { suggestTransitions, normalizePhaseKind } from "../src/engines/transitions.js";
+import { computeRecoveryCapacity } from "../src/engines/recoveryCapacity.js";
+import { computeFatigue } from "../src/engines/fatigue.js";
 import { getPhases, activePhase, phaseReqRate, generatePhases } from "../src/engines/phases.js";
 import { computePhysiologyState, computeRecoveryDebt } from "../src/engines/physiology.js";
 import { proposeAdaptation } from "../src/engines/adaptation.js";
@@ -361,6 +365,58 @@ ok("goalplan: constraints rank a primary lever", !!cons.primary && cons.levers.l
     ok("volume: a newly logged exercise auto-appears + auto-classifies", (() => { const d = { exercise: [{ date: "2026-06-22", text: "Machine Pullover\n50x12\n50x12" }] }; const list = listExerciseMappings(d, {}); return list.length === 1 && list[0].norm === "machine pullover" && list[0].muscle === "lats"; })(), 1);
     ok("volume: mapping list reflects overrides", (() => { const list = listExerciseMappings(data, { exerciseMap: { "bench press": "triceps" } }); const bench = list.find(x => x.norm === "bench press"); return bench.muscle === "triceps" && bench.overridden === true; })(), 1);
     ok("volume: no workouts → not ready (honest empty state)", computeVolume({ exercise: [] }, {}, today).ready === false, 1);
+}
+
+  // ── Goal Plan V2: Historical Phase Analysis ──
+  {
+    const diet = [], weight = [];
+    let w = 85;
+    for (let i = 98; i >= 0; i--) { const d = new Date("2026-06-24T00:00:00"); d.setDate(d.getDate() - i); const iso = d.toISOString().slice(0, 10); const losing = i > 42; diet.push({ date: iso, calories: losing ? 2100 : 3000, protein: 180 }); if (i % 7 === 0) { weight.push({ date: iso, weight: +w.toFixed(1) }); w += losing ? -0.4 : 0.25; } }
+    const r = computeHistoricalPhases({ diet, weight }, { sex: "male", age: 25, heightCm: 178 }, "2026-06-24");
+    ok("history: reconstructs deficit→lean-bulk timeline from intake + measured weight", r.ready && r.phases.some(p => p.key === "deficit") && r.phases.some(p => p.key === "leanBulk"), r.phases.map(p => p.label));
+    ok("history: deficit phase back-calculates maintenance above intake (measured tier)", (() => { const d = r.phases.find(p => p.key === "deficit"); return d && d.tier === "measured" && d.estMaintenance > d.avgCalories && d.avgRateKgWk < 0; })(), 1);
+    ok("history: empty data → not ready (no fabricated phases)", computeHistoricalPhases({ diet: [], weight: [] }, {}, "2026-06-24").ready === false, 1);
+  }
+
+  // ── Goal Plan V2: Phase Transition Engine ──
+  {
+    ok("transition: normalizes descriptors to canonical kinds", normalizePhaseKind("Aggressive Deficit") === "fullCut" && normalizePhaseKind("Lean Bulk") === "leanBulk" && normalizePhaseKind("mini cut") === "miniCut", 1);
+    const a = suggestTransitions("Lean Bulk", { weeksInPhase: 18, bodyFatPct: 17 });
+    ok("transition: long lean bulk at higher BF → recommends Mini Cut", a.recommended === "miniCut" && a.options.some(o => o.to === "miniCut" && o.why), a.recommendedLabel);
+    const b = suggestTransitions("Lean Bulk", { weeksInPhase: 4, bodyFatPct: 11 });
+    ok("transition: early lean lean-bulk → recommends continuing", b.recommended === "leanBulk", b.recommendedLabel);
+    ok("transition: full cut → reverse diet path", suggestTransitions("Full Cut", {}).options.some(o => o.to === "reverseDiet"), 1);
+    ok("transition: never auto-applies (suggestions only)", /never changes your plan automatically/i.test(suggestTransitions("Cut", {}).note), 1);
+  }
+
+  // ── Goal Plan V2: Recovery Capacity ──
+  {
+    const mk = (cal, dur, q) => { const sleep = [], diet = []; for (let i = 7; i >= 0; i--) { const d = new Date("2026-06-24T00:00:00"); d.setDate(d.getDate() - i); const iso = d.toISOString().slice(0, 10); sleep.push({ date: iso, duration: dur, quality: q, bedtime: "23:00" }); diet.push({ date: iso, calories: cal, protein: 170, carbs: 250 }); } return { sleep, diet, exercise: [{ date: "2026-06-22", text: "Bench\n100x5" }] }; };
+    const goals = { profile: { sex: "male", age: 25, heightCm: 178, weightKg: 82 } };
+    const good = computeRecoveryCapacity(mk(2900, 8.2, "Good"), goals, "2026-06-24");
+    ok("recovery: weighted 0–100 score with bands + estimated tier", good.ready && good.score >= 0 && good.score <= 100 && ["Excellent", "Good", "Compromised", "Poor"].includes(good.band) && good.tier === "estimate", good.score + "/" + good.band);
+    ok("recovery: stress is untracked → component null + confidence capped", good.components.stress === null && good.confidence !== "high", good.confidence);
+    const ea = computeRecoveryCapacity(mk(1200, 8.2, "Good"), goals, "2026-06-24");
+    ok("recovery: critically-low energy availability caps the score (≤45)", ea.eaCapped && ea.score <= 45, ea.score);
+    ok("recovery: no sleep or nutrition → not ready", computeRecoveryCapacity({ sleep: [], diet: [], exercise: [] }, goals, "2026-06-24").ready === false, 1);
+  }
+
+  // ── Goal Plan V2: Fatigue Engine ──
+  {
+    const goals = { profile: { sex: "male", age: 25, heightCm: 178, weightKg: 82 } };
+    // declining e1RM + rising RPE + sleep debt + deficit + load ramp
+    const buildEx = (declining) => { const ex = [], sleep = [], diet = []; for (let i = 35; i >= 0; i--) { const d = new Date("2026-06-24T00:00:00"); d.setDate(d.getDate() - i); const iso = d.toISOString().slice(0, 10); if (i % 2 === 0) { const w = declining && i <= 14 ? 92 : 100; const rpe = declining && i <= 14 ? 9.5 : 8; ex.push({ date: iso, text: `Bench Press\n${w}x5 @${rpe}\n${w}x5 @${rpe}\n1h 5m` }); } sleep.push({ date: iso, duration: i < 7 ? 5.8 : 7.6, quality: i < 7 ? "Fair" : "Good", bedtime: "23:30" }); diet.push({ date: iso, calories: 1900, protein: 170, carbs: 180 }); } return { exercise: ex, sleep, diet, weight: [{ date: "2026-06-01", weight: 82 }] }; };
+    const f = computeFatigue(buildEx(true), goals, "2026-06-24");
+    ok("fatigue: 0–100 with chronic = 0.5·perf+0.3·well+0.2·load × penalty, estimated", f.ready && f.finalFatigue >= 0 && f.finalFatigue <= 100 && f.tier === "estimate" && f.penalty >= 1, f.finalFatigue + "/" + f.band);
+    ok("fatigue: detects e1RM decline + EWMA load ratio (acute÷chronic)", f.performance.e1rmTrendPct < 0 && f.load.ratio != null && f.load.acute >= 0, "trend " + f.performance.e1rmTrendPct + " ratio " + f.load.ratio);
+    ok("fatigue: deload needs performance decline AND a corroborator", f.deload.recommended === true && f.deload.perfDecline === true && f.deload.corroborators.length >= 1, f.deload.corroborators.length);
+    // decline but NO corroborators: steady sleep, no deficit, steady load
+    const steady = (() => { const ex = [], sleep = [], diet = []; for (let i = 35; i >= 0; i--) { const d = new Date("2026-06-24T00:00:00"); d.setDate(d.getDate() - i); const iso = d.toISOString().slice(0, 10); const w = i <= 14 ? 96 : 100; ex.push({ date: iso, text: `Bench Press\n${w}x5 @8\n${w}x5 @8\n1h 0m` }); sleep.push({ date: iso, duration: 8.1, quality: "Good", bedtime: "23:00" }); diet.push({ date: iso, calories: 2900, protein: 180, carbs: 300 }); } return { exercise: ex, sleep, diet, weight: [{ date: "2026-06-01", weight: 82 }] }; })();
+    const fs = computeFatigue(steady, goals, "2026-06-24");
+    ok("fatigue: e1RM decline with NO corroborator → deload NOT triggered", fs.deload.perfDecline === true && fs.deload.corroborators.length === 0 && fs.deload.recommended === false, fs.deload.corroborators);
+    ok("fatigue: per-muscle states tracked across 19 muscles incl. Fresh/Accumulating/Overreached", (() => { const states = new Set(f.perMuscle.map(m => m.state)); return f.perMuscle.length === 28 && [...states].every(s => ["Fresh", "Accumulating", "Overreached"].includes(s)); })(), 1);
+    ok("fatigue: acute readiness is Green/Amber/Red", ["Green", "Amber", "Red"].includes(f.readiness), f.readiness);
+    ok("fatigue: <3 workouts → not ready (honest)", computeFatigue({ exercise: [{ date: "2026-06-22", text: "Bench\n100x5" }] }, goals, "2026-06-24").ready === false, 1);
 }
 }
 
