@@ -6500,7 +6500,7 @@ function PhaseTransitionCard({ data, goals }) {
 }
 
 function GoalPlanSection({ data, goals, onSaveGoals, addEntry, deleteEntry }) {
-  const [tab, setTab] = useState("overview");
+  const [tab, setTab] = useState("traj");
   const [editing, setEditing] = useState(false);
   const [mode, setMode] = useState(null); // null | "build" | "import"
   const gp = useMemo(() => computeGoalPlan(data, goals), [data, goals]);
@@ -6566,9 +6566,6 @@ function GoalPlanSection({ data, goals, onSaveGoals, addEntry, deleteEntry }) {
 
   return (
     <div className="gp-scope stack">
-      {brand}
-      <div className="skin-tabs">{GP_TABS.map(x => <button key={x.k} className={`skin-tab ${tab === x.k ? "on" : ""}`} onClick={() => { setTab(x.k); haptic(6); }}>{x.label}</button>)}</div>
-
       {tab === "overview" && (
         <>
           <Card title={typeLabel} sub={`${sw ?? "?"}kg → ${gw}kg`} action={<span style={{ display: "flex", gap: 6 }}><button className="btn-ghost btn-sm" onClick={() => setMode("create")}>New plan</button><button className="btn-ghost btn-sm" onClick={() => setEditing(true)}>Edit</button></span>}>
