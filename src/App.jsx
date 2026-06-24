@@ -17,6 +17,7 @@ import { computePhysiologyState } from "./engines/physiology";
 import { getPhases, activePhase, applyPhaseChange, generatePhases } from "./engines/phases";
 import { computeCircadian, todaysBioNutrition } from "./engines/circadian";
 import { computeVolume, STATUS_LEGEND } from "./engines/volume";
+import { ANTERIOR_POLY, POSTERIOR_POLY } from "./anatomyData";
 import { proposeAdaptation } from "./engines/adaptation";
 import { computePhaseResult, summarizeDecisions, evaluateDecisions, logDecision } from "./engines/strategy";
 import { computeMacroTargets, macrosDiffer } from "./engines/macros";
@@ -3188,72 +3189,36 @@ function EnergyBalanceCard({ data, goals }) {
 }
 
 // ─── ANATOMICAL MUSCLE MAP ───────────────────────────────────────────────────
-// Hand-authored muscle-shaped SVG paths (pecs, delts, lat wings, quad teardrops,
-// ab grid, glutes, hamstrings, calves) on an organic body outline. Paired muscles
-// are authored once for the left and mirrored to the right. Colored by weekly
-// volume relative to each muscle's recommended range. ESTIMATE tier.
-const MIRROR = "matrix(-1 0 0 1 240 0)";
-const ANATOMY = {
-  front: [
-    { key: "chest", d: "M117,92 C106,89 92,93 88,104 C85,113 89,125 100,130 C109,133 116,131 117,127 Z", mirror: true },
-    { key: "frontDelts", d: "M99,89 C88,87 79,95 79,108 C79,117 86,121 94,118 C99,110 100,98 99,89 Z", mirror: true },
-    { key: "sideDelts", d: "M82,92 C73,95 69,106 70,116 C71,122 78,123 82,117 C84,109 84,99 82,92 Z", mirror: true },
-    { key: "biceps", d: "M85,121 C77,122 73,140 74,161 C75,175 80,182 85,180 C89,171 89,150 88,138 C87,127 89,121 85,121 Z", mirror: true },
-    { key: "forearms", d: "M83,191 C75,193 70,214 71,235 C72,246 78,248 83,243 C86,224 87,205 86,197 C85,193 85,191 83,191 Z", mirror: true },
-    { key: "abs", d: "M109,138 C109,135 131,135 131,138 L130,205 C130,210 124,212 120,212 C116,212 110,210 110,205 Z", center: true },
-    { key: "obliques", d: "M108,150 C100,153 97,173 99,193 C100,200 106,201 108,196 Z", mirror: true },
-    { key: "quads", d: "M118,232 C104,235 96,263 97,302 C98,332 105,353 113,356 C118,354 119,327 119,297 C119,267 120,240 118,232 Z", mirror: true },
-    { key: "adductors", d: "M119,236 C112,238 107,266 109,306 C110,320 116,324 119,320 Z", mirror: true },
-    { key: "calves", d: "M117,366 C105,369 100,394 101,424 C102,447 108,459 114,457 C117,439 118,414 117,394 C117,378 118,372 117,366 Z", mirror: true },
-  ],
-  back: [
-    { key: "traps", d: "M120,74 C108,76 99,86 97,100 C108,108 112,118 120,150 C128,118 132,108 143,100 C141,86 132,76 120,74 Z", center: true },
-    { key: "rearDelts", d: "M99,89 C88,87 79,95 79,108 C79,117 86,121 94,118 C99,110 100,98 99,89 Z", mirror: true },
-    { key: "lats", d: "M98,120 C85,126 80,150 84,174 C88,192 101,202 115,203 C117,181 116,150 112,132 C108,124 104,120 98,120 Z", mirror: true },
-    { key: "upperBack", d: "M117,120 C107,122 101,135 104,150 C111,152 116,141 117,130 Z", mirror: true },
-    { key: "erectors", d: "M118,158 C112,160 110,184 113,205 C115,211 119,209 119,201 L119,160 C119,158 118,158 118,158 Z", mirror: true },
-    { key: "triceps", d: "M85,121 C77,122 73,140 74,161 C75,175 80,182 85,180 C89,171 89,150 88,138 C87,127 89,121 85,121 Z", mirror: true },
-    { key: "forearms", d: "M83,191 C75,193 70,214 71,235 C72,246 78,248 83,243 C86,224 87,205 86,197 C85,193 85,191 83,191 Z", mirror: true },
-    { key: "glutes", d: "M119,212 C106,214 97,228 99,244 C101,256 111,260 118,254 C119,240 120,224 119,212 Z", mirror: true },
-    { key: "hamstrings", d: "M118,258 C104,261 97,287 98,321 C99,345 106,357 113,355 C118,353 119,326 119,296 C119,274 120,266 118,258 Z", mirror: true },
-    { key: "calves", d: "M116,368 C104,371 99,396 101,425 C103,447 109,459 114,457 C113,438 117,414 116,396 C115,380 117,372 116,368 Z", mirror: true },
-  ],
+// Real anatomical muscle polygons (react-body-highlighter, MIT — see anatomyData.js),
+// mapped to FitLog's engine muscles and colored by weekly volume vs each muscle's
+// recommended range. ESTIMATE tier. A few engine muscles (side delts, mid back,
+// adductors) have no distinct polygon in the source art and appear in the analysis
+// tables rather than on the map.
+const ANATOMY_DATA = { front: ANTERIOR_POLY, back: POSTERIOR_POLY };
+const ANATOMY_MAP = {
+  front: { CHEST: "chest", FRONT_DELTOIDS: "frontDelts", BICEPS: "biceps", TRICEPS: "triceps", FOREARM: "forearms", ABS: "abs", OBLIQUES: "obliques", QUADRICEPS: "quads", CALVES: "calves" },
+  back: { TRAPEZIUS: "traps", BACK_DELTOIDS: "rearDelts", UPPER_BACK: "lats", LOWER_BACK: "erectors", TRICEPS: "triceps", FOREARM: "forearms", GLUTEAL: "glutes", HAMSTRING: "hamstrings", CALVES: "calves", LEFT_SOLEUS: "calves", RIGHT_SOLEUS: "calves" },
 };
 
 function AnatomyBody({ view, vmap, active, onPick }) {
-  const defs = ANATOMY[view];
-  const stroke = key => active === key ? "#fff" : "rgba(8,10,14,0.55)";
-  const sw = key => active === key ? 1.5 : 0.7;
-  const tr = { transition: "fill .35s ease, fill-opacity .35s ease, stroke .15s ease", cursor: "pointer" };
-  const handlers = key => ({ onMouseEnter: () => onPick(key), onClick: () => onPick(key) });
+  const data = ANATOMY_DATA[view], map = ANATOMY_MAP[view];
+  const tr = { transition: "fill .35s ease, fill-opacity .35s ease, stroke .12s ease", cursor: "pointer" };
   const colorOf = key => { const m = vmap[key]; const s = m ? m.status : null; return { fill: s ? s.color : "#3a4150", op: s ? s.opacity : 0.4 }; };
   return (
-    <svg viewBox="0 0 240 500" style={{ width: "100%", maxWidth: 320, display: "block", margin: "0 auto" }}>
-      {/* organic body silhouette */}
-      <g fill="#1e222b" stroke="#2b313c" strokeWidth="1">
-        <ellipse cx="120" cy="42" rx="21" ry="25" />
-        <path d="M110,60 L130,60 L128,77 L112,77 Z" />
-        <path d="M120,70 C143,72 153,84 153,107 C153,135 151,163 148,191 C147,207 139,225 120,227 C101,225 93,207 92,191 C89,163 87,135 87,107 C87,84 97,72 120,70 Z" />
-        <path d="M91,90 C77,96 71,120 70,150 C69,185 65,220 68,242 C70,252 79,252 82,242 C85,220 87,185 88,155 C90,125 97,100 91,90 Z" />
-        <path d="M91,90 C77,96 71,120 70,150 C69,185 65,220 68,242 C70,252 79,252 82,242 C85,220 87,185 88,155 C90,125 97,100 91,90 Z" transform={MIRROR} />
-        <path d="M120,226 C103,228 95,252 96,292 C97,328 104,360 113,363 C120,361 121,330 120,298 C119,268 122,238 120,226 Z" />
-        <path d="M120,226 C103,228 95,252 96,292 C97,328 104,360 113,363 C120,361 121,330 120,298 C119,268 122,238 120,226 Z" transform={MIRROR} />
-        <path d="M113,363 C103,366 99,392 100,424 C101,450 108,470 114,470 C120,468 121,444 120,418 C119,390 122,372 113,363 Z" />
-        <path d="M113,363 C103,366 99,392 100,424 C101,450 108,470 114,470 C120,468 121,444 120,418 C119,390 122,372 113,363 Z" transform={MIRROR} />
-        <ellipse cx="110" cy="475" rx="12" ry="7" /><ellipse cx="130" cy="475" rx="12" ry="7" />
-      </g>
-      {/* muscles */}
-      {defs.map(m => {
-        const c = colorOf(m.key);
-        const base = { d: m.d, fill: c.fill, fillOpacity: c.op, stroke: stroke(m.key), strokeWidth: sw(m.key), style: tr, ...handlers(m.key) };
-        return <g key={m.key}><path {...base} />{m.mirror && <path {...base} transform={MIRROR} />}</g>;
+    <svg viewBox="0 0 100 200" style={{ width: "100%", maxWidth: 270, display: "block", margin: "0 auto" }}>
+      {/* base figure (all regions, dim) */}
+      <g>{Object.entries(data).map(([m, polys]) => polys.map((p, i) => (
+        <polygon key={"b" + m + i} points={p} fill="#242932" stroke="#0e1118" strokeWidth="0.35" />
+      )))}</g>
+      {/* tracked muscles, colored */}
+      {Object.entries(data).map(([m, polys]) => {
+        const key = map[m]; if (!key) return null;
+        const c = colorOf(key), on = active === key;
+        return polys.map((p, i) => (
+          <polygon key={m + i} points={p} fill={c.fill} fillOpacity={c.op} stroke={on ? "#fff" : "#0e1118"} strokeWidth={on ? 0.9 : 0.35} style={tr}
+            onMouseEnter={() => onPick(key)} onClick={() => onPick(key)} />
+        ));
       })}
-      {/* ab grid hint (front only) */}
-      {view === "front" && (
-        <g stroke="rgba(8,10,14,0.45)" strokeWidth="1.1" fill="none" style={{ pointerEvents: "none" }}>
-          <path d="M120,140 L120,206" /><path d="M111,157 L129,157" /><path d="M110,171 L130,171" /><path d="M110,185 L130,185" />
-        </g>
-      )}
     </svg>
   );
 }
