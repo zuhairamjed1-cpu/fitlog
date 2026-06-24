@@ -388,6 +388,15 @@ ok("goalplan: constraints rank a primary lever", !!cons.primary && cons.levers.l
     ok("history: output shape (maintenanceTrend, adaptationTrend, weightTrend, transitions)", Array.isArray(r.maintenanceTrend) && r.maintenanceTrend.length > 0 && Array.isArray(r.adaptationTrend) && Array.isArray(r.weightTrend) && Array.isArray(r.detectedTransitions) && r.timeline === r.phases, 1);
     ok("history: confidence band present; sparse-weight still classifies", ["High", "Medium", "Low"].includes(r.phases[0].confidenceBand), r.phases[0].confidenceBand);
     ok("history: <10 logged days → not ready (no fabricated phases)", computeHistoricalPhases({ diet: [{ date: "2026-06-20", calories: 2000 }], weight: [] }, {}, "2026-06-24").ready === false, 1);
+
+    // weekly cadence + transition persistence (≥2 consecutive weeks)
+    const mk = f => { const dt = []; for (let i = 139; i >= 0; i--) { const d = new Date("2026-06-24T00:00:00"); d.setDate(d.getDate() - i); dt.push({ date: d.toISOString().slice(0, 10), calories: f(i), protein: 180 }); } return dt; };
+    const refeed = computeHistoricalPhases({ diet: mk(i => (i <= 76 && i >= 70) ? 3200 : 2100), weight: [] }, {}, "2026-06-24");
+    ok("history: 1-week refeed inside a cut does NOT create a phase (persistence)", refeed.phases.length === 1 && refeed.phases[0].key === "cut" && refeed.detectedTransitions.length === 0, refeed.phases.map(p => p.label));
+    const dietbreak = computeHistoricalPhases({ diet: mk(i => (i <= 76 && i >= 56) ? 2730 : 2100), weight: [] }, {}, "2026-06-24");
+    ok("history: sustained 3-week diet break DOES split (Cut|Maintenance|Cut)", dietbreak.phases.length === 3 && dietbreak.phases[1].key === "maintenance" && dietbreak.detectedTransitions.length === 2, dietbreak.phases.map(p => p.label));
+    const wk = computeHistoricalPhases({ diet: mk(() => 2100), weight: [] }, {}, "2026-06-24");
+    ok("history: maintenance/adaptation update weekly; weeklyTrend emitted; calories stay daily", wk.weeklyTrend.length >= 18 && wk.weeklyTrend.length <= 21 && wk.weeklyTrend[8].balance != null && wk.calorieTrend.length === 140, [wk.weeklyTrend.length, wk.calorieTrend.length]);
   }
 
   // ── Goal Plan V2: Phase Transition Engine ──

@@ -6567,7 +6567,7 @@ function GoalPlanV3({ data, goals, onSaveGoals, addEntry, deleteEntry }) {
         ))}
       </div>
 
-      {tab === "overview" && <V3Overview gp={gp} derived={derived} activeP={activeP} data={data} goals={goals} />}
+      {tab === "overview" && <V3Overview gp={gp} derived={derived} activeP={activeP} data={data} goals={goals} onSaveGoals={onSaveGoals} />}
       {tab === "trajectory" && <V3Trajectory gp={gp} derived={derived} activeP={activeP} data={data} goals={goals} />}
       {tab === "report" && <V3Report gp={gp} derived={derived} activeP={activeP} data={data} goals={goals} />}
     </div>
@@ -6766,7 +6766,8 @@ function V3PhaseManager({ gp, goals, onSave, onCancel }) {
 }
 
 // ── OVERVIEW ──
-function V3Overview({ gp, derived, activeP, data, goals }) {
+function V3Overview({ gp, derived, activeP, data, goals, onSaveGoals }) {
+  const override = !!goals.nutritionOverride;
   const lastW = (data.weight || []).filter(w => w && (w.kg != null || w.weight != null)).sort((a, b) => (b.date || "").localeCompare(a.date || ""))[0];
   const currentWeight = lastW ? (lastW.kg != null ? lastW.kg : lastW.weight) : (gp.startWeight ?? null);
   const today = getTodayStr();
@@ -6797,6 +6798,19 @@ function V3Overview({ gp, derived, activeP, data, goals }) {
               ))}
             </div>
             <p className="muted small" style={{ marginTop: 4 }}>Targets for the <b style={{ color: "var(--text)" }}>{activeP.name}</b> phase{activeP.maintenance ? `, vs ~${activeP.maintenance} kcal maintenance` : ""}. Updates automatically when the active phase changes.</p>
+            <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: 10, background: override ? "rgba(249,201,126,0.08)" : "rgba(143,217,137,0.08)", border: `1px solid ${override ? "rgba(249,201,126,0.3)" : "rgba(143,217,137,0.3)"}` }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <div className="small" style={{ fontWeight: 700 }}>Custom Nutrition Override</div>
+                  <div className="muted small" style={{ marginTop: 2, lineHeight: 1.4 }}>{override ? "On — your Meal Log uses your own custom targets; this plan won't change them." : "Off — this phase controls your Meal Log targets automatically."}</div>
+                </div>
+                <button onClick={() => { onSaveGoals({ ...goals, nutritionOverride: !override }); haptic(8); }}
+                  style={{ flexShrink: 0, width: 46, height: 26, borderRadius: 999, border: "none", cursor: "pointer", background: override ? "#f9c97e" : "var(--bg-2)", position: "relative", transition: "background .2s" }}>
+                  <span style={{ position: "absolute", top: 3, left: override ? 23 : 3, width: 20, height: 20, borderRadius: "50%", background: override ? "#1a1d24" : "var(--text-2)", transition: "left .2s" }} />
+                </button>
+              </div>
+              {!override && <div className="muted small" style={{ marginTop: 6 }}>✓ Synced to Meal Log: {activeP.calories ?? "—"} kcal · {activeP.protein ?? "—"}g P · {activeP.carbs ?? "—"}g C · {activeP.fat ?? "—"}g F</div>}
+            </div>
           </>
         )}
       </Card>
@@ -6909,7 +6923,7 @@ function V3Trajectory({ gp, derived, activeP, data, goals }) {
           <>
             <V3HistoryChart hist={hist} />
             <V3AdaptChart hist={hist} />
-            <p className="small" style={{ lineHeight: 1.5, margin: "10px 0 10px" }}>You're currently coming out of a <b style={{ color: HIST_COLOR[hist.current && hist.current.key] || "var(--text)" }}>{hist.current && hist.current.label}</b> phase. Maintenance started at {hist.maintenanceBaseline} kcal and moves with bodyweight + adaptation:</p>
+            <p className="small" style={{ lineHeight: 1.5, margin: "10px 0 10px" }}>You're currently coming out of a <b style={{ color: HIST_COLOR[hist.current && hist.current.key] || "var(--text)" }}>{hist.current && hist.current.label}</b> phase. Maintenance, adaptation, and classification recalculate <b style={{ color: "var(--text)" }}>weekly</b> from the prior 7 days; a phase change must hold 2 weeks before it's confirmed, so refeeds don't create false phases.</p>
             {hist.phases.slice(-5).map((p, i) => (
               <div key={i} style={{ display: "flex", gap: 10, padding: "8px 0", borderTop: i ? "1px solid var(--line)" : "none" }}>
                 <div style={{ width: 3, borderRadius: 3, background: HIST_COLOR[p.key] || "var(--line)", alignSelf: "stretch" }} />
@@ -7637,6 +7651,19 @@ function AppShell({ session, syncing }) {
     if (firstGoals.current) { firstGoals.current = false; return; }
     cloudSync();
   }, [goals]);
+
+  // Goal Plan → Meal Log: the active phase is the single source of truth for
+  // nutrition targets. Sync calories/protein/carbs/fat into goals (which every
+  // Meal Log reader uses) whenever the active phase changes — unless the user has
+  // turned on Custom Nutrition Override.
+  useEffect(() => {
+    const gp = goals.goalPlanV3;
+    if (!gp || !gp.active || !gp.phases || !gp.phases.length || goals.nutritionOverride) return;
+    const ap = activePhaseV3(derivedPhases(gp, goals.profile || {}, getTodayStr()), getTodayStr());
+    if (!ap || ap.calories == null) return;
+    if (goals.calories === ap.calories && goals.protein === ap.protein && goals.carbs === ap.carbs && goals.fat === ap.fat) return;
+    setGoals(g => ({ ...g, calories: ap.calories, protein: ap.protein, carbs: ap.carbs, fat: ap.fat }));
+  }, [goals.goalPlanV3, goals.nutritionOverride, goals.profile]);
 
   const addEntry = type => entry => setData(d => ({ ...d, [type]: [entry, ...(d[type] || [])] }));
   const deleteEntry = type => id => setData(d => ({ ...d, [type]: (d[type] || []).filter(e => e.id !== id) }));
