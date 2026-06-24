@@ -87,50 +87,82 @@ export function classifyVolume(sets) {
 }
 
 // Exercise name → { primary:[], secondary:[] } using the fine taxonomy.
-const P = (primary, secondary = []) => ({ primary, secondary });
+// Normalize an exercise name to a stable key (drops equipment in parens, punctuation).
+export function normExercise(raw) {
+  return (raw || "").toLowerCase().replace(/\([^)]*\)/g, " ").replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+// Exercise name → ONE primary muscle key (or null). No secondary, no percentages.
 export function mapExercise(rawName) {
-  const n = (rawName || "").toLowerCase().replace(/[()]/g, " ").replace(/[-_]/g, " ").replace(/\s+/g, " ").trim();
+  const n = normExercise(rawName);
   if (!n) return null;
   // legs
-  if (/\b(leg curls?|lying curls?|seated leg curls?|hamstring curls?|nordic)\b/.test(n)) return P(["hamstrings"]);
-  if (/\b(romanian|rdl|stiff leg|good morning)\b/.test(n)) return P(["hamstrings", "glutes"], ["erectors"]);
-  if (/\b(leg extensions?|quad extensions?|knee extensions?)\b/.test(n)) return P(["quads"]);
-  if (/\b(adduction|adductor|copenhagen|thigh squeeze)\b/.test(n)) return P(["adductors"]);
-  if (/\bcalf\b|\bcalves\b|\bcalf raises?\b/.test(n)) return P(["calves"]);
-  if (/\b(hip thrusts?|glute bridges?|kickbacks?|glute|abductions?)\b/.test(n)) return P(["glutes"], ["hamstrings"]);
-  if (/\b(leg press|hack squats?)\b/.test(n)) return P(["quads"], ["glutes"]);
-  if (/\b(front squats?)\b/.test(n)) return P(["quads"], ["glutes", "erectors"]);
-  if (/\b(squats?)\b/.test(n)) return P(["quads"], ["glutes", "hamstrings", "erectors"]);
-  if (/\b(lunges?|split squats?|bulgarian|step ups?)\b/.test(n)) return P(["quads"], ["glutes", "hamstrings"]);
+  if (/\b(leg curls?|lying curls?|seated leg curls?|hamstring curls?|nordic)\b/.test(n)) return "hamstrings";
+  if (/\b(romanian|rdl|stiff leg|good morning)\b/.test(n)) return "hamstrings";
+  if (/\b(leg extensions?|quad extensions?|knee extensions?)\b/.test(n)) return "quads";
+  if (/\b(adduction|adductor|copenhagen|thigh squeeze)\b/.test(n)) return "adductors";
+  if (/\bcalf\b|\bcalves\b|\bcalf raises?\b|soleus\b/.test(n)) return "calves";
+  if (/\b(hip thrusts?|glute bridges?|kickbacks?|glute|abduction)\b/.test(n)) return "glutes";
+  if (/\b(leg press|hack squats?)\b/.test(n)) return "quads";
+  if (/\b(front squats?|squats?|lunges?|split squats?|bulgarian|step ups?)\b/.test(n)) return "quads";
   // posterior chain / pulls
-  if (/\b(deadlifts?|trap bar|sumo)\b/.test(n)) return P(["erectors", "glutes", "hamstrings"], ["traps", "lats"]);
-  if (/\b(back extensions?|hyperextensions?|45 extensions?)\b/.test(n)) return P(["erectors"], ["glutes", "hamstrings"]);
-  if (/\b(face pulls?|rear delts?|reverse flys?|reverse flyes?|reverse pec|rear flys?)\b/.test(n)) return P(["rearDelts"], ["upperBack"]);
-  if (/\b(shrugs?)\b/.test(n)) return P(["traps"]);
-  if (/\b(pullovers?)\b/.test(n)) return P(["lats"], ["chest"]);
-  if (/\b(pulldowns?|pull downs?|lat pulls?|pull ups?|pullups?|chin ups?|chinups?)\b/.test(n)) return P(["lats"], ["biceps", "upperBack"]);
-  if (/\b(rows?|t bar|seal rows?|pendlay|meadows)\b/.test(n)) return P(["upperBack", "lats"], ["biceps", "rearDelts"]);
+  if (/\b(deadlifts?|trap bar|sumo)\b/.test(n)) return "erectors";
+  if (/\b(back extensions?|hyperextensions?|45 extensions?)\b/.test(n)) return "erectors";
+  if (/\b(face pulls?|rear delts?|reverse flys?|reverse flyes?|reverse pec|rear flys?)\b/.test(n)) return "rearDelts";
+  if (/\b(shrugs?|rack pulls?)\b/.test(n)) return "traps";
+  if (/\b(pullovers?)\b/.test(n)) return "lats";
+  if (/\b(pulldowns?|pull downs?|lat pulls?|pull ups?|pullups?|chin ups?|chinups?|straight arm)\b/.test(n)) return "lats";
+  if (/\b(rows?|t bar|seal rows?|pendlay|meadows)\b/.test(n)) return "upperBack";
   // shoulders
-  if (/\b(lateral raises?|side raises?|lat raises?|side delts?|cable raises?|y raises?)\b/.test(n)) return P(["sideDelts"]);
-  if (/\b(front raises?)\b/.test(n)) return P(["frontDelts"]);
-  if (/\b(overhead press|shoulder press|ohp|military|arnold|push press|strict press|seated press)\b/.test(n)) return P(["frontDelts"], ["sideDelts", "triceps"]);
+  if (/\b(lateral raises?|side raises?|lat raises?|side delts?|cable raises?|y raises?)\b/.test(n)) return "sideDelts";
+  if (/\b(front raises?)\b/.test(n)) return "frontDelts";
+  if (/\b(overhead press|shoulder press|ohp|military|arnold|push press|strict press|seated press)\b/.test(n)) return "frontDelts";
   // arms
-  if (/\b(wrist curls?|reverse curls?|forearm|grip|farmers?)\b/.test(n)) return P(["forearms"]);
-  if (/\b(hammer curls?)\b/.test(n)) return P(["biceps", "forearms"]);
-  if (/\bcurls?\b/.test(n)) return P(["biceps"], ["forearms"]);
-  if (/\b(triceps?|pushdowns?|push downs?|skull|close grip|overhead extensions?|kickbacks?|dips?)\b/.test(n)) return P(["triceps"], /dips?|close grip/.test(n) ? ["chest"] : []);
+  if (/\b(wrist curls?|reverse curls?|forearm|grip|farmers?)\b/.test(n)) return "forearms";
+  if (/\b(hammer curls?|curls?)\b/.test(n)) return "biceps";
+  if (/\b(triceps?|pushdowns?|push downs?|skull|close grip|overhead extensions?|kickbacks?|dips?)\b/.test(n)) return "triceps";
   // chest
-  if (/\b(flys?|flyes?|pec decks?|pec dec)\b/.test(n)) return P(["chest"], ["frontDelts"]);
-  if (/\b(incline bench|incline press|incline)\b/.test(n)) return P(["chest"], ["frontDelts", "triceps"]);
-  if (/\b(bench|chest press|decline press|chest|push ups?|pushups?)\b/.test(n)) return P(["chest"], ["triceps", "frontDelts"]);
+  if (/\b(flys?|flyes?|pec decks?|pec dec)\b/.test(n)) return "chest";
+  if (/\b(incline bench|incline press|incline|bench|chest press|decline press|chest|push ups?|pushups?)\b/.test(n)) return "chest";
   // core
-  if (/\b(obliques?|side bends?|russian twists?|woodchops?|twists?)\b/.test(n)) return P(["obliques"], ["abs"]);
-  if (/\b(crunch|crunches|sit ups?|situps?|planks?|leg raises?|knee raises?|hanging|ab wheel|cable crunch|core|abs?)\b/.test(n)) return P(["abs"]);
+  if (/\b(obliques?|side bends?|russian twists?|woodchops?|twists?)\b/.test(n)) return "obliques";
+  if (/\b(crunch|crunches|sit ups?|situps?|planks?|leg raises?|knee raises?|hanging|ab wheel|cable crunch|core|abs?)\b/.test(n)) return "abs";
   // generic fallbacks
-  if (/\bpress(es)?\b/.test(n)) return P(["chest"], ["triceps", "frontDelts"]);
-  if (/\bextensions?\b/.test(n)) return P(["triceps"]);
-  if (/\braises?\b/.test(n)) return P(["sideDelts"]);
+  if (/\bpress(es)?\b/.test(n)) return "chest";
+  if (/\bextensions?\b/.test(n)) return "triceps";
+  if (/\braises?\b/.test(n)) return "sideDelts";
   return null;
+}
+
+// Resolve an exercise to its muscle, honoring user overrides (normExercise-keyed).
+export function resolveMuscle(rawName, overrides) {
+  const n = normExercise(rawName);
+  if (overrides && overrides[n]) return overrides[n];
+  return mapExercise(rawName);
+}
+
+// Built-in catalog (display name → muscle), derived from mapExercise so it's always consistent.
+const CATALOG_NAMES = ["Bench Press", "Incline Bench Press", "Dumbbell Bench Press", "Chest Press", "Push Up", "Cable Fly", "Pec Deck", "Dips", "Overhead Press", "Arnold Press", "Lateral Raise", "Cable Lateral Raise", "Front Raise", "Face Pull", "Reverse Pec Deck", "Rear Delt Fly", "Lat Pulldown", "Pull Up", "Chin Up", "Straight Arm Pulldown", "Pullover", "Barbell Row", "Dumbbell Row", "Cable Row", "Chest Supported Row", "T-Bar Row", "Shrug", "Rack Pull", "Bicep Curl", "Hammer Curl", "Preacher Curl", "Incline Curl", "Tricep Pushdown", "Overhead Tricep Extension", "Skull Crusher", "Close Grip Bench Press", "Wrist Curl", "Reverse Curl", "Squat", "Front Squat", "Leg Press", "Hack Squat", "Lunge", "Bulgarian Split Squat", "Leg Extension", "Romanian Deadlift", "Deadlift", "Leg Curl", "Hip Thrust", "Glute Bridge", "Back Extension", "Standing Calf Raise", "Seated Calf Raise", "Cable Crunch", "Hanging Leg Raise", "Plank", "Russian Twist", "Cable Woodchop", "Adduction Machine"];
+export const EXERCISE_CATALOG = CATALOG_NAMES.map(name => ({ name, norm: normExercise(name), muscle: mapExercise(name) })).filter(x => x.muscle);
+
+// All exercises FitLog knows about (catalog + ones the user has logged) with their
+// current primary muscle (after overrides). Powers the Exercise Mapping card.
+export function listExerciseMappings(data, goals) {
+  const overrides = (goals && goals.exerciseMap) || {};
+  const seen = new Map();
+  EXERCISE_CATALOG.forEach(c => seen.set(c.norm, { name: c.name, norm: c.norm, source: "catalog" }));
+  (data && data.exercise || []).forEach(e => {
+    const p = e._parsed || parseWorkout(e.text || "");
+    (p.exercises || []).forEach(ex => {
+      const n = normExercise(ex.name);
+      if (!n) return;
+      if (!seen.has(n)) seen.set(n, { name: (ex.name || "").replace(/\s+/g, " ").trim(), norm: n, source: "logged" });
+    });
+  });
+  return [...seen.values()]
+    .map(o => ({ ...o, muscle: overrides[o.norm] || mapExercise(o.name), overridden: overrides[o.norm] != null }))
+    .filter(o => o.muscle)
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 // A "working set" = a logged set that isn't an obvious warmup. We don't have an
@@ -145,7 +177,7 @@ const mondayOf = dateStr => {
 };
 
 // Sum per-muscle working sets for a list of exercise log entries.
-function volumeForEntries(entries) {
+function volumeForEntries(entries, overrides) {
   const vol = {}; MUSCLE_KEYS.forEach(m => (vol[m] = 0));
   let unmapped = 0, totalSets = 0;
   entries.forEach(e => {
@@ -154,10 +186,8 @@ function volumeForEntries(entries) {
       const working = (ex.sets || []).filter(isWorkingSet).length;
       if (!working) return;
       totalSets += working;
-      const map = mapExercise(ex.name);
-      if (!map) { unmapped += working; return; }
-      map.primary.forEach(m => { if (vol[m] != null) vol[m] += working * 1.0; });
-      (map.secondary || []).forEach(m => { if (vol[m] != null) vol[m] += working * 0.5; });
+      const m = resolveMuscle(ex.name, overrides);
+      if (m && vol[m] != null) vol[m] += working; else unmapped += working;
     });
   });
   return { vol, unmapped, totalSets };
@@ -175,9 +205,10 @@ export function computeVolume(data, goals, today, weekOffset = 0) {
   const selMon = shift(curMon, weekOffset);
   const prevMon = shift(selMon, 1);
 
+  const overrides = (goals && goals.exerciseMap) || {};
   const weekEntries = ex.filter(e => mondayOf(e.date) === selMon);
-  const thisWk = volumeForEntries(weekEntries);
-  const lastWk = volumeForEntries(ex.filter(e => mondayOf(e.date) === prevMon));
+  const thisWk = volumeForEntries(weekEntries, overrides);
+  const lastWk = volumeForEntries(ex.filter(e => mondayOf(e.date) === prevMon), overrides);
 
   const targets = (goals && goals.goalPlan && goals.goalPlan.volumeTargets) || {};
   const round = x => Math.round(x);
@@ -241,7 +272,7 @@ export function computeVolume(data, goals, today, weekOffset = 0) {
 }
 
 // Per-muscle volume across the last N calendar weeks (oldest→newest) for trends.
-export function volumeTrend(data, muscleKey, weeks = 6, today) {
+export function volumeTrend(data, muscleKey, weeks = 6, today, overrides) {
   const t = today || localDateStr(new Date());
   const ex = (data && data.exercise || []).filter(e => e && e.date);
   const thisMon = mondayOf(t);
@@ -249,7 +280,7 @@ export function volumeTrend(data, muscleKey, weeks = 6, today) {
   for (let i = weeks - 1; i >= 0; i--) {
     const d = new Date(thisMon + "T00:00:00"); d.setDate(d.getDate() - i * 7);
     const mon = localDateStr(d);
-    const { vol } = volumeForEntries(ex.filter(e => mondayOf(e.date) === mon));
+    const { vol } = volumeForEntries(ex.filter(e => mondayOf(e.date) === mon), overrides);
     out.push({ weekStart: mon, sets: Math.round(vol[muscleKey] || 0) });
   }
   return out;

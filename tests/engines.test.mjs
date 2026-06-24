@@ -25,7 +25,7 @@ import { computePhaseResult, blendRate, logDecision, evaluateDecisions } from ".
 import { computeMacroTargets, macrosDiffer } from "../src/engines/macros.js";
 import { parseGoalMarkdown, buildRoadmapPhases } from "../src/engines/goalmd.js";
 import { computeCircadian, bioDayKey, bioDayNutrition } from "../src/engines/circadian.js";
-import { computeVolume, mapExercise, classifyVolume, volumeTrend, MUSCLE_KEYS } from "../src/engines/volume.js";
+import { computeVolume, mapExercise, classifyVolume, volumeTrend, MUSCLE_KEYS, listExerciseMappings } from "../src/engines/volume.js";
 
 let pass = 0, fail = 0;
 const ok = (name, cond, got) => { if (cond) pass++; else { fail++; console.log("  ✗", name, "—", JSON.stringify(got)); } };
@@ -332,8 +332,8 @@ ok("goalplan: constraints rank a primary lever", !!cons.primary && cons.levers.l
   // ── Weekly Volume Engine ──
   // ── Weekly Muscle Volume Engine ──
   {
-    ok("volume: bench → chest primary, triceps+front delts secondary", (() => { const m = mapExercise("Bench Press"); return m.primary[0] === "chest" && m.secondary.includes("triceps") && m.secondary.includes("frontDelts"); })(), 1);
-    ok("volume: plural names map (Pull Ups→lats, Curls→biceps, Rows→back)", mapExercise("Pull Ups").primary[0] === "lats" && mapExercise("Barbell Curls").primary[0] === "biceps" && mapExercise("Cable Rows").primary.includes("upperBack"), 1);
+    ok("volume: one exercise → one primary muscle (no secondary)", mapExercise("Bench Press") === "chest" && mapExercise("Barbell Row") === "upperBack" && mapExercise("Romanian Deadlift") === "hamstrings" && mapExercise("Face Pull") === "rearDelts", "single");
+    ok("volume: plural names map (Pull Ups→lats, Curls→biceps, Lateral Raise→side delts)", mapExercise("Pull Ups") === "lats" && mapExercise("Barbell Curls") === "biceps" && mapExercise("Lateral Raise") === "sideDelts", 1);
     ok("volume: classification bands", classifyVolume(3).label === "Very Low" && classifyVolume(8).label === "Maintenance" && classifyVolume(12).label === "Productive" && classifyVolume(18).label === "High" && classifyVolume(24).label === "Extremely High", 1);
     const today = "2026-06-24";
     const data = { exercise: [
@@ -343,17 +343,20 @@ ok("goalplan: constraints rank a primary lever", !!cons.primary && cons.levers.l
       { date: "2026-06-16", text: "Bench Press\n100x5\n100x5" },                    // last week chest +2
     ] };
     const v = computeVolume(data, { goalPlan: { volumeTargets: { chest: 18 } } }, today);
-    ok("volume: weekly set counts (Mon–Sun), primary 1.0 / secondary 0.5", v.weeklyVolume.chest === 4 && v.weeklyVolume.quads === 3 && v.weeklyVolume.sideDelts === 4 && v.weeklyVolume.triceps === 2, v.weeklyVolume);
+    ok("volume: each working set → exactly one muscle (full credit, no secondary)", v.weeklyVolume.chest === 4 && v.weeklyVolume.quads === 3 && v.weeklyVolume.sideDelts === 4 && v.weeklyVolume.triceps === 0 && v.weeklyVolume.frontDelts === 0, v.weeklyVolume);
     ok("volume: change vs last week + goal target/progress", (() => { const c = v.muscles.find(m => m.key === "chest"); return c.lastWeek === 2 && c.change === 2 && c.target === 18 && c.progress === 22; })(), 1);
     ok("volume: summary highest/lowest/total/trained", v.summary.highest.label === "Chest" || v.summary.highest.label === "Side Delts" ? v.summary.totalSets > 0 && v.summary.musclesTrained >= 3 : false, v.summary);
     ok("volume: raw volume balance totals (no symmetry score)", typeof v.balance.push === "number" && typeof v.balance.pull === "number" && v.balance.lower >= 3 && v.symmetry === undefined, v.balance);
     ok("volume: per-muscle recommended range + range-based status", (() => { const c = v.muscles.find(m => m.key === "chest"); return Array.isArray(c.range) && c.recommended === "10-20" && c.status.label === "Undertrained"; })(), 1);
     ok("volume: 18 muscle groups incl. adductors", MUSCLE_KEYS.length === 18 && MUSCLE_KEYS.includes("adductors"), MUSCLE_KEYS.length);
     ok("volume: weekOffset=1 selects the previous Mon–Sun week", (() => { const pv = computeVolume(data, {}, today, 1); return pv.weekStart === "2026-06-15" && pv.weeklyVolume.chest === 2; })(), 1);
-    ok("volume: weak points carry suggested target + exercises", (() => { const w = v.weakPoints.find(x => x.key === "rearDelts"); return w && w.suggestedTarget === "8-15" && w.exercises.includes("Face Pull"); })(), 1);
+    ok("volume: weak points carry suggested target + exercises", (() => { const w = v.weakPoints.find(x => x.key === "lats"); return w && w.suggestedTarget === "10-20" && w.exercises.includes("Lat Pulldown"); })(), 1);
     ok("volume: weak points list muscles under their recommended minimum", Array.isArray(v.weakPoints) && v.weakPoints.every(w => w.sets < w.range[0]), 1);
     ok("volume: warmup sets (RPE<5) are excluded", (() => { const d = { exercise: [{ date: "2026-06-22", text: "Bench Press\n60x10 @3\n60x10 @4\n100x5 @8\n100x5 @9" }] }; const r = computeVolume(d, {}, today); return r.weeklyVolume.chest === 2; })(), 1);
     ok("volume: trend returns N weekly buckets oldest→newest", (() => { const tr = volumeTrend(data, "chest", 4, today); return tr.length === 4 && tr[3].sets === 4 && tr[2].sets === 2; })(), 1);
+    ok("volume: user override re-routes an exercise's sets", (() => { const o = computeVolume(data, { exerciseMap: { "bench press": "triceps" } }, today); return o.weeklyVolume.chest === 0 && o.weeklyVolume.triceps === 4; })(), 1);
+    ok("volume: exercise mapping list (catalog + logged), one muscle each", (() => { const list = listExerciseMappings(data, {}); const bench = list.find(x => x.norm === "bench press"); return list.length > 30 && bench && bench.muscle === "chest"; })(), 1);
+    ok("volume: mapping list reflects overrides", (() => { const list = listExerciseMappings(data, { exerciseMap: { "bench press": "triceps" } }); const bench = list.find(x => x.norm === "bench press"); return bench.muscle === "triceps" && bench.overridden === true; })(), 1);
     ok("volume: no workouts → not ready (honest empty state)", computeVolume({ exercise: [] }, {}, today).ready === false, 1);
 }
 }

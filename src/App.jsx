@@ -16,7 +16,7 @@ import { computeGoalPlan, formatGoalText, simulateGoal, analyzeRoadmap, assessGo
 import { computePhysiologyState } from "./engines/physiology";
 import { getPhases, activePhase, applyPhaseChange, generatePhases } from "./engines/phases";
 import { computeCircadian, todaysBioNutrition } from "./engines/circadian";
-import { computeVolume, STATUS_LEGEND } from "./engines/volume";
+import { computeVolume, STATUS_LEGEND, MUSCLES, MUSCLE_KEYS, resolveMuscle, listExerciseMappings } from "./engines/volume";
 import { ANTERIOR_POLY, POSTERIOR_POLY } from "./anatomyData";
 import { proposeAdaptation } from "./engines/adaptation";
 import { computePhaseResult, summarizeDecisions, evaluateDecisions, logDecision } from "./engines/strategy";
@@ -2431,7 +2431,7 @@ function DietForm({ onAdd, recent, goals, data, todayDiet = [], addEntry, delete
 }
 
 // ─── EXERCISE (paste from Strong) ──
-function ExerciseForm({ onAdd, recent }) {
+function ExerciseForm({ onAdd, recent, hideRecent, header }) {
   const [date, setDate] = useState(getTodayStr());
   const [time, setTime] = useState(() => {
     const d = new Date();
@@ -2460,6 +2460,7 @@ function ExerciseForm({ onAdd, recent }) {
   return (
     <>
     <Card title="Log workout" sub="Paste from Strong, or write your own">
+      {header}
       <div className="field-grid three">
         <label>Date<input type="date" value={date} onChange={e => setDate(e.target.value)} /></label>
         <label>Time<input type="time" value={time} onChange={e => setTime(e.target.value)} /></label>
@@ -2493,7 +2494,7 @@ function ExerciseForm({ onAdd, recent }) {
 
       <button className="btn full" onClick={save} disabled={!text.trim()}>Save workout</button>
     </Card>
-    <RecentList entries={recent} render={w => <><span className="ra-main">{w.label}{w.prs?.length ? " 🏆" : ""}</span><span className="ra-date">{formatShortDate(w.date)}</span></>} />
+    {!hideRecent && <RecentList entries={recent} render={w => <><span className="ra-main">{w.label}{w.prs?.length ? " 🏆" : ""}</span><span className="ra-date">{formatShortDate(w.date)}</span></>} />}
     </>
   );
 }
@@ -3327,6 +3328,132 @@ function WorkoutAnalysis({ data, goals }) {
         <p className="muted small" style={{ marginTop: 10, lineHeight: 1.4 }}>Colored by weekly volume vs each muscle's recommended range (estimated — individual tolerance varies). Map is a stylized anatomy, not a medical render.{s.unmappedSets > 0 ? ` ${s.unmappedSets} set${s.unmappedSets > 1 ? "s" : ""} couldn't be matched to a muscle.` : ""}</p>
       </Card>
     </>
+  );
+}
+
+// ─── WORKOUT SCREEN — composes the 5 cards in order ─────────────────────────
+function WorkoutScreen({ data, goals, addEntry, onSaveGoals }) {
+  const today = getTodayStr();
+  const sessionHeader = useMemo(() => {
+    const todayEntries = (data.exercise || []).filter(e => e.date === today);
+    let sets = 0, volume = 0, ant = 0, post = 0; const muscles = new Set();
+    todayEntries.forEach(e => {
+      const p = e._parsed || parseWorkout(e.text || "");
+      volume += p.totalVolume || 0;
+      (p.exercises || []).forEach(ex => {
+        const w = (ex.sets || []).filter(s => !(s && s.rpe != null && s.rpe < 5)).length;
+        if (!w) return; sets += w;
+        const m = resolveMuscle(ex.name, goals.exerciseMap);
+        if (m) { muscles.add(MUSCLES[m].label); (MUSCLES[m].side === "front" ? (ant += w) : (post += w)); }
+      });
+    });
+    const labeled = todayEntries.find(e => e.label && e.label !== "Workout");
+    const name = labeled ? labeled.label : sets > 0 ? (ant >= post ? "Anterior day" : "Posterior day") : "New session";
+    return { name, sets, volume: Math.round(volume), muscles: [...muscles], any: todayEntries.length > 0 };
+  }, [data.exercise, goals.exerciseMap, today]);
+
+  const header = (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: "-0.01em" }}>{sessionHeader.name}</div>
+        <div className="muted small">{sessionHeader.any ? "today" : "nothing logged yet today"}</div>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 90, background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 12, padding: "10px 12px" }}>
+          <div className="muted" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".04em" }}>Sets</div>
+          <div style={{ fontSize: 22, fontWeight: 700 }}>{sessionHeader.sets}</div>
+        </div>
+        <div style={{ flex: 1, minWidth: 90, background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 12, padding: "10px 12px" }}>
+          <div className="muted" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".04em" }}>Volume</div>
+          <div style={{ fontSize: 22, fontWeight: 700 }}>{sessionHeader.volume.toLocaleString()}<span className="muted" style={{ fontSize: 12, fontWeight: 400 }}> kg</span></div>
+        </div>
+      </div>
+      {sessionHeader.muscles.length > 0 && (
+        <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
+          {sessionHeader.muscles.map(m => <span key={m} style={{ fontSize: 11, padding: "3px 9px", borderRadius: 999, background: "rgba(92,200,223,0.12)", border: "1px solid rgba(92,200,223,0.3)", color: "#9fe0ee" }}>{m}</span>)}
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <>
+      <ExerciseForm onAdd={addEntry("exercise")} recent={data.exercise} hideRecent header={header} />
+      <WorkoutAnalysis data={data} goals={goals} />
+      <ExerciseMappingCard data={data} goals={goals} onSaveGoals={onSaveGoals} />
+      <RecentWorkoutsCard recent={data.exercise} />
+    </>
+  );
+}
+
+// ─── CARD 4 — Exercise Mapping (one exercise → one primary muscle, editable) ──
+function ExerciseMappingCard({ data, goals, onSaveGoals }) {
+  const [q, setQ] = useState("");
+  const [edit, setEdit] = useState(null); // { norm, sel }
+  const list = useMemo(() => listExerciseMappings(data, goals), [data, goals]);
+  const filtered = q.trim() ? list.filter(x => x.name.toLowerCase().includes(q.toLowerCase())) : list;
+  const save = () => { const em = { ...(goals.exerciseMap || {}) }; em[edit.norm] = edit.sel; onSaveGoals({ ...goals, exerciseMap: em }); setEdit(null); haptic(8); };
+  const reset = norm => { const em = { ...(goals.exerciseMap || {}) }; delete em[norm]; onSaveGoals({ ...goals, exerciseMap: em }); setEdit(null); haptic(6); };
+
+  return (
+    <Card title="Exercise Mapping" sub="how FitLog categorizes each exercise — one primary muscle">
+      <input type="text" value={q} onChange={e => setQ(e.target.value)} placeholder="Search exercises…"
+        style={{ width: "100%", background: "var(--bg-2)", color: "var(--text)", border: "1px solid var(--line)", borderRadius: 10, padding: "9px 12px", fontSize: 14, marginBottom: 10 }} />
+      <div style={{ maxHeight: 360, overflowY: "auto", margin: "0 -4px" }}>
+        {filtered.length === 0 && <p className="muted small" style={{ padding: "8px 4px" }}>No exercises match “{q}”.</p>}
+        {filtered.map(x => edit && edit.norm === x.norm ? (
+          <div key={x.norm} style={{ padding: "10px 8px", borderRadius: 10, background: "var(--bg-2)", margin: "4px 0" }}>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>{x.name}</div>
+            <div className="muted small" style={{ marginBottom: 6 }}>Primary muscle</div>
+            <select value={edit.sel} onChange={e => setEdit({ ...edit, sel: e.target.value })}
+              style={{ width: "100%", background: "var(--bg)", color: "var(--text)", border: "1px solid var(--line)", borderRadius: 8, padding: "9px 10px", fontSize: 14 }}>
+              {MUSCLE_KEYS.map(k => <option key={k} value={k}>{MUSCLES[k].label}</option>)}
+            </select>
+            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+              <button className="btn-primary btn-sm" style={{ flex: 1 }} onClick={save}>Save changes</button>
+              {x.overridden && <button className="btn-ghost btn-sm" onClick={() => reset(x.norm)}>Reset</button>}
+              <button className="btn-ghost btn-sm" onClick={() => setEdit(null)}>Cancel</button>
+            </div>
+          </div>
+        ) : (
+          <button key={x.norm} onClick={() => setEdit({ norm: x.norm, sel: x.muscle })}
+            style={{ display: "flex", width: "100%", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "9px 8px", borderRadius: 8, background: "transparent", border: "none", borderBottom: "1px solid var(--line)", cursor: "pointer", textAlign: "left" }}>
+            <span className="small" style={{ color: "var(--text)" }}>{x.name}{x.overridden ? " ✎" : ""}</span>
+            <span className="small" style={{ color: "var(--text-2)", whiteSpace: "nowrap" }}>{MUSCLES[x.muscle].label} ›</span>
+          </button>
+        ))}
+      </div>
+      <p className="muted small" style={{ marginTop: 10, lineHeight: 1.45 }}>Every workout metric — Training Analysis, Weak Points, the Muscle Map, Goal-Plan volume — reads from this list. Edit a mapping and it updates everywhere.</p>
+    </Card>
+  );
+}
+
+// ─── CARD 5 — Recent Workouts (timeline) ────────────────────────────────────
+function RecentWorkoutsCard({ recent }) {
+  const items = useMemo(() => (recent || []).slice().sort((a, b) => (b.ts || 0) - (a.ts || 0) || (b.date || "").localeCompare(a.date || "")).slice(0, 10), [recent]);
+  if (!items.length) return null;
+  const durOf = txt => { const m = (txt || "").match(/(\d+)\s*h\s*(\d+)?\s*m|\b(\d+)\s*min/i); if (!m) return null; if (m[3]) return `${m[3]}m`; return `${m[1]}h${m[2] ? " " + m[2] + "m" : ""}`; };
+  return (
+    <Card title="Recent Workouts" sub="your last sessions">
+      {items.map((w, i) => {
+        const p = w._parsed || parseWorkout(w.text || "");
+        const dur = durOf(w.text);
+        return (
+          <div key={w.id || i} style={{ display: "flex", gap: 12, padding: "10px 0", borderTop: i ? "1px solid var(--line)" : "none" }}>
+            <div style={{ width: 3, borderRadius: 3, background: w.prs && w.prs.length ? "#f9c97e" : "var(--line)", alignSelf: "stretch" }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                <span style={{ fontWeight: 600 }}>{w.label || "Workout"}{w.prs && w.prs.length ? " 🏆" : ""}</span>
+                <span className="muted small" style={{ whiteSpace: "nowrap" }}>{formatShortDate(w.date)}</span>
+              </div>
+              <div className="muted small" style={{ marginTop: 2 }}>
+                {p.totalSets} sets · {Math.round(p.totalVolume || 0).toLocaleString()} kg{dur ? ` · ${dur}` : ""}{w.prs && w.prs.length ? ` · ${w.prs.length} PR${w.prs.length > 1 ? "s" : ""}` : ""}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </Card>
   );
 }
 
@@ -6522,7 +6649,7 @@ function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, setData, 
       case "water": return <WaterForm data={data} goals={goals} onAdd={addEntry("water")} onDelete={deleteEntry("water")} />;
       case "supps": return <SupplementForm data={data} onAdd={addEntry("supplements")} onDelete={deleteEntry("supplements")} />;
       case "weight": return <WeightForm data={data} goals={goals} onAdd={addEntry("weight")} onDelete={deleteEntry("weight")} />;
-      case "exercise": return <><ExerciseForm onAdd={addEntry("exercise")} recent={data.exercise} /><WorkoutAnalysis data={data} goals={goals} /></>;
+      case "exercise": return <WorkoutScreen data={data} goals={goals} addEntry={addEntry} onSaveGoals={onSaveGoals} />;
       case "sports": return <SportsForm onAdd={addEntry("sports")} recent={data.sports} />;
       case "plan": return <PlanTab data={data} goals={goals} onSaveGoals={onSaveGoals} />;
       case "sleep": return <SleepSection data={data} goals={goals} addEntry={addEntry} onSaveGoals={onSaveGoals} />;
