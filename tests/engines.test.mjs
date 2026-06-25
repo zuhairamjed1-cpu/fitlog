@@ -478,7 +478,7 @@ ok("goalplan: constraints rank a primary lever", !!cons.primary && cons.levers.l
     const uc = r.targets.find(t => t.id === "upperChest"), lat = r.targets.find(t => t.id === "lats");
     ok("prio: prioritized muscle uses user-chosen target; others default to 10", uc.target === 14 && uc.prioritized && lat.target === PRIO_DEFAULT_SETS && !lat.prioritized, [uc.target, lat.target]);
     ok("prio: completion % = current ÷ target (11/14 → 79%)", uc.current === 11 && uc.pct === 79 && /79% Complete/.test(uc.status), [uc.current, uc.pct]);
-    ok("prio: stalling+good-recovery → amber/red with Volume-bottleneck diagnosis + LPV", (uc.risk === "amber" || uc.risk === "red") && /Volume bottleneck/.test(uc.diagnosis || "") && uc.lastProductiveVolume > 0, [uc.risk, uc.diagnosis]);
+    ok("prio: stalling+good-recovery → amber/red with Volume-bottleneck diagnosis + LPV", (uc.risk === "amber" || uc.risk === "red") && /Volume Bottleneck/i.test(uc.diagnosis || "") && uc.lastProductiveVolume > 0, [uc.risk, uc.diagnosis]);
     ok("prio: progressing muscle stays green (no diagnosis)", lat.risk === "green" && !lat.diagnosis, lat.risk);
     ok("prio: max 3 prioritized enforced by resolver count", prioritizedCount({ musclePriorities: { upperChest: 14, lats: 13, glutes: 16, biceps: 12 } }) === 4 && PRIO_MAX_COUNT === 3, 1);
     ok("prio: taxonomy covers the major trainable muscles", PRIO_TARGETS.length >= 13 && PRIO_TARGETS.some(t => t.id === "sideDelts") && PRIO_TARGETS.some(t => t.id === "hamstrings"), PRIO_TARGETS.length);

@@ -24,32 +24,26 @@ export function rpeToRIR(rpe) {
   if (rpe >= 7) return "3"; if (rpe >= 5) return "4–6"; return "7+";
 }
 
-// ▸ = expandable into measurable sub-heads. Triceps/Biceps/legs/abs are whole-muscle
-// targets — FitLog tracks one volume signal for them, so splitting heads would be
-// false precision. Each target maps to the muscle keys the volume engine measures.
-export const PRIO_GROUPS = [
-  { group: "Shoulders", expandable: true, targets: [
-    { id: "sideDelts", label: "Side Delts", keys: ["sideDelts"] },
-    { id: "frontDelts", label: "Front Delts", keys: ["frontDelts"] },
-    { id: "rearDelts", label: "Rear Delts", keys: ["rearDelts"] },
-  ] },
-  { group: "Back", expandable: true, targets: [
-    { id: "lats", label: "Lats (width)", keys: ["lats"] },
-    { id: "upperBackTraps", label: "Upper back / traps (thickness)", keys: ["upperBack", "midBack", "traps"] },
-  ] },
-  { group: "Chest", expandable: true, targets: [
-    { id: "upperChest", label: "Upper Chest", keys: ["upperChest"] },
-    { id: "lowerChest", label: "Lower Chest", keys: ["lowerChest", "midChest"] },
-  ] },
-  { group: "Triceps", expandable: false, targets: [{ id: "triceps", label: "Triceps", keys: ["triceps"] }] },
-  { group: "Biceps", expandable: false, targets: [{ id: "biceps", label: "Biceps", keys: ["biceps", "brachialis"] }] },
-  { group: "Quads", expandable: false, targets: [{ id: "quads", label: "Quads", keys: ["quads"] }] },
-  { group: "Hamstrings", expandable: false, targets: [{ id: "hamstrings", label: "Hamstrings", keys: ["hamstrings"] }] },
-  { group: "Glutes", expandable: false, targets: [{ id: "glutes", label: "Glutes", keys: ["glutes"] }] },
-  { group: "Calves", expandable: false, targets: [{ id: "calves", label: "Calves", keys: ["calves"] }] },
-  { group: "Abs", expandable: false, targets: [{ id: "abs", label: "Abs", keys: ["upperAbs", "lowerAbs", "obliques"] }] },
+// Flat selectable targets (dropdown). Each maps to the muscle keys the volume
+// engine measures. "Chest"/"Back" are whole-muscle; the sub-heads (Upper Chest,
+// Lats, the delts) are separately measurable.
+export const PRIO_TARGETS = [
+  { id: "chest", label: "Chest", keys: ["upperChest", "midChest", "lowerChest"] },
+  { id: "upperChest", label: "Upper Chest", keys: ["upperChest"] },
+  { id: "back", label: "Back", keys: ["lats", "upperBack", "midBack", "traps"] },
+  { id: "lats", label: "Lats", keys: ["lats"] },
+  { id: "rearDelts", label: "Rear Delts", keys: ["rearDelts"] },
+  { id: "sideDelts", label: "Side Delts", keys: ["sideDelts"] },
+  { id: "frontDelts", label: "Front Delts", keys: ["frontDelts"] },
+  { id: "triceps", label: "Triceps", keys: ["triceps"] },
+  { id: "biceps", label: "Biceps", keys: ["biceps", "brachialis"] },
+  { id: "forearms", label: "Forearms", keys: ["forearms"] },
+  { id: "quads", label: "Quads", keys: ["quads"] },
+  { id: "hamstrings", label: "Hamstrings", keys: ["hamstrings"] },
+  { id: "glutes", label: "Glutes", keys: ["glutes"] },
+  { id: "calves", label: "Calves", keys: ["calves"] },
+  { id: "abs", label: "Abs", keys: ["upperAbs", "lowerAbs", "obliques"] },
 ];
-export const PRIO_TARGETS = PRIO_GROUPS.flatMap(g => g.targets.map(t => ({ ...t, group: g.group })));
 export const targetById = id => PRIO_TARGETS.find(t => t.id === id);
 
 const isWorking = s => !(s && (s.warmup || (s.rpe != null && s.rpe < 5)));
@@ -112,12 +106,18 @@ export function computeMusclePrio(data, goals, today = localDateStr(new Date()))
     let diagnosis = null, action = null;
     if (risk !== "green") {
       const perfBad = stalled || decel.flag;
-      if (perfBad && recVerdict === "poor") { diagnosis = "Recovery bottleneck"; action = "Keep the volume — fix recovery first (sleep, food, stress)."; }
-      else if (perfBad && recVerdict === "good") { diagnosis = "Volume bottleneck"; action = `Consider rolling back toward your last productive volume (~${lpv} sets).`; }
-      else if (!perfBad && recVerdict === "poor") { diagnosis = "Under-recovering but coping"; action = "Monitor closely — progress is holding despite low recovery."; }
-      else { diagnosis = "Approaching ceiling"; action = "Hold volume and watch the next 1–2 sessions."; }
+      if (perfBad && recVerdict === "poor") { diagnosis = "Recovery Bottleneck"; action = "Keep volume, improve recovery."; }
+      else if (perfBad && recVerdict === "good") { diagnosis = "Volume Bottleneck"; action = "Reduce volume toward last productive volume."; }
+      else if (!perfBad && recVerdict === "poor") { diagnosis = "Under-Recovering but Coping"; action = "Monitor closely — no volume change."; }
+      else { diagnosis = "Approaching Ceiling"; action = "Hold volume, watch next sessions."; }
     }
-    return { ...t, current, target, pct, status, weeklySets: setsChron, e1rm: e1Chron, slope, decelerating: decel.flag, rpeDrift, stalled, risk, signals, diagnosis, action, lastProductiveVolume: lpv };
+    let recommendation;
+    if (risk === "green") recommendation = haveData >= 3 ? `Progressing — keep ${target} sets.` : `Keep logging to get a read on ${t.label}.`;
+    else if (diagnosis === "Recovery Bottleneck") recommendation = `Maintain ${target} sets and improve recovery (sleep, food).`;
+    else if (diagnosis === "Volume Bottleneck") recommendation = `Reduce to ${lpv} sets (last productive volume).`;
+    else if (diagnosis === "Under-Recovering but Coping") recommendation = `Hold ${target} sets — monitor closely.`;
+    else recommendation = `Hold ${target} sets and watch the next 1–2 sessions.`;
+    return { ...t, current, target, pct, status, weeklySets: setsChron, e1rm: e1Chron, slope, decelerating: decel.flag, rpeDrift, stalled, risk, signals, diagnosis, action, recommendation, lastProductiveVolume: lpv };
   });
 
   return { ready: logs.length > 0, today, targets: out, recVerdict, recovery: rec, fatigue: fat, prioritizedCount: out.filter(t => t.prioritized).length, riskTargets: out.filter(t => t.risk !== "green") };
