@@ -22,6 +22,8 @@ import { computeHistoricalPhases } from "../src/engines/historyPhases.js";
 import { suggestTransitions, normalizePhaseKind } from "../src/engines/transitions.js";
 import { computeRecoveryCapacity } from "../src/engines/recoveryCapacity.js";
 import { computeFatigue } from "../src/engines/fatigue.js";
+import { parseWorkout } from "../src/engines/workout.js";
+import { computeMusclePrio, resolvePriorities, rpeToRIR, prioritizedCount, PRIO_TARGETS, PRIO_DEFAULT_SETS, PRIO_MAX_COUNT } from "../src/engines/musclePrio.js";
 import { newPhase, derivedPhases, activePhase as activePhaseV3, lensFor, alignmentFor, insertPhaseOp, deletePhaseOp, movePhaseOp, duplicatePhaseOp, planSpanWeeks, PHASE_TEMPLATES } from "../src/engines/phaseV3.js";
 import { getPhases, activePhase, phaseReqRate, generatePhases } from "../src/engines/phases.js";
 import { computePhysiologyState, computeRecoveryDebt } from "../src/engines/physiology.js";
@@ -463,6 +465,25 @@ ok("goalplan: constraints rank a primary lever", !!cons.primary && cons.levers.l
     ok("phaseV3: alignment degrades to unknown + no confidence when data thin", (() => { const a = alignmentFor(lb, {}); return a.criteria.every(c => c.status === "unknown") && a.confidence === "none"; })(), 1);
     ok("phaseV3: 8 phase templates available", Object.keys(PHASE_TEMPLATES).length === 8 && PHASE_TEMPLATES.leanbulk && PHASE_TEMPLATES.strength && PHASE_TEMPLATES.hypertrophy, Object.keys(PHASE_TEMPLATES).length);
 }
+
+  // Muscle Prioritization + auto-regulation
+  {
+    ok("prio: RPE→RIR mapping (10→0, 8.5→1–2, 8→2, 6→4–6)", rpeToRIR(10) === "0" && rpeToRIR(8.5) === "1–2" && rpeToRIR(8) === "2" && rpeToRIR(6) === "4–6", [rpeToRIR(10), rpeToRIR(8.5)]);
+    ok("prio: parser excludes warmups, keeps RPE @ notation", (() => { const p = parseWorkout("Bench\nW1: 40 kg × 8 [Warm-up]\nSet 1: 100 kg × 5 @ 8.5 [Failure]\nSet 2: 100 kg × 5 @ 9.5"); const ex = p.exercises[0]; const work = ex.sets.filter(s => !s.warmup); return ex.sets.length === 3 && work.length === 2 && work[0].rpe === 8.5 && work[1].rpe === 9.5 && p.totalSets === 2; })(), 1);
+    const ex = [];
+    const base = new Date("2026-06-24T00:00:00");
+    for (let wk = 5; wk >= 0; wk--) { const d = new Date(base); d.setDate(d.getDate() - wk * 7); const iso = d.toISOString().slice(0, 10); const chestKg = wk >= 2 ? 60 + (5 - wk) * 2 : 66; const rpe = wk >= 2 ? 8 : 9.5; let t = "Chest\n"; for (let i = 0; i < 11; i++) t += `Incline Bench Press\nSet ${i + 1}: ${chestKg} kg × 8 @ ${rpe}\n`; t += "Back\n"; for (let i = 0; i < 10; i++) t += `Lat Pulldown\nSet ${i + 1}: ${50 + (5 - wk) * 2} kg × 10 @ 8\n`; ex.push({ date: iso, text: t, id: iso }); }
+    const goals = { musclePriorities: { upperChest: 14 }, profile: { sex: "male", age: 25, heightCm: 178, weightKg: 80 } };
+    const r = computeMusclePrio({ exercise: ex, sleep: [], diet: [], weight: [] }, goals, "2026-06-24");
+    const uc = r.targets.find(t => t.id === "upperChest"), lat = r.targets.find(t => t.id === "lats");
+    ok("prio: prioritized muscle uses user-chosen target; others default to 10", uc.target === 14 && uc.prioritized && lat.target === PRIO_DEFAULT_SETS && !lat.prioritized, [uc.target, lat.target]);
+    ok("prio: completion % = current ÷ target (11/14 → 79%)", uc.current === 11 && uc.pct === 79 && /79% Complete/.test(uc.status), [uc.current, uc.pct]);
+    ok("prio: stalling+good-recovery → amber/red with Volume-bottleneck diagnosis + LPV", (uc.risk === "amber" || uc.risk === "red") && /Volume bottleneck/.test(uc.diagnosis || "") && uc.lastProductiveVolume > 0, [uc.risk, uc.diagnosis]);
+    ok("prio: progressing muscle stays green (no diagnosis)", lat.risk === "green" && !lat.diagnosis, lat.risk);
+    ok("prio: max 3 prioritized enforced by resolver count", prioritizedCount({ musclePriorities: { upperChest: 14, lats: 13, glutes: 16, biceps: 12 } }) === 4 && PRIO_MAX_COUNT === 3, 1);
+    ok("prio: taxonomy covers the major trainable muscles", PRIO_TARGETS.length >= 13 && PRIO_TARGETS.some(t => t.id === "sideDelts") && PRIO_TARGETS.some(t => t.id === "hamstrings"), PRIO_TARGETS.length);
+    ok("prio: not ready with no workouts (honest)", computeMusclePrio({ exercise: [] }, {}, "2026-06-24").ready === false, 1);
+  }
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

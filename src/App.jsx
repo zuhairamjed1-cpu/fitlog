@@ -27,6 +27,7 @@ import { proposeAdaptation } from "./engines/adaptation";
 import { computePhaseResult, summarizeDecisions, evaluateDecisions, logDecision } from "./engines/strategy";
 import { computeMacroTargets, macrosDiffer } from "./engines/macros";
 import { parseGoalMarkdown, buildRoadmapPhases } from "./engines/goalmd";
+import { PRIO_GROUPS, PRIO_TARGETS, targetById, resolvePriorities, prioritizedCount, computeMusclePrio, rpeToRIR, PRIO_DEFAULT_SETS, PRIO_MIN, PRIO_MAX, PRIO_MAX_COUNT, RIR_TARGET } from "./engines/musclePrio";
 import { buildBrain, formatBrainText, prioritizeInsights } from "./brain/brain";
 import { sleepTST, estimateSleepNeed, computeSleep } from "./engines/sleep";
 import { computeRecovery } from "./engines/recovery";
@@ -3229,13 +3230,130 @@ function AnatomyBody({ view, regions, active, onPick }) {
   );
 }
 
-function WorkoutAnalysis({ data, goals }) {
+// ─── MUSCLE PRIORITIZATION — shared UI (Goal Plan card + Workout Sets section) ──
+const PRIO_RISK_COLOR = { green: "#8fd989", amber: "#f9c97e", red: "#f47e6e", grey: "#5a6472" };
+const PRIO_RISK_LABEL = { green: "On track", amber: "Watch", red: "Stalled" };
+
+function savePrioTarget(goals, onSaveGoals, id, val) {
+  const map = { ...(goals.musclePriorities || {}) };
+  if (val == null || val === PRIO_DEFAULT_SETS) delete map[id];
+  else {
+    const v = Math.max(6, Math.min(20, val));
+    if (v >= PRIO_MIN) { const others = Object.entries(map).filter(([k, s]) => k !== id && s >= PRIO_MIN).length; if (others >= PRIO_MAX_COUNT) { toast(`Max ${PRIO_MAX_COUNT} prioritised muscles`); return; } }
+    map[id] = v;
+  }
+  onSaveGoals({ ...goals, musclePriorities: map });
+  haptic(6);
+}
+
+function SetStepper({ value, min, max, onDec, onInc }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 0, background: "var(--bg-2)", borderRadius: 8, overflow: "hidden" }}>
+      <button onClick={onDec} disabled={value <= min} style={{ width: 28, height: 28, border: "none", background: "none", color: value <= min ? "var(--text-2)" : "var(--text)", fontSize: 16, cursor: value <= min ? "default" : "pointer" }}>−</button>
+      <span style={{ minWidth: 26, textAlign: "center", fontWeight: 700, fontSize: 14 }}>{value}</span>
+      <button onClick={onInc} disabled={value >= max} style={{ width: 28, height: 28, border: "none", background: "none", color: value >= max ? "var(--text-2)" : "var(--text)", fontSize: 16, cursor: value >= max ? "default" : "pointer" }}>+</button>
+    </span>
+  );
+}
+
+function MuscleSetsSection({ prio, goals, onSaveGoals }) {
+  if (!prio.ready) return <Empty icon="◫" title="No workouts logged yet" hint="Log a workout — your weekly sets vs targets and stall-risk diagnosis appear here." />;
+  const byGroup = {};
+  prio.targets.forEach(t => (byGroup[t.group] = byGroup[t.group] || []).push(t));
+  const recTxt = prio.recVerdict === "good" ? "Recovery looks good" : prio.recVerdict === "poor" ? "Recovery is compromised" : "Recovery: not enough data";
+  return (
+    <>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, padding: "8px 10px", borderRadius: 8, background: "var(--bg-2)" }}>
+        <span style={{ width: 8, height: 8, borderRadius: "50%", background: prio.recVerdict === "good" ? PRIO_RISK_COLOR.green : prio.recVerdict === "poor" ? PRIO_RISK_COLOR.red : PRIO_RISK_COLOR.grey }} />
+        <span className="small">{recTxt}. {prio.riskTargets.length ? `${prio.riskTargets.length} muscle${prio.riskTargets.length > 1 ? "s" : ""} need attention.` : "All prioritised muscles progressing."}</span>
+      </div>
+      {Object.entries(byGroup).map(([group, items]) => (
+        <div key={group} style={{ marginBottom: 12 }}>
+          <div className="small" style={{ fontWeight: 700, color: "var(--text-2)", textTransform: "uppercase", letterSpacing: ".04em", marginBottom: 4, fontSize: 10 }}>{group}</div>
+          {items.map(t => {
+            const pct = Math.min(100, t.pct || 0);
+            return (
+              <div key={t.id} style={{ padding: "9px 0", borderTop: "1px solid var(--line)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: PRIO_RISK_COLOR[t.risk], flexShrink: 0 }} title={PRIO_RISK_LABEL[t.risk]} />
+                  <span style={{ flex: 1, fontWeight: 600, fontSize: 13 }}>{t.label}{t.prioritized && <span style={{ fontSize: 9, marginLeft: 6, padding: "1px 6px", borderRadius: 999, background: "rgba(92,200,223,0.15)", color: "#5cc8df", fontWeight: 700 }}>PRIORITY</span>}</span>
+                  <span className="small" style={{ color: t.current >= t.target ? "#8fd989" : "var(--text)" }}>{t.current}/{t.target}</span>
+                  <SetStepper value={t.target} min={6} max={20} onDec={() => savePrioTarget(goals, onSaveGoals, t.id, t.target - 1)} onInc={() => savePrioTarget(goals, onSaveGoals, t.id, t.target + 1)} />
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 5, paddingLeft: 16 }}>
+                  <div style={{ flex: 1, height: 5, borderRadius: 5, background: "var(--bg-2)", overflow: "hidden" }}><div style={{ width: `${pct}%`, height: "100%", borderRadius: 5, background: t.current >= t.target ? "#8fd989" : "var(--accent)" }} /></div>
+                  <span className="muted small" style={{ width: 86, textAlign: "right" }}>{t.status}</span>
+                </div>
+                {t.diagnosis && (
+                  <div style={{ marginLeft: 16, marginTop: 6, padding: "7px 10px", borderRadius: 8, background: t.risk === "red" ? "rgba(244,126,110,0.1)" : "rgba(249,201,126,0.1)", border: `1px solid ${PRIO_RISK_COLOR[t.risk]}44` }}>
+                    <div className="small" style={{ fontWeight: 700, color: PRIO_RISK_COLOR[t.risk] }}>{t.risk === "red" ? "⚠ " : ""}{t.diagnosis}</div>
+                    <div className="muted small" style={{ marginTop: 1, lineHeight: 1.4 }}>{t.action}{t.signals.length ? ` (${t.signals.join("; ")}.)` : ""}</div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ))}
+      <p className="muted small" style={{ marginTop: 6, lineHeight: 1.45 }}>Target {RIR_TARGET} on every working set. Sets count hard sets only (warmups excluded). Prioritised muscles use your chosen 12–16; everything else targets {PRIO_DEFAULT_SETS}. These are recommendations — you always choose the volume.</p>
+    </>
+  );
+}
+
+function V3MusclePrioCard({ data, goals, onSaveGoals }) {
+  const [open, setOpen] = useState({});
+  const prio = useMemo(() => computeMusclePrio(data, goals, getTodayStr()), [data, goals]);
+  const byId = {}; prio.targets.forEach(t => (byId[t.id] = t));
+  const count = prio.prioritizedCount;
+  const toggle = t => { if (t.prioritized) savePrioTarget(goals, onSaveGoals, t.id, PRIO_DEFAULT_SETS); else savePrioTarget(goals, onSaveGoals, t.id, 14); };
+  return (
+    <Card title="Muscle Prioritisation" sub={`pick up to ${PRIO_MAX_COUNT} muscles to grow faster · ${count}/${PRIO_MAX_COUNT} chosen`}>
+      <p className="muted small" style={{ lineHeight: 1.5, marginBottom: 10 }}>Prioritised muscles get extra weekly volume ({PRIO_MIN}–{PRIO_MAX} sets, your choice) so they grow faster; everything else holds at {PRIO_DEFAULT_SETS} sets. This drives your set targets in the Workout tab.</p>
+      {PRIO_GROUPS.map(g => {
+        const expandable = g.expandable;
+        const groupSel = g.targets.some(t => byId[t.id] && byId[t.id].prioritized);
+        return (
+          <div key={g.group} style={{ borderTop: "1px solid var(--line)" }}>
+            {expandable ? (
+              <>
+                <button onClick={() => setOpen(o => ({ ...o, [g.group]: !o[g.group] }))} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: "none", border: "none", padding: "10px 0", cursor: "pointer", color: "var(--text)" }}>
+                  <span style={{ fontWeight: 600, fontSize: 14 }}>{g.group}{groupSel && <span style={{ fontSize: 9, marginLeft: 6, padding: "1px 6px", borderRadius: 999, background: "rgba(92,200,223,0.15)", color: "#5cc8df", fontWeight: 700 }}>PRIORITY</span>}</span>
+                  <span style={{ color: "var(--text-2)", transform: open[g.group] ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▸</span>
+                </button>
+                {open[g.group] && g.targets.map(tt => { const t = byId[tt.id]; return <PrioRow key={tt.id} t={t} onToggle={() => toggle(t)} onDec={() => savePrioTarget(goals, onSaveGoals, t.id, t.target - 1)} onInc={() => savePrioTarget(goals, onSaveGoals, t.id, t.target + 1)} indent />; })}
+              </>
+            ) : (
+              (() => { const t = byId[g.targets[0].id]; return <PrioRow t={t} onToggle={() => toggle(t)} onDec={() => savePrioTarget(goals, onSaveGoals, t.id, t.target - 1)} onInc={() => savePrioTarget(goals, onSaveGoals, t.id, t.target + 1)} />; })()
+            )}
+          </div>
+        );
+      })}
+      {count >= PRIO_MAX_COUNT && <p className="small" style={{ color: "#f9c97e", marginTop: 8 }}>Maximum {PRIO_MAX_COUNT} muscles prioritised. Deselect one to choose another.</p>}
+      <p className="muted small" style={{ marginTop: 8 }}>Triceps, biceps, quads, hams, glutes, calves and abs are whole-muscle targets — FitLog tracks one set count for each, so it won't split them into heads it can't measure.</p>
+    </Card>
+  );
+}
+
+function PrioRow({ t, onToggle, onDec, onInc, indent }) {
+  if (!t) return null;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", paddingLeft: indent ? 12 : 0, borderTop: indent ? "1px solid var(--line)" : "none" }}>
+      <button onClick={onToggle} style={{ width: 22, height: 22, borderRadius: 6, border: `1.5px solid ${t.prioritized ? "#5cc8df" : "var(--line)"}`, background: t.prioritized ? "#5cc8df" : "transparent", color: "#0e1014", fontSize: 13, fontWeight: 800, cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>{t.prioritized ? "✓" : ""}</button>
+      <span style={{ flex: 1, fontSize: 13, fontWeight: t.prioritized ? 600 : 400 }}>{t.label}</span>
+      <span className="muted small">{t.current} now</span>
+      {t.prioritized ? <SetStepper value={t.target} min={PRIO_MIN} max={PRIO_MAX} onDec={onDec} onInc={onInc} /> : <span className="muted small" style={{ width: 96, textAlign: "right" }}>target {PRIO_DEFAULT_SETS}</span>}
+    </div>
+  );
+}
+
+function WorkoutAnalysis({ data, goals, onSaveGoals }) {
   const [weekOffset, setWeekOffset] = useState(0);
   const [tab, setTab] = useState("summary");
   const [view, setView] = useState("front");
   const [active, setActive] = useState(null);
   const [tip, setTip] = useState({ x: 0, y: 0 });
   const vol = useMemo(() => computeVolume(data, goals, getTodayStr(), weekOffset), [data, goals, weekOffset]);
+  const prio = useMemo(() => computeMusclePrio(data, goals, getTodayStr()), [data, goals]);
   const vmap = useMemo(() => { const o = {}; (vol.muscles || []).forEach(m => (o[m.key] = m)); return o; }, [vol]);
 
   if (!vol.ready) return <Card title="Training Analysis"><Empty icon="◫" title="No workouts logged yet" hint="Log a workout above — your weekly training analysis and muscle map appear here." /></Card>;
@@ -3258,7 +3376,7 @@ function WorkoutAnalysis({ data, goals }) {
           <button className={`seg-btn ${weekOffset === 1 ? "active" : ""}`} onClick={() => { setWeekOffset(1); setActive(null); }}>Previous Week</button>
         </div>
         <div className="skin-tabs" style={{ marginBottom: 12 }}>
-          {[["summary", "Summary"], ["intel", "Intelligence"], ["weak", "Weak Points"]].map(([k, l]) => (
+          {[["summary", "Summary"], ["sets", "Sets"], ["intel", "Intelligence"], ["weak", "Weak Points"]].map(([k, l]) => (
             <button key={k} className={`skin-tab ${tab === k ? "on" : ""}`} onClick={() => setTab(k)}>{l}</button>
           ))}
         </div>
@@ -3275,6 +3393,8 @@ function WorkoutAnalysis({ data, goals }) {
             <p className="muted small" style={{ marginTop: 8, lineHeight: 1.4 }}>Session duration isn't logged, so it isn't shown. Counts are hard working sets (warmups excluded).</p>
           </>
         )}
+
+        {tab === "sets" && <MuscleSetsSection prio={prio} goals={goals} onSaveGoals={onSaveGoals} />}
 
         {tab === "intel" && (
           <>
@@ -3404,7 +3524,7 @@ function WorkoutScreen({ data, goals, addEntry, onSaveGoals }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
       <ExerciseForm onAdd={addEntry("exercise")} recent={data.exercise} hideRecent header={header} />
-      <WorkoutAnalysis data={data} goals={goals} />
+      <WorkoutAnalysis data={data} goals={goals} onSaveGoals={onSaveGoals} />
       <ExerciseMappingCard data={data} goals={goals} onSaveGoals={onSaveGoals} />
       <RecentWorkoutsCard recent={data.exercise} />
     </div>
@@ -6829,6 +6949,8 @@ function V3Overview({ gp, derived, activeP, data, goals, onSaveGoals }) {
           </div>
         ))}
       </Card>
+
+      <V3MusclePrioCard data={data} goals={goals} onSaveGoals={onSaveGoals} />
     </div>
   );
 }

@@ -197,9 +197,9 @@ export function listExerciseMappings(data, goals) {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-// A "working set" = a logged set that isn't an obvious warmup. We don't have an
-// explicit warmup flag, so we only drop sets the user marked very easy (RPE < 5).
-const isWorkingSet = s => !(s && s.rpe != null && s.rpe < 5);
+// An "effective" hypertrophy set = a logged set that is NOT a warmup (Strong
+// "[Warm-up]"/"W1:" tags) and that the user didn't mark very easy (RPE < 5).
+const isWorkingSet = s => !(s && (s.warmup || (s.rpe != null && s.rpe < 5)));
 
 const mondayOf = dateStr => {
   const d = new Date(dateStr + "T00:00:00");

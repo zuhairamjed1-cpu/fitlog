@@ -8,10 +8,14 @@ export function parseWorkout(text) {
   let totalVolume = 0, totalSets = 0;
   const rpeValues = [];
 
-  const setRe = /(?:set\s*\d+\s*[:.]?\s*)?(\d+(?:\.\d+)?)\s*(kg|lb|lbs)?\s*[x×]\s*(\d+)/i;
+  const setRe = /(?:set\s*\d+\s*[:.]?\s*)?[+]?(\d+(?:\.\d+)?)\s*(kg|lb|lbs)?\s*[x×]\s*(\d+)/i;
   const bwRe = /[x×]\s*(\d+)\s*(?:reps)?$/i;
+  const repOnlyRe = /^(?:set\s*\d+\s*[:.]\s*)(\d+)\s*reps?\b/i; // "Set 1: 8 reps" (bodyweight, no load)
   // RPE can appear as "@ RPE 8", "RPE 8", "@8", "@ 8.5" — capture the number (0-10, allow .5)
   const rpeRe = /(?:@\s*)?rpe\s*(\d{1,2}(?:\.\d)?)|@\s*(\d{1,2}(?:\.\d)?)\b/i;
+  const warmRe = /\[\s*warm[\s-]?up\s*\]/i;        // Strong "[Warm-up]" tag
+  const warmPrefixRe = /^w\d+\s*[:.]/i;            // Strong warmup set prefix "W1:" / "W2:"
+  const failRe = /\[\s*failure\s*\]/i;             // "[Failure]" → taken to ~0–1 RIR
 
   function extractRPE(line) {
     const m = line.match(rpeRe);
@@ -27,6 +31,9 @@ export function parseWorkout(text) {
     if (/^\d+\s*h(\s*\d+\s*m)?$/i.test(line) || /^\d+\s*m(in)?$/i.test(line)) continue;
     if (/^(total|duration|volume|notes?|rest)\b/i.test(lower)) continue;
 
+    const warmup = warmRe.test(line) || warmPrefixRe.test(line);
+    const failure = failRe.test(line);
+
     const m = line.match(setRe);
     if (m && current) {
       const weight = parseFloat(m[1]);
@@ -34,20 +41,29 @@ export function parseWorkout(text) {
       const reps = parseInt(m[3], 10);
       const wKg = unit === "lb" ? weight * 0.453592 : weight;
       const rpe = extractRPE(line);
-      if (rpe != null) rpeValues.push(rpe);
-      current.sets.push({ weight, unit, reps, rpe });
+      if (rpe != null && !warmup) rpeValues.push(rpe);
+      current.sets.push({ weight, unit, reps, rpe, warmup, failure });
       current.volume += wKg * reps;
       totalVolume += wKg * reps;
-      totalSets++;
+      if (!warmup) totalSets++;
+      continue;
+    }
+    // Rep-only set like "Set 1: 8 reps" (bodyweight)
+    const ro = line.match(repOnlyRe);
+    if (ro && current && !m) {
+      const rpe = extractRPE(line);
+      if (rpe != null && !warmup) rpeValues.push(rpe);
+      current.sets.push({ weight: 0, unit: "kg", reps: parseInt(ro[1], 10), rpe, warmup, failure });
+      if (!warmup) totalSets++;
       continue;
     }
     // Bodyweight set like "× 12"
     const bw = line.match(bwRe);
     if (bw && current && !m) {
       const rpe = extractRPE(line);
-      if (rpe != null) rpeValues.push(rpe);
-      current.sets.push({ weight: 0, unit: "kg", reps: parseInt(bw[1], 10), rpe });
-      totalSets++;
+      if (rpe != null && !warmup) rpeValues.push(rpe);
+      current.sets.push({ weight: 0, unit: "kg", reps: parseInt(bw[1], 10), rpe, warmup, failure });
+      if (!warmup) totalSets++;
       continue;
     }
     // Otherwise treat as an exercise name (must contain a letter, not be too long)
