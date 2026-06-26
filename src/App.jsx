@@ -1,5 +1,9 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { supabase, hasSupabase } from "./supabase";
+import { ErrorBoundary } from "./ui/ErrorBoundary";
+import { STORAGE_KEY } from "./lib/keys";
+import { haptic, SFX, soundEnabled, setSoundPref } from "./lib/fx";
+import { Ring, MacroDonut, MiniChart, Card, Empty, toast, ToastHost, ConfirmModal, useConfirm } from "./components/primitives";
 import { styles } from "./styles";
 import { localDateStr, getTodayStr, formatDate, formatShortDate, daysAgo, daysAgoFrom, WEEKDAYS } from "./lib/dates";
 import { computeWeightTrend } from "./engines/weight";
@@ -34,7 +38,6 @@ import { computeRecovery } from "./engines/recovery";
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const TABS = ["Home", "Log", "History", "Coach", "Journal", "Settings", "Ejac"];
-const STORAGE_KEY = "fitlog_v5";
 const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], nicotine: [], nicotinePlans: [], journal: [], weight: [], ejac: [], skin: [], skinResearch: [], skinProcedures: [], plannedSessions: [], skinRoutineLogs: [], skinProductIntros: [], skinRoutineChanges: [], skinCoachPlans: [], goalSnapshots: [], goalReports: [], completedPhases: [], decisionLog: [], constraintSnapshots: [] };
 const defaultProfile = {
   // Body
@@ -187,58 +190,7 @@ async function cloudPushNow(userId) {
 
 // Format a Date as YYYY-MM-DD using the user's LOCAL timezone (not UTC).
 // `toISOString()` returns UTC, which is off-by-one for any user not in UTC.
-
-// ─── HAPTICS ──────────────────────────────────────────────────────────────────
-// Subtle vibration on supported mobile devices. No-op on desktop/unsupported.
-function haptic(pattern = 12) {
-  try { if (navigator.vibrate) navigator.vibrate(pattern); } catch {}
-}
-
-// ─── SOUND ────────────────────────────────────────────────────────────────────
-// Synthesized via Web Audio API — no audio files, tiny, works offline.
-// Respects a user preference stored in localStorage (default ON).
-let _soundOn = (() => { try { return localStorage.getItem(STORAGE_KEY + "_sound") !== "off"; } catch { return true; } })();
-function setSoundPref(on) { _soundOn = on; try { localStorage.setItem(STORAGE_KEY + "_sound", on ? "on" : "off"); } catch {} }
-function soundEnabled() { return _soundOn; }
-
-let _audioCtx = null;
-function audioCtx() {
-  try {
-    if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    if (_audioCtx.state === "suspended") _audioCtx.resume();
-    return _audioCtx;
-  } catch { return null; }
-}
-
-// Play a single tone. freq in Hz, dur in seconds, type of wave, gain 0-1, startOffset for sequencing.
-function tone(freq, dur, { type = "sine", gain = 0.18, when = 0, glideTo = null } = {}) {
-  const ctx = audioCtx();
-  if (!ctx) return;
-  const t0 = ctx.currentTime + when;
-  const osc = ctx.createOscillator();
-  const g = ctx.createGain();
-  osc.type = type;
-  osc.frequency.setValueAtTime(freq, t0);
-  if (glideTo) osc.frequency.exponentialRampToValueAtTime(glideTo, t0 + dur);
-  // Quick attack, smooth exponential release — avoids clicks
-  g.gain.setValueAtTime(0.0001, t0);
-  g.gain.exponentialRampToValueAtTime(gain, t0 + 0.008);
-  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-  osc.connect(g); g.connect(ctx.destination);
-  osc.start(t0);
-  osc.stop(t0 + dur + 0.02);
-}
-
-// Named sound effects. Each is a no-op when sound is disabled.
-const SFX = {
-  log()    { if (!soundEnabled()) return; tone(660, 0.12, { type: "triangle", gain: 0.16 }); tone(880, 0.14, { type: "triangle", gain: 0.14, when: 0.06 }); },
-  water()  { if (!soundEnabled()) return; tone(440, 0.10, { type: "sine", gain: 0.18, glideTo: 880 }); },
-  tap()    { if (!soundEnabled()) return; tone(520, 0.05, { type: "square", gain: 0.06 }); },
-  pr()     { if (!soundEnabled()) return; [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.18, { type: "triangle", gain: 0.18, when: i * 0.10 })); },
-  success(){ if (!soundEnabled()) return; tone(587, 0.12, { type: "triangle", gain: 0.16 }); tone(880, 0.18, { type: "triangle", gain: 0.16, when: 0.10 }); },
-  error()  { if (!soundEnabled()) return; tone(220, 0.18, { type: "sine", gain: 0.16, glideTo: 160 }); },
-  start()  { if (!soundEnabled()) return; tone(440, 0.10, { type: "triangle", gain: 0.12, glideTo: 660 }); },
-};
+// Haptics + sound moved to ./lib/fx.js (imported above).
 
 
 // ─── WORKOUT PARSING (Strong app format) ──────────────────────────────────────
@@ -783,213 +735,9 @@ function renderMarkdown(text) {
 }
 
 // ─── PRIMITIVES ───────────────────────────────────────────────────────────────
-function Ring({ pct, label, value, unit, big }) {
-  const size = big ? 130 : 88, stroke = big ? 9 : 7;
-  const r = (size - stroke) / 2, circ = 2 * Math.PI * r;
-  const filled = Math.min(1, pct / 100) * circ;
-  return (
-    <div className="ring">
-      <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
-        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="var(--track)" strokeWidth={stroke} />
-        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="var(--accent)" strokeWidth={stroke}
-          strokeDasharray={`${filled} ${circ}`} strokeLinecap="round"
-          style={{ transition: "stroke-dasharray .8s cubic-bezier(.4,0,.2,1)" }} />
-      </svg>
-      <div className="ring-center">
-        <div className={`ring-val ${big ? "big" : ""}`}>{value}<span className="ring-unit">{unit}</span></div>
-      </div>
-      <div className="ring-label">{label}</div>
-    </div>
-  );
-}
-
-function MacroDonut({ protein, carbs, fat, size = 88 }) {
-  const pCal = protein * 4, cCal = carbs * 4, fCal = fat * 9;
-  const tot = pCal + cCal + fCal;
-  if (tot <= 0) return null;
-  const r = (size - 12) / 2, circ = 2 * Math.PI * r;
-  const segs = [
-    { val: pCal, color: "#b4a8e8", label: "P" },
-    { val: cCal, color: "#f9c97e", label: "C" },
-    { val: fCal, color: "#f47e6e", label: "F" },
-  ];
-  let offset = 0;
-  return (
-    <div className="donut">
-      <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
-        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="var(--track)" strokeWidth="11" />
-        {segs.map((s, i) => {
-          const frac = s.val / tot;
-          const dash = frac * circ;
-          const el = (
-            <circle key={i} cx={size/2} cy={size/2} r={r} fill="none" stroke={s.color} strokeWidth="11"
-              strokeDasharray={`${dash} ${circ - dash}`} strokeDashoffset={-offset}
-              style={{ transition: "stroke-dasharray .6s ease, stroke-dashoffset .6s ease" }} />
-          );
-          offset += dash;
-          return el;
-        })}
-      </svg>
-      <div className="donut-center"><span>{Math.round(tot)}</span><small>kcal</small></div>
-    </div>
-  );
-}
-
-function MiniChart({ points, height = 80, showGoal = null, rollingAvg = false, unit = "" }) {
-  const [sel, setSel] = useState(null);
-  if (!points || points.length === 0) return <div className="muted-center">No data</div>;
-  const W = 320, H = height, padX = 6, padY = 10;
-  const vals = points.map(p => p.value).filter(v => v != null);
-  if (vals.length === 0) return <div className="muted-center">Not enough data</div>;
-  let min = Math.min(...vals), max = Math.max(...vals);
-  if (showGoal != null) { min = Math.min(min, showGoal); max = Math.max(max, showGoal); }
-  if (max === min) max = min + 1;
-  const range = max - min; min -= range * 0.1; max += range * 0.1;
-  const sx = i => padX + (i / Math.max(1, points.length - 1)) * (W - 2 * padX);
-  const sy = v => H - padY - ((v - min) / (max - min)) * (H - 2 * padY);
-
-  // Build line segments (skip nulls)
-  const segments = [];
-  let cur = [];
-  points.forEach((p, i) => {
-    if (p.value != null) cur.push({ x: sx(i), y: sy(p.value), i });
-    else if (cur.length) { segments.push(cur); cur = []; }
-  });
-  if (cur.length) segments.push(cur);
-
-  // Rolling 7-day average line
-  let avgPath = "";
-  if (rollingAvg) {
-    const pts = [];
-    points.forEach((p, i) => {
-      const window = points.slice(Math.max(0, i - 6), i + 1).map(x => x.value).filter(v => v != null);
-      if (window.length >= 2) pts.push({ x: sx(i), y: sy(window.reduce((a, b) => a + b, 0) / window.length) });
-    });
-    avgPath = pts.map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
-  }
-
-  const fmt = v => (v >= 1000 ? v.toLocaleString() : v) + unit;
-
-  return (
-    <div className="chart-wrap">
-      {sel != null && points[sel]?.value != null && (
-        <div className="chart-tip" style={{ left: `${(sx(sel) / W) * 100}%` }}>
-          <span className="chart-tip-v">{fmt(points[sel].value)}</span>
-          {points[sel].label && <span className="chart-tip-d">{formatShortDate(points[sel].label)}</span>}
-        </div>
-      )}
-      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="chart">
-        {showGoal != null && (
-          <line x1={padX} x2={W - padX} y1={sy(showGoal)} y2={sy(showGoal)} stroke="var(--muted)" strokeWidth="1" strokeDasharray="3 3" opacity=".35" />
-        )}
-        {segments.map((seg, si) => {
-          const path = seg.map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
-          const area = seg.length > 1 ? `${path} L${seg[seg.length-1].x.toFixed(1)},${H - padY} L${seg[0].x.toFixed(1)},${H - padY} Z` : null;
-          return (
-            <g key={si}>
-              {area && <path d={area} fill="var(--accent)" opacity=".08" />}
-              <path d={path} stroke="var(--accent)" strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-            </g>
-          );
-        })}
-        {avgPath && <path d={avgPath} stroke="#f9c97e" strokeWidth="1.4" fill="none" strokeDasharray="4 3" opacity=".8" strokeLinecap="round" />}
-        {/* selection marker */}
-        {sel != null && points[sel]?.value != null && (
-          <line x1={sx(sel)} x2={sx(sel)} y1={padY} y2={H - padY} stroke="var(--accent)" strokeWidth="1" opacity=".3" />
-        )}
-        {points.map((p, i) => p.value != null && (
-          <circle key={i} cx={sx(i)} cy={sy(p.value)} r={sel === i ? 3.5 : 2} fill="var(--accent)" />
-        ))}
-        {/* invisible tap targets */}
-        {points.map((p, i) => (
-          <rect key={"t" + i} x={sx(i) - (W / points.length) / 2} y={0} width={W / points.length} height={H} fill="transparent"
-            onClick={() => { setSel(sel === i ? null : i); haptic(8); }} style={{ cursor: "pointer" }} />
-        ))}
-      </svg>
-      {rollingAvg && <div className="chart-legend"><span className="cl-line solid" />daily<span className="cl-line dash" />7-day avg</div>}
-    </div>
-  );
-}
-
-function Card({ title, sub, action, children, className = "" }) {
-  return (
-    <section className={`card ${className}`}>
-      {(title || action) && (
-        <header className="card-hd">
-          <div>
-            {title && <h3 className="card-title">{title}</h3>}
-            {sub && <p className="card-sub">{sub}</p>}
-          </div>
-          {action}
-        </header>
-      )}
-      {children}
-    </section>
-  );
-}
-
-function Empty({ icon = "✦", title, hint, action }) {
-  return (
-    <div className="empty">
-      <div className="empty-icon">{icon}</div>
-      <div className="empty-title">{title}</div>
-      {hint && <div className="empty-hint">{hint}</div>}
-      {action}
-    </div>
-  );
-}
-
-// ─── TOAST (global, no context needed) ────────────────────────────────────────
-let _toastFn = null;
-function toast(msg, opts = {}) { haptic(12); if (!opts.silent) SFX.log(); if (_toastFn) _toastFn(msg); }
-
-function ToastHost() {
-  const [items, setItems] = useState([]);
-  useEffect(() => {
-    _toastFn = (msg) => {
-      const id = Date.now() + Math.random();
-      setItems(it => [...it, { id, msg }]);
-      setTimeout(() => setItems(it => it.filter(x => x.id !== id)), 2200);
-    };
-    return () => { _toastFn = null; };
-  }, []);
-  return (
-    <div className="toast-host">
-      {items.map(t => <div key={t.id} className="toast">{t.msg}</div>)}
-    </div>
-  );
-}
-
-// ─── CONFIRM MODAL ────────────────────────────────────────────────────────────
-function ConfirmModal({ open, title, body, confirmLabel = "Confirm", danger, onConfirm, onCancel }) {
-  if (!open) return null;
-  return (
-    <div className="modal-overlay" onClick={onCancel}>
-      <div className="modal" onClick={e => e.stopPropagation()}>
-        <h3 className="modal-title">{title}</h3>
-        {body && <p className="modal-body">{body}</p>}
-        <div className="modal-actions">
-          <button className="btn-ghost flex" onClick={onCancel}>Cancel</button>
-          <button className={danger ? "btn-danger flex" : "btn flex"} onClick={onConfirm}>{confirmLabel}</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// Hook for confirm flow
-function useConfirm() {
-  const [state, setState] = useState({ open: false });
-  const confirm = (opts) => new Promise(resolve => {
-    setState({
-      open: true, ...opts,
-      onConfirm: () => { setState({ open: false }); resolve(true); },
-      onCancel: () => { setState({ open: false }); resolve(false); },
-    });
-  });
-  const modal = <ConfirmModal {...state} />;
-  return [confirm, modal];
-}
+// Shared UI primitives (Ring, MacroDonut, MiniChart, Card, Empty), the global
+// toast + ConfirmModal/useConfirm helpers, and ToastHost moved to
+// ./components/primitives.jsx (imported above).
 
 // ─── HOME TAB ─────────────────────────────────────────────────────────────────
 function HomeTab({ data, goals, onAddWater, onAddNicotine, onNav }) {
@@ -7861,14 +7609,14 @@ function AppShell({ session, syncing }) {
         </header>
 
         <main className="main">
-          {activeTab === "Home" && <HomeTab data={data} goals={goals} onAddWater={addEntry("water")} onAddNicotine={addEntry("nicotine")} onNav={navTo} />}
-          {activeTab === "Insights" && <HistoryTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />}
-          {activeTab === "Coach" && <CoachTab data={data} goals={goals} />}
-          {activeTab === "Me" && <MeTab data={data} goals={goals} onSaveGoals={setGoals} onClearAll={clearAll} onImport={importData} session={session} onSignOut={signOut} addEntry={addEntry} deleteEntry={deleteEntry} />}
+          {activeTab === "Home" && <ErrorBoundary compact label="Home"><HomeTab data={data} goals={goals} onAddWater={addEntry("water")} onAddNicotine={addEntry("nicotine")} onNav={navTo} /></ErrorBoundary>}
+          {activeTab === "Insights" && <ErrorBoundary compact label="Insights"><HistoryTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} /></ErrorBoundary>}
+          {activeTab === "Coach" && <ErrorBoundary compact label="Coach"><CoachTab data={data} goals={goals} /></ErrorBoundary>}
+          {activeTab === "Me" && <ErrorBoundary compact label="Me"><MeTab data={data} goals={goals} onSaveGoals={setGoals} onClearAll={clearAll} onImport={importData} session={session} onSignOut={signOut} addEntry={addEntry} deleteEntry={deleteEntry} /></ErrorBoundary>}
         </main>
 
         {logOpen && (
-          <LogOverlay data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} onSaveGoals={setGoals} setData={setData} initial={logInitial} onClose={closeLog} />
+          <ErrorBoundary compact label="Log"><LogOverlay data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} onSaveGoals={setGoals} setData={setData} initial={logInitial} onClose={closeLog} /></ErrorBoundary>
         )}
 
         <nav className="tabbar tabbar-5">

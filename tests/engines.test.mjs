@@ -485,5 +485,64 @@ ok("goalplan: constraints rank a primary lever", !!cons.primary && cons.levers.l
     ok("prio: not ready with no workouts (honest)", computeMusclePrio({ exercise: [] }, {}, "2026-06-24").ready === false, 1);
   }
 
+// ── EDGE CASES: empty data / missing profile / zero inputs (E1) ──
+// Every engine must survive a brand-new user (all arrays empty, no profile)
+// without throwing or leaking NaN/Infinity into the UI.
+{
+  const noThrow = (name, fn) => { try { fn(); ok(name, true, 1); } catch (e) { ok(name, false, e.message); } };
+  // Recursively assert no NaN/Infinity in a returned object (skips strings/null).
+  const hasBadNum = (v, seen = new Set()) => {
+    if (v == null || typeof v === "string" || typeof v === "boolean") return false;
+    if (typeof v === "number") return !Number.isFinite(v);
+    if (typeof v !== "object" || seen.has(v)) return false;
+    seen.add(v);
+    return Object.values(v).some(x => hasBadNum(x, seen));
+  };
+  const noNaN = (name, val) => ok(name, !hasBadNum(val), "contains NaN/Infinity");
+
+  const empty = { sleep: [], diet: [], weight: [], exercise: [], nicotine: [], journal: [], water: [], skin: [], sports: [], supplements: [], nicotinePlans: [], ejac: [], skinResearch: [] };
+  const g0 = {};                                   // no goals at all
+  const gNoProfile = { calories: 2000, protein: 180 }; // goals but no profile
+
+  noThrow("edge: computeWeightTrend(empty)", () => computeWeightTrend(empty));
+  noThrow("edge: computeEnergyBalance(empty)", () => computeEnergyBalance(empty, g0));
+  noThrow("edge: computeTraining(empty)", () => computeTraining(empty, g0));
+  noThrow("edge: computeSleep(empty)", () => computeSleep(empty, g0));
+  noThrow("edge: estimateSleepNeed(empty)", () => estimateSleepNeed(empty, g0));
+  noThrow("edge: computeRecovery(empty)", () => computeRecovery(empty, g0));
+  noThrow("edge: computeNicotineStats(empty)", () => computeNicotineStats(empty));
+  noThrow("edge: computeProteinDistribution(empty)", () => computeProteinDistribution(empty, g0));
+  noThrow("edge: computeSkin(empty)", () => computeSkin(empty, g0));
+  noThrow("edge: computeFatigue(empty)", () => computeFatigue(empty, g0));
+  noThrow("edge: computeVolume(empty)", () => computeVolume(empty, g0, daysAgo(0)));
+  noThrow("edge: computeMusclePrio(empty)", () => computeMusclePrio(empty, g0, daysAgo(0)));
+  noThrow("edge: computeMacroTargets(empty)", () => computeMacroTargets(empty, g0));
+  noThrow("edge: computePhysiologyState(empty)", () => computePhysiologyState(empty, g0));
+  noThrow("edge: computeRecoveryCapacity(empty)", () => computeRecoveryCapacity(empty, g0));
+  noThrow("edge: computeCircadian(empty)", () => computeCircadian(empty, daysAgo(0)));
+  noThrow("edge: computeHistoricalPhases(empty)", () => computeHistoricalPhases(empty, g0));
+
+  // buildBrain is the top-level integrator — if any engine throws on empty data,
+  // this is where the whole Coach context would crash. Most important guard.
+  noThrow("edge: buildBrain(empty, {})", () => buildBrain(empty, g0));
+  noThrow("edge: buildBrain(empty, noProfile)", () => buildBrain(empty, gNoProfile));
+  noThrow("edge: formatBrainText(buildBrain(empty))", () => formatBrainText(buildBrain(empty, g0)));
+  noNaN("edge: buildBrain(empty) has no NaN/Infinity", buildBrain(empty, g0));
+
+  // Zero / degenerate numeric inputs (division-by-zero class).
+  noThrow("edge: planFueling(zero-duration session)", () => planFueling({ sessions: [{ type: "gym", time: "17:00", durationMin: 0, intensity: "moderate" }], weightKg: 80 }));
+  noThrow("edge: computeMacroTargets(zero weight)", () => computeMacroTargets({ ...empty, weight: [{ date: daysAgo(0), kg: 0, ts: Date.now() }] }, gNoProfile));
+  noThrow("edge: estimateGlycemicLoad(empty meal)", () => estimateGlycemicLoad({ name: "", carbs: 0 }));
+
+  // Single data point (trend math often assumes >= 2 points).
+  const oneWeight = { ...empty, weight: [{ date: daysAgo(0), kg: 80, ts: Date.now() }] };
+  noThrow("edge: computeWeightTrend(single point)", () => computeWeightTrend(oneWeight));
+  noNaN("edge: computeWeightTrend(single point) no NaN", computeWeightTrend(oneWeight));
+
+  // Malformed workout text shouldn't throw.
+  noThrow("edge: parseWorkout(garbage)", () => parseWorkout("!!! not a workout \n\n 🤷"));
+  noThrow("edge: parseWorkout(empty string)", () => parseWorkout(""));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
