@@ -457,9 +457,16 @@ async function callClaude({ system, userText, imageBase64, imageMediaType, maxTo
   }];
   const body = { model: useModel, max_tokens: maxTokens, system, messages: apiMessages };
   if (tools) body.tools = tools;
+  const headers = { "Content-Type": "application/json" };
+  if (hasSupabase) {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`;
+    } catch { /* anonymous — proceed without token */ }
+  }
   const resp = await fetch("/api/chat", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(body)
   });
   const data = await resp.json();
@@ -3699,7 +3706,7 @@ function TrendsView({ data, goals }) {
   const sleepVals = sleepPts.map(p => p.value).filter(v => v != null);
   const avgSleep = sleepVals.length ? +(sleepVals.reduce((a, b) => a + b, 0) / sleepVals.length).toFixed(1) : null;
   const sleepNeed = estimateSleepNeed(data, goals).hours;
-  const sleepDebt = sleepVals.reduce((debt, v) => debt + (sleepNeed - v), 0);
+  const sleepDebt = sleepVals.length ? sleepVals.reduce((debt, v) => debt + (sleepNeed - v), 0) : null;
 
   const calVals = calPts.map(p => p.value).filter(v => v != null);
   const avgCal = calVals.length ? Math.round(calVals.reduce((a, b) => a + b, 0) / calVals.length) : null;
@@ -3744,7 +3751,7 @@ function TrendsView({ data, goals }) {
       <Card title="😴 Sleep">
         <div className="trend-stats">
           <div className="ts"><span className="ts-l">Average</span><span className="ts-v">{avgSleep ?? "—"}h</span></div>
-          <div className="ts"><span className="ts-l">Sleep debt</span><span className={`ts-v ${sleepDebt > 5 ? "warn" : sleepDebt > 0 ? "neutral" : "good"}`}>{sleepDebt > 0 ? "+" : ""}{Math.round(sleepDebt*10)/10}h</span></div>
+          <div className="ts"><span className="ts-l">Sleep debt</span><span className={`ts-v ${sleepDebt == null ? "" : sleepDebt > 5 ? "warn" : sleepDebt > 0 ? "neutral" : "good"}`}>{sleepDebt == null ? "—" : `${sleepDebt > 0 ? "+" : ""}${Math.round(sleepDebt*10)/10}h`}</span></div>
         </div>
         <MiniChart points={sleepPts} showGoal={sleepNeed} rollingAvg unit="h" />
       </Card>
