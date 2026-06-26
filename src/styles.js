@@ -135,8 +135,30 @@ body::after {
 .ring:nth-child(2) { animation-delay: .1s; }
 .ring:nth-child(3) { animation-delay: .2s; }
 @keyframes ringDraw { from { opacity: 0; transform: scale(.85) rotate(-8deg); } to { opacity: 1; transform: none; } }
-.ring svg { display: block; }
-.ring svg circle:last-child { filter: drop-shadow(0 0 4px var(--accent-glow)); }
+.ring svg { display: block; overflow: visible; }
+/* soft halo behind each ring */
+.ring::before {
+  content: ""; position: absolute; top: 2px; left: 50%; transform: translateX(-50%);
+  width: 70%; aspect-ratio: 1; border-radius: 50%; z-index: 0;
+  background: radial-gradient(circle, rgba(110,231,247,.10) 0%, transparent 70%);
+  filter: blur(8px); animation: ringHalo 4s ease-in-out infinite;
+}
+.ring-svg, .ring-center, .ring-label { position: relative; z-index: 1; }
+/* draw the progress arc on mount, then settle */
+.ring-progress { animation: ringFill 1.1s cubic-bezier(.34,1.2,.4,1) both; }
+@keyframes ringFill { from { stroke-dashoffset: var(--circ); } to { stroke-dashoffset: var(--offset); } }
+/* pulsing tip dot */
+.ring-dot {
+  transform-box: fill-box; transform-origin: center;
+  filter: drop-shadow(0 0 4px currentColor);
+  animation: ringDotPulse 1.8s ease-in-out infinite, valIn .5s var(--ease-out) .6s both;
+}
+@keyframes ringDotPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .6; transform: scale(1.35); } }
+@keyframes ringHalo { 0%, 100% { opacity: .55; transform: translateX(-50%) scale(.9); } 50% { opacity: 1; transform: translateX(-50%) scale(1.08); } }
+@media (prefers-reduced-motion: reduce) {
+  .ring-progress { animation: none; }
+  .ring::before, .ring-dot { animation: none; }
+}
 .ring-center { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding-bottom: 18px; }
 .ring-val { font-family: 'DM Serif Display', serif; font-size: 1.05rem; color: var(--text); animation: valIn .6s var(--ease-out) .25s both; }
 .ring-val.big { font-size: 1.4rem; }
@@ -384,6 +406,15 @@ select option { background: var(--surface-2); }
 .week-val { font-size: .64rem; color: var(--text-2); }
 
 .center-stack { display: flex; justify-content: center; padding: 8px 0 16px; }
+
+/* Correlation / patterns list */
+.corr-list { display: flex; flex-direction: column; gap: 12px; }
+.corr-row { padding: 10px 12px; border-radius: 10px; background: rgba(255,255,255,.025); border: 1px solid rgba(255,255,255,.05); }
+.corr-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.corr-tag { font-size: .72rem; font-weight: 600; padding: 2px 8px; border-radius: 999px; letter-spacing: .02em; }
+.corr-tag.pos { color: var(--good); background: rgba(143,217,137,.12); }
+.corr-tag.neg { color: var(--warn); background: rgba(249,201,126,.12); }
+.corr-meta { font-variant-numeric: tabular-nums; }
 
 /* Markdown */
 .md > *:first-child { margin-top: 0; }
@@ -921,19 +952,93 @@ input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
 .tabbar-5 { display: flex; align-items: flex-end; justify-content: space-around; }
 .tabbar-5 .tabbtn { flex: 1; }
 .tab-plus {
+  position: relative;
   flex: 0 0 auto;
-  width: 56px; height: 56px; min-width: 56px;
-  margin: 0 4px -14px; /* raise it above the bar */
+  width: 50px; height: 50px; min-width: 50px;
+  margin: 0 6px; align-self: center; /* inline with the other tab icons */
   border: none; border-radius: 50%;
-  background: var(--accent);
-  color: #06222a; font-size: 30px; font-weight: 300; line-height: 1;
+  background: linear-gradient(135deg, #8af0ff 0%, #6ee7f7 35%, #5cc8df 60%, #b4a8e8 100%);
+  background-size: 220% 220%;
+  color: #04181d; font-size: 26px; font-weight: 300; line-height: 1;
   display: flex; align-items: center; justify-content: center;
   cursor: pointer;
   box-shadow: 0 6px 18px var(--accent-glow), 0 2px 6px rgba(0,0,0,.4);
-  transition: transform .12s ease, box-shadow .2s ease;
+  transition: transform .3s var(--spring), box-shadow .25s var(--ease-out);
+  animation:
+    plusIn .55s var(--spring) both,
+    plusGradient 6s ease-in-out 0.6s infinite,
+    plusFloat 3.6s ease-in-out 0.6s infinite;
 }
-.tab-plus:hover { box-shadow: 0 8px 22px var(--accent-glow), 0 2px 8px rgba(0,0,0,.5); }
-.tab-plus:active { transform: scale(.92); }
+/* the glyph sits above the rotating glow ring */
+.tab-plus { z-index: 1; }
+.tab-plus > * { position: relative; z-index: 2; transition: transform .3s var(--spring); }
+/* rotating conic glow ring behind the button */
+.tab-plus::before {
+  content: ""; position: absolute; inset: -4px; border-radius: 50%; z-index: 0;
+  background: conic-gradient(from 0deg, transparent 0deg, rgba(110,231,247,.55) 80deg, rgba(180,168,232,.55) 180deg, transparent 260deg, transparent 360deg);
+  filter: blur(5px); opacity: .75;
+  animation: plusSpin 4.5s linear infinite;
+}
+/* soft pulsing halo */
+.tab-plus::after {
+  content: ""; position: absolute; inset: 0; border-radius: 50%; z-index: 0;
+  box-shadow: 0 0 0 0 rgba(110,231,247,.45);
+  animation: plusPulse 2.8s ease-out 0.6s infinite;
+}
+.tab-plus:hover {
+  box-shadow: 0 12px 30px var(--accent-glow), 0 2px 10px rgba(0,0,0,.5);
+  transform: scale(1.1) translateY(-2px);
+}
+.tab-plus:hover > * { transform: rotate(90deg) scale(1.05); }
+.tab-plus:active { transform: scale(.9); }
+.tab-plus:active > * { transform: rotate(180deg) scale(.85); }
+
+@keyframes plusIn { 0% { opacity: 0; transform: scale(0) rotate(-120deg); } 60% { opacity: 1; transform: scale(1.15) rotate(10deg); } 100% { opacity: 1; transform: scale(1) rotate(0); } }
+@keyframes plusGradient { 0%, 100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
+@keyframes plusFloat { 0%, 100% { box-shadow: 0 6px 18px var(--accent-glow), 0 2px 6px rgba(0,0,0,.4); } 50% { box-shadow: 0 12px 28px var(--accent-glow), 0 2px 6px rgba(0,0,0,.4); } }
+@keyframes plusSpin { to { transform: rotate(360deg); } }
+@keyframes plusPulse { 0% { box-shadow: 0 0 0 0 rgba(110,231,247,.45); } 70%, 100% { box-shadow: 0 0 0 14px rgba(110,231,247,0); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .tab-plus, .tab-plus::before, .tab-plus::after { animation: none; }
+  .tab-plus::before, .tab-plus::after { opacity: 0; }
+  .tab-plus:hover, .tab-plus:active { transform: scale(1); }
+  .tab-plus:hover > *, .tab-plus:active > * { transform: none; }
+}
+
+/* ─── WELCOME SPLASH (every entry) ─────────────────────────────────────────── */
+.welcome-splash {
+  position: fixed; inset: 0; z-index: 400;
+  display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(120% 90% at 50% 35%, rgba(20,22,28,.96) 0%, rgba(10,11,15,.99) 70%);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  animation: welcomeIn .4s var(--ease-out) both;
+  cursor: pointer; overflow: hidden;
+}
+.welcome-splash::before {
+  content: ""; position: absolute; width: 420px; height: 420px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(110,231,247,.18) 0%, transparent 65%);
+  filter: blur(20px); animation: welcomeGlow 3s ease-in-out infinite;
+}
+.welcome-splash.leaving { animation: welcomeOut .48s var(--ease-out) forwards; }
+.welcome-inner { position: relative; text-align: center; padding: 0 24px; animation: welcomeRise .6s var(--spring) both; }
+.welcome-logo {
+  font-family: 'DM Serif Display', serif; font-size: 2.6rem; line-height: 1;
+  background: linear-gradient(120deg, #8af0ff, #6ee7f7 40%, #b4a8e8);
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  margin-bottom: 14px; animation: welcomePop .7s var(--spring) both;
+}
+.welcome-greet { font-size: 1.15rem; font-weight: 600; color: var(--text); margin-bottom: 6px; animation: welcomeRise .6s var(--spring) .12s both; }
+.welcome-sub { font-size: .9rem; color: var(--muted); animation: welcomeRise .6s var(--spring) .22s both; }
+@keyframes welcomeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes welcomeOut { to { opacity: 0; transform: scale(1.04); } }
+@keyframes welcomeRise { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+@keyframes welcomePop { 0% { opacity: 0; transform: scale(.6); } 60% { opacity: 1; transform: scale(1.08); } 100% { transform: scale(1); } }
+@keyframes welcomeGlow { 0%, 100% { opacity: .6; transform: scale(.92); } 50% { opacity: 1; transform: scale(1.08); } }
+@media (prefers-reduced-motion: reduce) {
+  .welcome-splash, .welcome-splash::before, .welcome-inner, .welcome-logo, .welcome-greet, .welcome-sub { animation: none; }
+  .welcome-logo { -webkit-text-fill-color: var(--accent); }
+}
 
 /* ─── LOG HUB OVERLAY ──────────────────────────────────────────────────────── */
 .log-overlay {

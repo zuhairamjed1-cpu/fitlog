@@ -2,21 +2,58 @@
 // Leaf presentational components + the global toast/confirm helpers, shared across
 // every view. Kept dependency-light (react + dates + fx) so any view can import
 // them without pulling in App.jsx.
-import { useState, useEffect } from "react";
+import { useState, useEffect, useId } from "react";
 import { formatShortDate } from "../lib/dates";
 import { haptic, SFX } from "../lib/fx";
+
+const RING_GRADS = {
+  calories: ["#ffd79a", "#f9c97e", "#f47e6e"],
+  protein: ["#cdbcff", "#b4a8e8", "#6ee7f7"],
+  water: ["#8af0ff", "#6ee7f7", "#5cc8df"],
+};
+const ringKey = label => {
+  const l = (label || "").toLowerCase();
+  if (l.includes("calorie")) return "calories";
+  if (l.includes("protein")) return "protein";
+  if (l.includes("water") || l.includes("ml")) return "water";
+  return "water";
+};
 
 export function Ring({ pct, label, value, unit, big }) {
   const size = big ? 130 : 88, stroke = big ? 9 : 7;
   const r = (size - stroke) / 2, circ = 2 * Math.PI * r;
-  const filled = Math.min(1, pct / 100) * circ;
+  const frac = Math.min(1, Math.max(0, pct / 100));
+  const offset = circ * (1 - frac);
+  const uid = useId().replace(/:/g, "");
+  const gid = `rg-${uid}`, fid = `rf-${uid}`;
+  const [c0, c1, c2] = RING_GRADS[ringKey(label)];
+  // progress-tip dot position (svg is rotated -90deg, so 0% sits at top)
+  const ang = frac * 2 * Math.PI;
+  const cx = size / 2, cy = size / 2;
+  const dotX = cx + r * Math.cos(ang), dotY = cy + r * Math.sin(ang);
   return (
     <div className="ring">
-      <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
-        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="var(--track)" strokeWidth={stroke} />
-        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="var(--accent)" strokeWidth={stroke}
-          strokeDasharray={`${filled} ${circ}`} strokeLinecap="round"
-          style={{ transition: "stroke-dasharray .8s cubic-bezier(.4,0,.2,1)" }} />
+      <svg width={size} height={size} className="ring-svg" style={{ transform: "rotate(-90deg)" }}>
+        <defs>
+          <linearGradient id={gid} x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor={c0} />
+            <stop offset="55%" stopColor={c1} />
+            <stop offset="100%" stopColor={c2} />
+          </linearGradient>
+          <filter id={fid} x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation={big ? 3 : 2} result="b" />
+            <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
+          </filter>
+        </defs>
+        <circle cx={cx} cy={cy} r={r} fill="none" stroke="var(--track)" strokeWidth={stroke} />
+        <circle cx={cx} cy={cy} r={r} fill="none" stroke={`url(#${gid})`} strokeWidth={stroke}
+          strokeDasharray={circ} strokeDashoffset={offset} strokeLinecap="round"
+          filter={`url(#${fid})`}
+          className="ring-progress"
+          style={{ "--circ": circ, "--offset": offset, transition: "stroke-dashoffset 1s cubic-bezier(.34,1.2,.4,1)" }} />
+        {frac > 0.01 && frac < 0.999 && (
+          <circle cx={dotX} cy={dotY} r={stroke / 2 + 1.5} fill={c2} className="ring-dot" />
+        )}
       </svg>
       <div className="ring-center">
         <div className={`ring-val ${big ? "big" : ""}`}>{value}<span className="ring-unit">{unit}</span></div>

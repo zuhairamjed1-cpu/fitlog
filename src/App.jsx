@@ -39,6 +39,7 @@ import { PRIO_TARGETS, targetById, resolvePriorities, prioritizedCount, computeM
 import { buildBrain, formatBrainText, prioritizeInsights } from "./brain/brain";
 import { sleepTST, estimateSleepNeed, computeSleep } from "./engines/sleep";
 import { computeRecovery } from "./engines/recovery";
+import { computeCorrelations as computeCorrelationsV2 } from "./engines/correlations";
 
 // ─── CONFIG / STORAGE / CLOUD SYNC ──────────────────────────────────────────────
 // Constants moved to ./config.js; persistence + cloud sync moved to ./state/store.js
@@ -2902,6 +2903,8 @@ function TrendsView({ data, goals }) {
 
   const totalWorkouts = workoutPts.reduce((a, p) => a + p.value, 0);
 
+  const patterns = useMemo(() => computeCorrelationsV2(data), [data]);
+
   // Sleep × workout correlation
   const corr = (() => {
     const days = series.map(d => {
@@ -2988,6 +2991,28 @@ function TrendsView({ data, goals }) {
           </p>
         </Card>
       )}
+
+      <Card title="🔗 Patterns in your logs" className="insight-card">
+        {!patterns.ready ? (
+          <p className="muted small">{patterns.reason}</p>
+        ) : patterns.links.length === 0 ? (
+          <p className="muted small">No strong cross-metric links yet — keep logging and they'll surface here.</p>
+        ) : (
+          <div className="corr-list">
+            {patterns.links.map((l, i) => (
+              <div key={i} className="corr-row">
+                <div className="corr-head">
+                  <span className={`corr-tag ${l.dir > 0 ? "pos" : "neg"}`}>{l.dir > 0 ? "↑" : "↓"} {l.strength}</span>
+                  <span className="corr-meta muted small">r {l.r > 0 ? "+" : ""}{l.r} · {l.n}d</span>
+                </div>
+                <p className="md-p" style={{ margin: "2px 0 0" }}>{l.text}</p>
+                {l.tip && <p className="muted small" style={{ marginTop: 2 }}>→ {l.tip}</p>}
+              </div>
+            ))}
+          </div>
+        )}
+        <p className="muted small" style={{ marginTop: 8, opacity: 0.7 }}>Correlation, not proof — these are tendencies in your own data, not guarantees.</p>
+      </Card>
     </>
   );
 }
@@ -6433,6 +6458,30 @@ function GoalReportTab({ gp, data, addEntry, deleteEntry }) {
 }
 
 
+// Brief welcome shown on every app entry. Auto-dismisses; tap to skip.
+function WelcomeSplash({ session, goals, onDone }) {
+  const [leaving, setLeaving] = useState(false);
+  const close = () => { if (leaving) return; setLeaving(true); setTimeout(onDone, 480); };
+  useEffect(() => {
+    const t = setTimeout(close, 2000);
+    return () => clearTimeout(t);
+  }, []);
+  const h = new Date().getHours();
+  const part = h < 5 ? "Burning the midnight oil" : h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : h < 22 ? "Good evening" : "Late night grind";
+  const raw = (session?.user?.email || "").split("@")[0] || "";
+  const name = raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : "";
+  const sub = goals?.goal || "Let's make today count";
+  return (
+    <div className={`welcome-splash${leaving ? " leaving" : ""}`} onClick={close}>
+      <div className="welcome-inner">
+        <div className="welcome-logo">FitLog</div>
+        <div className="welcome-greet">{part}{name ? `, ${name}` : ""} 👋</div>
+        <div className="welcome-sub">{sub}</div>
+      </div>
+    </div>
+  );
+}
+
 // Full-screen sheet launched by the raised ＋. Shows logging options grouped by
 // intent; tapping one opens that existing form. Reuses every form component.
 function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, setData, initial, onClose }) {
@@ -6440,6 +6489,10 @@ function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, setData, 
   const [view, setView] = useState(initial || null);
   const today = getTodayStr();
   const groups = [
+    { title: "Goal", items: [
+      { key: "goalplan", label: "Goal Plan", icon: "◎", color: "#7cc4a0" },
+      { key: "plan", label: "Plan", icon: "▦", color: "#6ee7f7" },
+    ] },
     { title: "Nutrition", items: [
       { key: "diet", label: "Meal", icon: "◉", color: "#f9c97e" },
       { key: "water", label: "Water", icon: "◊", color: "#5cc8df" },
@@ -6448,21 +6501,13 @@ function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, setData, 
     { title: "Training", items: [
       { key: "exercise", label: "Workout", icon: "◆", color: "#f47e6e" },
       { key: "sports", label: "Sport", icon: "◇", color: "#8fd989" },
-      { key: "plan", label: "Plan", icon: "▦", color: "#6ee7f7" },
-    ] },
-    { title: "Body & habits", items: [
-      { key: "sleep", label: "Sleep", icon: "◐", color: "#6ee7f7" },
       { key: "weight", label: "Weight", icon: "◈", color: "#e8c97e" },
+    ] },
+    { title: "Wellness", items: [
+      { key: "sleep", label: "Sleep", icon: "◐", color: "#6ee7f7" },
       { key: "nicotine", label: "Nicotine", icon: "●", color: "#d98fa8" },
-    ] },
-    { title: "Reflect", items: [
-      { key: "journal", label: "Journal", icon: "✎", color: "#9aa8e8" },
-    ] },
-    { title: "Skin", items: [
       { key: "skin", label: "Skin", icon: "✦", color: "#e89ab0" },
-    ] },
-    { title: "Goal", items: [
-      { key: "goalplan", label: "Goal Plan", icon: "◎", color: "#7cc4a0" },
+      { key: "journal", label: "Journal", icon: "✎", color: "#9aa8e8" },
     ] },
   ];
   const labelFor = k => { for (const g of groups) for (const it of g.items) if (it.key === k) return it.label; return "Log"; };
@@ -6597,6 +6642,7 @@ function AppShell({ session, syncing }) {
   const [activeTab, setActiveTab] = useState("Home");
   const [logOpen, setLogOpen] = useState(false);
   const [logInitial, setLogInitial] = useState(null);
+  const [showWelcome, setShowWelcome] = useState(true);
   const [data, setData] = useState(loadData);
   const [goals, setGoals] = useState(loadGoals);
   const firstData = useRef(true);
@@ -6671,6 +6717,7 @@ function AppShell({ session, syncing }) {
     <>
       <style>{styles}</style>
       <ToastHost />
+      {showWelcome && <WelcomeSplash session={session} goals={goals} onDone={() => setShowWelcome(false)} />}
       <div className="app">
         <header className="topbar">
           <h1 className="brand">FitLog</h1>
@@ -6695,7 +6742,7 @@ function AppShell({ session, syncing }) {
               <span className="tabbtn-label">{tab}</span>
             </button>
           ))}
-          <button className="tab-plus" onClick={() => openLog(null)} aria-label="Log">＋</button>
+          <button className="tab-plus" onClick={() => openLog(null)} aria-label="Log"><span className="tab-plus-glyph">＋</span></button>
           {["Coach", "Me"].map(tab => (
             <button key={tab} className={`tabbtn ${activeTab === tab ? "active" : ""}`} onClick={() => go(tab)}>
               <TabIcon name={tab} active={activeTab === tab} />

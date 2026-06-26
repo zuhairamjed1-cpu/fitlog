@@ -33,6 +33,7 @@ import { computeMacroTargets, macrosDiffer } from "../src/engines/macros.js";
 import { parseGoalMarkdown, buildRoadmapPhases } from "../src/engines/goalmd.js";
 import { computeCircadian, bioDayKey, bioDayNutrition } from "../src/engines/circadian.js";
 import { computeVolume, mapExercise, classifyVolume, volumeTrend, MUSCLE_KEYS, listExerciseMappings } from "../src/engines/volume.js";
+import { computeCorrelations } from "../src/engines/correlations.js";
 
 let pass = 0, fail = 0;
 const ok = (name, cond, got) => { if (cond) pass++; else { fail++; console.log("  ✗", name, "—", JSON.stringify(got)); } };
@@ -86,6 +87,14 @@ ok("nicotine: stats run (nicMg+NIC_MG)", !!computeNicotineStats(data), 1);
 
 // ── protein ──
 ok("protein: runs", computeProteinDistribution(data, goals) !== undefined, 1);
+
+// ── correlations ──
+const corr = computeCorrelations(data);
+ok("correlations: ready with ≥14 days", corr.ready === true, corr.reason);
+ok("correlations: links array", Array.isArray(corr.links), corr);
+ok("correlations: links well-formed (|r|≥0.35, n≥8)", corr.links.every(l => Math.abs(l.r) >= 0.35 && l.n >= 8 && l.dir === (l.r > 0 ? 1 : -1)), corr.links);
+ok("correlations: no tautological cal↔protein pair", !corr.links.some(l => [l.aKey, l.bKey].sort().join("|") === "cal|protein"), corr.links.map(l => `${l.aKey}|${l.bKey}`));
+ok("correlations: not-ready below threshold", computeCorrelations({ sleep: [], diet: [], water: [], exercise: [], sports: [], nicotine: [] }).ready === false, 1);
 
 // ── skin ──
 const sk = computeSkin(data, goals);
