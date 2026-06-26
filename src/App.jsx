@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import { supabase, hasSupabase } from "./supabase";
 import { ErrorBoundary } from "./ui/ErrorBoundary";
 import { STORAGE_KEY } from "./lib/keys";
+import { TABS, defaultData, defaultProfile, defaultStrategy, defaultGoals, fitnessGoals, mealTypes, sportsOptions, sleepQuality, intensityLevels, NIC_TYPES, NIC_CONTEXTS, NIC_QUICK, SPLIT_TYPES, defaultPlan, TYPE_DOT, TYPE_ICON, MODELS, loadModelPref, saveModelPref, currentModelId } from "./config";
+import { loadData, loadGoals, saveData, saveGoals, setCurrentUser, cloudSync, cloudPull, cloudPushNow } from "./state/store";
 import { haptic, SFX, soundEnabled, setSoundPref } from "./lib/fx";
 import { Ring, MacroDonut, MiniChart, Card, Empty, toast, ToastHost, ConfirmModal, useConfirm } from "./components/primitives";
 import { styles } from "./styles";
@@ -36,157 +38,9 @@ import { buildBrain, formatBrainText, prioritizeInsights } from "./brain/brain";
 import { sleepTST, estimateSleepNeed, computeSleep } from "./engines/sleep";
 import { computeRecovery } from "./engines/recovery";
 
-// ─── CONFIG ───────────────────────────────────────────────────────────────────
-const TABS = ["Home", "Log", "History", "Coach", "Journal", "Settings", "Ejac"];
-const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], nicotine: [], nicotinePlans: [], journal: [], weight: [], ejac: [], skin: [], skinResearch: [], skinProcedures: [], plannedSessions: [], skinRoutineLogs: [], skinProductIntros: [], skinRoutineChanges: [], skinCoachPlans: [], goalSnapshots: [], goalReports: [], completedPhases: [], decisionLog: [], constraintSnapshots: [] };
-const defaultProfile = {
-  // Body
-  sex: "", age: "", heightCm: "", weightKg: "",
-  // Background
-  trainingExp: "", // beginner | intermediate | advanced
-  liftingBackground: "", // free text — historical PRs, years lifting, lifetime context (not strategy)
-  // Constraints
-  injuries: "", // free text
-  allergies: "", // free text
-  equipment: "", // gym | home | minimal | other
-  // Preferences and short-term life context
-  preferences: "", // free text
-  lifeContext: "", // free text - "stressful work month", "sister's wedding in 8wks", etc
-  // Sleep
-  sleepNeedH: "", // optional override of learned individual sleep need (hours)
-};
-
-const defaultStrategy = {
-  phase: "", // bulk | cut | maintenance | recomp | performance | (empty)
-  focus: "", // strength | hypertrophy | conditioning | fat loss | general
-  blockStarted: "", // YYYY-MM-DD when current block started
-  blockWeeks: "", // target length of current block, e.g. "6"
-  notes: "", // free text — anything else the AI should know about strategy right now
-};
-
-const defaultGoals = { calories: 2500, protein: 180, carbs: 250, fat: 80, goal: "Build Muscle", waterGoalMl: 2500, profile: defaultProfile, strategy: defaultStrategy, sleepScreen: null, sleepExperiment: null, skinRoutine: { am: [], pm: [] }, skinExperiment: null, goalPlan: null, macroMode: "manual" };
-const fitnessGoals = ["Build Muscle", "Lose Fat", "Improve Endurance", "Maintain Weight", "Athletic Performance"];
-const mealTypes = ["Breakfast", "Lunch", "Dinner", "Snack"];
-const sportsOptions = ["Running","Football","Basketball","Tennis","Swimming","Cycling","Yoga","Boxing","Soccer","Volleyball","Badminton","Table Tennis","Golf","Martial Arts","Hiking","Walking","Rowing","Climbing","Other"];
-const sleepQuality = ["Poor", "Fair", "Good", "Great", "Excellent"];
-const intensityLevels = ["Light", "Moderate", "Intense", "All-out"];
-
-// ─── NICOTINE ─────────────────────────────────────────────────────────────────
-const NIC_TYPES = [
-  { key: "cigarette", label: "Cigarette", icon: "🚬", unit: "cigarettes", combustion: true },
-  { key: "vape", label: "Vape", icon: "💨", unit: "puffs", combustion: false },
-  { key: "pouch", label: "Pouch", icon: "⬜", unit: "pouches", combustion: false },
-];
-const NIC_CONTEXTS = ["craving", "stress", "social", "post-meal", "post-workout", "boredom", "drinking", "after waking"];
-// One-tap defaults shown as quick-add chips. User's common entries.
-const NIC_QUICK = [
-  { type: "cigarette", amount: 1, label: "1 cig" },
-  { type: "vape", amount: 10, label: "Vape (10 puffs)" },
-  { type: "vape", amount: 1, label: "1 puff" },
-  { type: "pouch", amount: 1, mg: 6, label: "Pouch 6mg" },
-];
-// Approx nicotine mg per unit, for a rough combined "nicotine load" estimate.
-
-// ─── WORKOUT PLANNING ─────────────────────────────────────────────────────────
-const SPLIT_TYPES = [
-  "Push / Pull / Legs",
-  "Upper / Lower",
-  "Full Body",
-  "Bro Split (1 muscle/day)",
-  "Arnold Split",
-  "Custom",
-];
-const defaultPlan = { split: "Push / Pull / Legs", trainingDays: ["Mon", "Tue", "Thu", "Fri", "Sat"], assignments: {}, notes: "" };
-
-const TYPE_DOT = { sleep: "#6ee7f7", diet: "#f9c97e", exercise: "#f47e6e", sports: "#8fd989", water: "#5cc8df", supplements: "#b4a8e8", nicotine: "#d98fa8", weight: "#e8c97e", ejac: "#9aa8e8" };
-const TYPE_ICON = { sleep: "◐", diet: "◉", exercise: "◆", sports: "◇", water: "◊", supplements: "⊕" };
-
-// ─── AI MODEL PREFERENCE ──────────────────────────────────────────────────────
-const MODELS = {
-  haiku: { id: "claude-haiku-4-5", label: "Haiku", desc: "Fast & cheap — great for everyday logging" },
-  sonnet: { id: "claude-sonnet-4-20250514", label: "Sonnet", desc: "Smartest — best accuracy, costs ~12x more" },
-};
-function loadModelPref() {
-  try { return localStorage.getItem(STORAGE_KEY + "_model") === "sonnet" ? "sonnet" : "haiku"; } catch { return "haiku"; }
-}
-function saveModelPref(key) { localStorage.setItem(STORAGE_KEY + "_model", key); _currentModel = key; }
-let _currentModel = (() => { try { return localStorage.getItem(STORAGE_KEY + "_model") === "sonnet" ? "sonnet" : "haiku"; } catch { return "haiku"; } })();
-function currentModelId() { return MODELS[_currentModel]?.id || MODELS.haiku.id; }
-
-// ─── STORAGE ──────────────────────────────────────────────────────────────────
-function loadData() {
-  try { const r = localStorage.getItem(STORAGE_KEY); const p = r ? JSON.parse(r) : defaultData; return { ...defaultData, ...p }; }
-  catch { return defaultData; }
-}
-function loadGoals() {
-  try {
-    const r = localStorage.getItem(STORAGE_KEY + "_goals");
-    const p = r ? JSON.parse(r) : defaultGoals;
-    const merged = { ...defaultGoals, ...p };
-    // Deep-merge nested objects so existing users get any new fields we add later.
-    merged.profile = { ...defaultProfile, ...(p.profile || {}) };
-    merged.strategy = { ...defaultStrategy, ...(p.strategy || {}) };
-    // Existing users (who already saved goals before onboarding existed) skip the intro.
-    if (r && merged.onboarded === undefined) merged.onboarded = true;
-    return merged;
-  } catch { return defaultGoals; }
-}
-const saveData = d => localStorage.setItem(STORAGE_KEY, JSON.stringify(d));
-const saveGoals = g => localStorage.setItem(STORAGE_KEY + "_goals", JSON.stringify(g));
-
-// ─── CLOUD SYNC ───────────────────────────────────────────────────────────────
-// Tracks the currently signed-in user so any localStorage write can trigger a sync.
-let _currentUserId = null;
-function setCurrentUser(id) { _currentUserId = id; }
-
-// Pushes the full {data, goals, chat} bundle to Supabase for the logged-in user.
-// Debounced so rapid edits don't spam the server.
-let _syncTimer = null;
-function cloudSync(userId) {
-  const uid = userId || _currentUserId;
-  if (!hasSupabase || !uid) return;
-  clearTimeout(_syncTimer);
-  _syncTimer = setTimeout(async () => {
-    try {
-      const payload = {
-        user_id: uid,
-        data: loadData(),
-        goals: loadGoals(),
-        chat: JSON.parse(localStorage.getItem(STORAGE_KEY + "_chat") || "[]"),
-        updated_at: new Date().toISOString(),
-      };
-      await supabase.from("fitlog_data").upsert(payload, { onConflict: "user_id" });
-    } catch (e) { /* offline — will retry on next change */ }
-  }, 1200);
-}
-
-// Pulls cloud data into localStorage. Returns true if cloud had data.
-async function cloudPull(userId) {
-  if (!hasSupabase || !userId) return false;
-  const { data: row, error } = await supabase.from("fitlog_data").select("*").eq("user_id", userId).maybeSingle();
-  if (error || !row) return false;
-  const cloudData = row.data || {};
-  const hasAny = Object.values(cloudData).some(arr => Array.isArray(arr) && arr.length > 0);
-  if (!hasAny && (!row.chat || row.chat.length <= 1)) return false; // cloud effectively empty
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...defaultData, ...cloudData }));
-  localStorage.setItem(STORAGE_KEY + "_goals", JSON.stringify({ ...defaultGoals, ...(row.goals || {}) }));
-  if (row.chat) localStorage.setItem(STORAGE_KEY + "_chat", JSON.stringify(row.chat));
-  return true;
-}
-
-// Pushes current local data up immediately (used on first sign-in when cloud is empty).
-async function cloudPushNow(userId) {
-  if (!hasSupabase || !userId) return;
-  try {
-    await supabase.from("fitlog_data").upsert({
-      user_id: userId,
-      data: loadData(),
-      goals: loadGoals(),
-      chat: JSON.parse(localStorage.getItem(STORAGE_KEY + "_chat") || "[]"),
-      updated_at: new Date().toISOString(),
-    }, { onConflict: "user_id" });
-  } catch (e) {}
-}
+// ─── CONFIG / STORAGE / CLOUD SYNC ──────────────────────────────────────────────
+// Constants moved to ./config.js; persistence + cloud sync moved to ./state/store.js
+// (imported above) so lazily-loaded view modules can use them without importing App.jsx.
 
 // Format a Date as YYYY-MM-DD using the user's LOCAL timezone (not UTC).
 // `toISOString()` returns UTC, which is off-by-one for any user not in UTC.
@@ -3869,7 +3723,7 @@ FORMAT: Markdown — **bold** for key points, bullet lists for steps. Keep it ti
       <div className="coach-bar">
         <div className="coach-bar-l">
           <span className="coach-bar-title">AI Coach</span>
-          <span className="muted small">{view === "chat" ? `${messages.length - 1} messages · ${MODELS[_currentModel]?.label}` : MODELS[_currentModel]?.label}</span>
+          <span className="muted small">{view === "chat" ? `${messages.length - 1} messages · ${MODELS[loadModelPref()]?.label}` : MODELS[loadModelPref()]?.label}</span>
         </div>
         {view === "chat" && messages.length > 1 && <button className="link-btn" onClick={clearChat}>Clear</button>}
       </div>
