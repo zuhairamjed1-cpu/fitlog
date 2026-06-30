@@ -1476,80 +1476,84 @@ function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp = [], a
   const calLeft = (goals?.calories || 0) - dayCal;
   const pLeft = (goals?.protein || 0) - dayP;
 
+  // ── Gauge-hero geometry (semicircle) ──
+  const goalCal = goals?.calories || 0;
+  const calFrac = goalCal ? Math.min(1, Math.max(0, dayCal / goalCal)) : 0;
+  const ARC = 264;
+  const arcOffset = ARC * (1 - calFrac);
+  const knobA = Math.PI * (1 - calFrac);
+  const knobX = 100 + 84 * Math.cos(knobA), knobY = 100 - 84 * Math.sin(knobA);
+  const pct = (v, g) => (g ? Math.min(100, Math.round((v / g) * 100)) : 0);
+  const bioWeekday = new Date(dayCtx.currentDayKey() + "T00:00:00").toLocaleDateString("en-US", { weekday: "short" });
+
   return (
-    <div className="stack">
+    <div className="stack meal-redesign">
     {goals && (
-      <div className="running-total">
-        <div className="rt-row">
-          <div className="rt-item">
-            <span className="rt-v">{dayCal}<span className="rt-sub">/{goals.calories}</span></span>
-            <span className="rt-l">calories</span>
-          </div>
-          <div className="rt-item">
-            <span className="rt-v">{dayP}<span className="rt-sub">/{goals.protein}g</span></span>
-            <span className="rt-l">protein</span>
-          </div>
-          <div className="rt-item">
-            <span className={`rt-v ${calLeft < 0 ? "rt-over" : ""}`}>{calLeft >= 0 ? calLeft : `+${-calLeft}`}</span>
-            <span className="rt-l">{calLeft >= 0 ? "cal left" : "cal over"}</span>
+      <div className="semi">
+        <div className="gauge-h"><i /> CALORIES TODAY</div>
+        <div className="swrap">
+          <svg viewBox="0 0 200 120" aria-hidden="true">
+            <path d="M16,100 A84,84 0 0 1 184,100" fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="13" strokeLinecap="round" />
+            <path d="M16,100 A84,84 0 0 1 184,100" fill="none" stroke="var(--acc)" strokeWidth="13" strokeLinecap="round" strokeDasharray={ARC} strokeDashoffset={arcOffset} style={{ transition: "stroke-dashoffset .7s cubic-bezier(.22,1,.36,1)" }} />
+            <circle cx={knobX} cy={knobY} r="7" fill="var(--acc)" stroke="#14161c" strokeWidth="3" />
+          </svg>
+          <div className="sc">
+            <b>{calLeft >= 0 ? calLeft.toLocaleString() : `+${(-calLeft).toLocaleString()}`}</b>
+            <span>{calLeft >= 0 ? "kcal left" : "kcal over"}</span>
           </div>
         </div>
-        {todayDiet.length > 0 && (
-          <div className="rt-bar">
-            <div className="rt-bar-fill" style={{ width: `${Math.min(100, (dayCal / goals.calories) * 100)}%` }} />
-          </div>
-        )}
-        <div className="rt-hint">{pLeft > 0 ? `${pLeft}g protein to go today` : "✓ protein goal hit"}</div>
+        <div className="ends"><span>0</span><span>{goalCal.toLocaleString()}</span></div>
+        <div className="batt">
+          {[
+            { l: "Protein", v: dayP, g: goals.protein, c: "#b4a8e8" },
+            { l: "Carbs", v: dayC, g: goals.carbs, c: "#f9c97e" },
+            { l: "Fat", v: dayF, g: goals.fat, c: "#f47e6e" },
+          ].map(m => (
+            <div className="cell" key={m.l}>
+              <div className="vt"><i style={{ height: `${pct(m.v, m.g)}%`, background: m.c }} /></div>
+              <b>{Math.round(m.v)}<small>g</small></b>
+              <span>{m.l}</span>
+            </div>
+          ))}
+        </div>
       </div>
     )}
-    <Card title="Log meal" sub="Describe what you ate or upload a photo" className="log-meal-card">
-      {/* Biological-day indicator — makes it obvious which day food will belong to */}
-      {(() => {
-        const c = dayCtx.circ;
-        if (dayCtx.mode === "biological" && c && c.ready) {
-          const nowD = new Date();
-          const nowM = nowD.getHours() * 60 + nowD.getMinutes();
-          let rem = c.boundaryMin - nowM; if (rem <= 0) rem += 1440;
-          const wd = new Date(dayCtx.currentDayKey() + "T00:00:00").toLocaleDateString("en-US", { weekday: "long" });
-          return (
-            <div className="bioday-banner">
-              <span className="bioday-banner-title">◐ Current biological day · {wd}</span>
-              <span className="bioday-banner-sub">Resets {c.biologicalDayEnd} · {Math.floor(rem / 60)}h {rem % 60}m left</span>
-            </div>
-          );
-        }
-        if (bioEnabled) return <div className="bioday-banner muted-banner">Using calendar day — log ~3 nights of sleep to unlock your biological day.</div>;
-        return null;
-      })()}
-
-      {/* Step 1 — meal type (label only, never auto-sets the time) */}
-      <div className="field-grid">
-        <label>Meal type<select value={meal} onChange={e => setMeal(e.target.value)}>{[...mealTypes, "Custom"].map(m => <option key={m}>{m}</option>)}</select></label>
+    <div className="sheet">
+      <div className="sheet-h">
+        <b>Log meal</b>
+        {dayCtx.mode === "biological"
+          ? <span className="bio">◐ Bio day · {bioWeekday}</span>
+          : <span className="bio" style={{ color: "var(--mut)", background: "transparent", border: "1px solid var(--line)" }}>Calendar day</span>}
       </div>
 
-      {/* Step 2 — when did you eat? (compact dropdown; calendar only on "Pick date") */}
-      <div className="when-block">
-        <div className={`field-grid ${when === "pick" ? "two" : ""}`}>
-          <label>When did you eat?
-            <select value={when} onChange={e => setWhen(e.target.value)}>
-              <option value="today">{dayCtx.mode === "biological" ? "Current Biological Day" : "Today"}</option>
-              <option value="yesterday">Yesterday</option>
-              <option value="2days">2 Days Ago</option>
-              <option value="pick">Pick Date…</option>
-            </select>
-          </label>
-          {when === "pick" && <label>Date<input type="date" value={date} onChange={e => setDate(e.target.value)} /></label>}
-          <label>Time<input type="time" value={time} onChange={e => setTime(e.target.value)} /></label>
+      {/* Meal type · When · Time */}
+      <div className="row2">
+        <div className="fld"><span>Meal</span>
+          <select value={meal} onChange={e => setMeal(e.target.value)}>{[...mealTypes, "Custom"].map(m => <option key={m}>{m}</option>)}</select>
         </div>
-        {when !== "today" && (
-          <label className="coach-affect"><input type="checkbox" checked={affectCoach} onChange={e => setAffectCoach(e.target.checked)} /> Affect that day's coach analysis</label>
-        )}
+        <div className="fld"><span>When</span>
+          <select value={when} onChange={e => setWhen(e.target.value)}>
+            <option value="today">{dayCtx.mode === "biological" ? "Current Bio Day" : "Today"}</option>
+            <option value="yesterday">Yesterday</option>
+            <option value="2days">2 Days Ago</option>
+            <option value="pick">Pick Date…</option>
+          </select>
+        </div>
+        <div className="fld"><span>Time</span>
+          <input type="time" value={time} onChange={e => setTime(e.target.value)} />
+        </div>
       </div>
+      {when === "pick" && (
+        <div className="row2"><div className="fld" style={{ flex: 1 }}><span>Date</span><input type="date" value={date} onChange={e => setDate(e.target.value)} /></div></div>
+      )}
+      {when !== "today" && (
+        <label className="coach-affect"><input type="checkbox" checked={affectCoach} onChange={e => setAffectCoach(e.target.checked)} /> Affect that day's coach analysis</label>
+      )}
 
-      <div className="seg seg-three">
-        <button className={`seg-btn ${mode === "text" ? "active" : ""}`} onClick={() => { setMode("text"); setResult(null); setError(""); setBcProduct(null); }}>✎ Describe</button>
-        <button className={`seg-btn ${mode === "image" ? "active" : ""}`} onClick={() => { setMode("image"); setResult(null); setError(""); setBcProduct(null); }}>⊞ Photo</button>
-        <button className={`seg-btn ${mode === "barcode" ? "active" : ""}`} onClick={() => { setMode("barcode"); setResult(null); setError(""); }}>▒ Barcode</button>
+      <div className="modes">
+        <button className={`mode ${mode === "text" ? "on" : ""}`} onClick={() => { setMode("text"); setResult(null); setError(""); setBcProduct(null); }}>✎ Describe</button>
+        <button className={`mode ${mode === "image" ? "on" : ""}`} onClick={() => { setMode("image"); setResult(null); setError(""); setBcProduct(null); }}>⊞ Photo</button>
+        <button className={`mode ${mode === "barcode" ? "on" : ""}`} onClick={() => { setMode("barcode"); setResult(null); setError(""); }}>▒ Barcode</button>
       </div>
 
       {mode === "barcode" && !bcProduct && (
@@ -1609,7 +1613,7 @@ function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp = [], a
       )}
 
       {mode === "text" && !result && (
-        <label>What did you eat?<textarea value={text} onChange={e => setText(e.target.value)} placeholder='"2 eggs, toast, glass of OJ"' rows={3} /></label>
+        <div className="compose"><textarea value={text} onChange={e => setText(e.target.value)} placeholder='"2 eggs, toast, glass of OJ"' rows={3} /></div>
       )}
 
       {mode === "image" && !result && (
@@ -1638,14 +1642,12 @@ function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp = [], a
 
       {!result && mode !== "barcode" && (
         <>
-          <label className="web-toggle">
-            <input type="checkbox" checked={useWeb} onChange={e => setUseWeb(e.target.checked)} />
-            <span className="web-toggle-text">
-              <span className="web-toggle-title">🌐 Search web for exact data</span>
-              <span className="web-toggle-sub">Best for branded / restaurant foods. Slower, costs a bit more.</span>
-            </span>
+          <label className="web">
+            <span className={`sw ${useWeb ? "on" : ""}`}><i /></span>
+            <input type="checkbox" checked={useWeb} onChange={e => setUseWeb(e.target.checked)} hidden />
+            🌐 Search web for exact branded data
           </label>
-          <button className="btn full" onClick={analyze} disabled={analyzing || (mode === "text" ? !text.trim() : !file)}>
+          <button className="analyze" onClick={analyze} disabled={analyzing || (mode === "text" ? !text.trim() : !file)}>
             {analyzing ? <><span className="spinner" />{useWeb ? "Researching nutrition…" : "Analyzing…"}</> : "✦ Analyze with AI"}
           </button>
         </>
@@ -1681,7 +1683,7 @@ function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp = [], a
           </div>
         </div>
       )}
-      </Card>
+      </div>
       <ProteinTimingCard data={data} goals={goals} todayDiet={todayDiet} />
       <FuelCard data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />
       <RecentList entries={recent} render={m => <><span className="ra-main">{m.meal} · {m.calories} kcal · {m.food.slice(0, 26)}{m.food.length > 26 ? "…" : ""} <GLPill meal={m} showValue={false} /></span><span className="ra-date">{formatShortDate(m.date)}</span></>} />
