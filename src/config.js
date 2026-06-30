@@ -34,7 +34,7 @@ export const defaultStrategy = {
 
 export const defaultGoals = { calories: 2500, protein: 180, carbs: 250, fat: 80, goal: "Build Muscle", waterGoalMl: 2500, profile: defaultProfile, strategy: defaultStrategy, sleepScreen: null, sleepExperiment: null, skinRoutine: { am: [], pm: [] }, skinExperiment: null, goalPlan: null, macroMode: "manual", nutrition: { biologicalDay: true } };
 export const fitnessGoals = ["Build Muscle", "Lose Fat", "Improve Endurance", "Maintain Weight", "Athletic Performance"];
-export const mealTypes = ["Breakfast", "Lunch", "Dinner", "Snack"];
+export const mealTypes = ["Breakfast", "Pre-workout", "Post-workout", "Lunch", "Dinner", "Snack"];
 export const sportsOptions = ["Running","Football","Basketball","Tennis","Swimming","Cycling","Yoga","Boxing","Soccer","Volleyball","Badminton","Table Tennis","Golf","Martial Arts","Hiking","Walking","Rowing","Climbing","Other"];
 export const sleepQuality = ["Poor", "Fair", "Good", "Great", "Excellent"];
 export const intensityLevels = ["Light", "Moderate", "Intense", "All-out"];
