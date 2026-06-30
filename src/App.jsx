@@ -1363,7 +1363,7 @@ function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp = [], a
     return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
   });
   const [meal, setMeal] = useState("Breakfast");
-  const [when, setWhen] = useState("now"); // now | today | yesterday | 2days | pick
+  const [when, setWhen] = useState("today"); // today | yesterday | 2days | pick
   const [affectCoach, setAffectCoach] = useState(true); // past-day logs: include in coach analysis?
   const [text, setText] = useState("");
   const [file, setFile] = useState(null);
@@ -1502,46 +1502,6 @@ function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp = [], a
         <div className="rt-hint">{pLeft > 0 ? `${pLeft}g protein to go today` : "✓ protein goal hit"}</div>
       </div>
     )}
-    {/* Smart backfill — surface forgotten logging without extra taps (UI only) */}
-    {(() => {
-      const curKey = dayCtx.currentDayKey();
-      const prevKey = daysAgoFrom(curKey, 1);
-      const prevMeals = dayCtx.meals(prevKey);
-      const setType = (t, w) => { setMeal(t); setWhen(w); };
-      if (todayDiet.length === 0 && prevMeals.length > 0) {
-        return (
-          <div className="backfill-card">
-            <div className="backfill-q">Nothing logged for {dayCtx.mode === "biological" ? "this biological day" : "today"} yet — were you logging yesterday's meals?</div>
-            <div className="when-chips">
-              <button type="button" className="when-chip" onClick={() => setWhen("today")}>No, {dayCtx.mode === "biological" ? "current day" : "today"}</button>
-              <button type="button" className="when-chip" onClick={() => setWhen("yesterday")}>Yes, yesterday</button>
-            </div>
-          </div>
-        );
-      }
-      if (todayDiet.length === 0) {
-        return (
-          <div className="backfill-card">
-            <div className="backfill-q">Quick add to {dayCtx.mode === "biological" ? "this biological day" : "today"}:</div>
-            <div className="when-chips">
-              {mealTypes.map(t => <button key={t} type="button" className="when-chip" onClick={() => setType(t, "today")}>{t}</button>)}
-            </div>
-          </div>
-        );
-      }
-      // Incomplete previous day — nudge the single missing common meal (isolated; no aggregation impact)
-      if (prevMeals.length > 0) {
-        const have = new Set(prevMeals.map(m => m.meal));
-        const missing = ["Breakfast", "Lunch", "Dinner"].find(t => !have.has(t));
-        if (missing) return (
-          <div className="backfill-card subtle">
-            <span className="backfill-q">Yesterday looks incomplete — no {missing.toLowerCase()} logged.</span>
-            <button type="button" className="when-chip" onClick={() => setType(missing, "yesterday")}>Log {missing}</button>
-          </div>
-        );
-      }
-      return null;
-    })()}
     <Card title="Log meal" sub="Describe what you ate or upload a photo" className="log-meal-card">
       {/* Biological-day indicator — makes it obvious which day food will belong to */}
       {(() => {
@@ -1567,29 +1527,21 @@ function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp = [], a
         <label>Meal type<select value={meal} onChange={e => setMeal(e.target.value)}>{[...mealTypes, "Custom"].map(m => <option key={m}>{m}</option>)}</select></label>
       </div>
 
-      {/* Step 2 — when did you eat? */}
+      {/* Step 2 — when did you eat? (compact dropdown; calendar only on "Pick date") */}
       <div className="when-block">
-        <div className="when-label">When did you eat?</div>
-        <div className="when-chips">
-          {[
-            { k: "now", label: "Just now" },
-            { k: "today", label: dayCtx.mode === "biological" ? "Current day" : "Today" },
-            { k: "yesterday", label: "Yesterday" },
-            { k: "2days", label: "2 days ago" },
-            { k: "pick", label: "Pick date" },
-          ].map(o => (
-            <button key={o.k} type="button" className={`when-chip ${when === o.k ? "active" : ""}`} onClick={() => {
-              setWhen(o.k);
-              if (o.k === "now") { const d = new Date(); setTime(`${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`); }
-            }}>{o.label}</button>
-          ))}
-        </div>
-        {/* Step 3 — time (current time by default; user always edits the real time) */}
         <div className={`field-grid ${when === "pick" ? "two" : ""}`}>
+          <label>When did you eat?
+            <select value={when} onChange={e => setWhen(e.target.value)}>
+              <option value="today">{dayCtx.mode === "biological" ? "Current Biological Day" : "Today"}</option>
+              <option value="yesterday">Yesterday</option>
+              <option value="2days">2 Days Ago</option>
+              <option value="pick">Pick Date…</option>
+            </select>
+          </label>
           {when === "pick" && <label>Date<input type="date" value={date} onChange={e => setDate(e.target.value)} /></label>}
           <label>Time<input type="time" value={time} onChange={e => setTime(e.target.value)} /></label>
         </div>
-        {when !== "now" && when !== "today" && (
+        {when !== "today" && (
           <label className="coach-affect"><input type="checkbox" checked={affectCoach} onChange={e => setAffectCoach(e.target.checked)} /> Affect that day's coach analysis</label>
         )}
       </div>
