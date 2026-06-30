@@ -2,6 +2,7 @@
 import { minsOfTime } from "../lib/time.js";
 import { daysAgo, getTodayStr } from "../lib/dates.js";
 import { computeWeightTrend } from "./weight.js";
+import { getDayContext } from "./dayContext.js";
 
 // Per-meal protein target ≈ 0.4 g/kg bodyweight (the per-bout MPS-saturation dose).
 function proteinPerMealTarget(data, goals) {
@@ -32,12 +33,15 @@ export function computeProteinDistribution(data, goals) {
   if (diet.length === 0) return null;
   const { bw, perMeal } = proteinPerMealTarget(data, goals);
   const proteinGoal = goals?.protein || 0;
-  const today = getTodayStr();
-  const windowDays = Array.from({ length: 7 }, (_, i) => daysAgo(6 - i));
+  // Bucket meals by the ACTIVE day (biological or calendar) via the gateway.
+  const ctx = getDayContext(data, goals);
+  const today = ctx.currentDayKey();
+  const win = ctx.window(7);                      // last 7 active days → { dayKey: meals[] }
 
   const dayStats = [];
-  windowDays.forEach(date => {
-    const entries = diet.filter(d => d.date === date);
+  Object.keys(win).forEach(date => {
+    const entries = win[date];
+    // sleep.date is the wake-morning date, which ≈ the bio-day start date → safe to match
     if (entries.length === 0) return;
     const feedings = clusterFeedings(entries);
     const dayProtein = entries.reduce((a, e) => a + (e.protein || 0), 0);
@@ -77,7 +81,7 @@ export function computeProteinDistribution(data, goals) {
   if (daysWithMeals >= 4) confidence = "Moderate";
   if (daysWithMeals >= 6 && daysWithTimes >= 4) confidence = "High";
 
-  const todayEntries = diet.filter(d => d.date === today);
+  const todayEntries = ctx.meals(today);
   const todayFeedings = clusterFeedings(todayEntries).sort((a, b) => (a.startMin ?? 99999) - (b.startMin ?? 99999));
   const todaySnap = {
     dayProtein: Math.round(todayEntries.reduce((a, e) => a + (e.protein || 0), 0)),

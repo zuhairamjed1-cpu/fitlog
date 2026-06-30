@@ -407,6 +407,38 @@ select option { background: var(--surface-2); }
 
 .center-stack { display: flex; justify-content: center; padding: 8px 0 16px; }
 
+/* Biological-day tag */
+.bioday-tag { display: inline-flex; align-items: center; gap: 5px; font-size: .66rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--accent); background: var(--accent-dim); border: 1px solid rgba(110,231,247,.2); padding: 3px 9px; border-radius: 999px; margin-bottom: 12px; }
+
+/* Biological-day indicator banner (Log Meal) */
+.bioday-banner { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: 10px; background: var(--accent-dim); border: 1px solid rgba(110,231,247,.18); margin-bottom: 14px; }
+.bioday-banner-title { font-size: .82rem; font-weight: 600; color: var(--accent); }
+.bioday-banner-sub { font-size: .72rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.bioday-banner.muted-banner { background: var(--surface-2); border-color: var(--border); }
+.bioday-banner.muted-banner { font-size: .76rem; color: var(--muted); }
+
+/* Guided "when did you eat?" */
+.when-block { margin: 4px 0 14px; }
+.when-label, .backfill-q { font-size: .78rem; font-weight: 600; color: var(--text-2); margin-bottom: 8px; }
+.when-chips { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 10px; }
+.when-chip { font-size: .8rem; padding: 8px 13px; border-radius: 999px; background: var(--surface-2); color: var(--text); border: 1px solid var(--border-strong); cursor: pointer; font-family: inherit; transition: background .18s, border-color .18s, transform .12s var(--spring); -webkit-tap-highlight-color: transparent; }
+.when-chip:active { transform: scale(.94); }
+.when-chip.active { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); }
+.coach-affect { display: flex; align-items: center; gap: 7px; font-size: .76rem; color: var(--muted); margin-top: 4px; }
+.coach-affect input { width: auto; }
+
+/* Settings toggle row */
+.toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; cursor: pointer; }
+.toggle-text { flex: 1; min-width: 0; }
+.toggle-title { font-size: .9rem; font-weight: 600; color: var(--text); }
+.toggle-sub { font-size: .76rem; color: var(--muted); line-height: 1.45; margin-top: 2px; }
+.toggle-row input[type="checkbox"] { width: 20px; height: 20px; flex: 0 0 auto; accent-color: var(--accent); }
+
+/* Smart-backfill prompt */
+.backfill-card { background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 12px 13px; margin-bottom: 12px; }
+.backfill-card.subtle { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.backfill-card.subtle .backfill-q { margin-bottom: 0; font-weight: 500; color: var(--muted); }
+
 /* Correlation / patterns list */
 .corr-list { display: flex; flex-direction: column; gap: 12px; }
 .corr-row { padding: 10px 12px; border-radius: 10px; background: rgba(255,255,255,.025); border: 1px solid rgba(255,255,255,.05); }
@@ -1230,7 +1262,7 @@ input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
 .skin-routine-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .skin-routine-col { background: var(--surface-2); border-radius: 12px; padding: 12px; }
 .skin-routine-head { font-size: .8rem; font-weight: 700; color: var(--text-2); margin-bottom: 8px; }
-.skin-routine-step { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px; background: var(--surface); border-radius: 8px; margin-bottom: 6px; font-size: .82rem; }
+.skin-routine-step { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px; background: var(--surface); border-radius: 8px; margin-bottom: 6px; font-size: .82rem; color: var(--text); }
 .skin-x { background: none; border: none; color: var(--muted); font-size: 1.1rem; line-height: 1; cursor: pointer; flex: 0 0 auto; padding: 0 2px; }
 .skin-x:active { color: var(--bad); }
 .skin-add-step { background: none; border: 1px dashed var(--border-strong); color: var(--accent); border-radius: 8px; padding: 7px; width: 100%; font-size: .8rem; cursor: pointer; margin-top: 2px; }

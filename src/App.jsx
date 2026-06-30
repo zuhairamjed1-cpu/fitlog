@@ -40,6 +40,7 @@ import { buildBrain, formatBrainText, prioritizeInsights } from "./brain/brain";
 import { sleepTST, estimateSleepNeed, computeSleep } from "./engines/sleep";
 import { computeRecovery } from "./engines/recovery";
 import { computeCorrelations as computeCorrelationsV2 } from "./engines/correlations";
+import { getDayContext } from "./engines/dayContext";
 
 // ─── CONFIG / STORAGE / CLOUD SYNC ──────────────────────────────────────────────
 // Constants moved to ./config.js; persistence + cloud sync moved to ./state/store.js
@@ -185,8 +186,12 @@ function HomeTab({ data, goals, onAddWater, onAddNicotine, onNav }) {
   const hr = now.getHours();
   const greeting = hr < 5 ? "Late night" : hr < 12 ? "Good morning" : hr < 17 ? "Good afternoon" : hr < 21 ? "Good evening" : "Good night";
 
-  const todayDiet = data.diet.filter(d => d.date === today);
-  const todayCal = todayDiet.reduce((a, m) => a + m.calories, 0);
+  // Nutrition rings use the ACTIVE day (biological or calendar) via the gateway.
+  const dayCtx = getDayContext(data, goals);
+  const nutriDay = dayCtx.currentDayKey();
+  const bioActive = dayCtx.mode === "biological";
+  const todayDiet = dayCtx.meals(nutriDay);
+  const todayCal = todayDiet.reduce((a, m) => a + (m.calories || 0), 0);
   const todayProtein = todayDiet.reduce((a, m) => a + (m.protein || 0), 0);
   const todayWaterMl = data.water.filter(w => w.date === today).reduce((a, w) => a + w.ml, 0);
   const todaySleep = data.sleep.find(s => s.date === today);
@@ -256,6 +261,7 @@ function HomeTab({ data, goals, onAddWater, onAddNicotine, onNav }) {
 
       {/* PRIMARY RINGS */}
       <Card>
+        {bioActive && <div className="bioday-tag" title="Calories &amp; protein are grouped by your biological day (resets at your sleep time, not midnight)">◐ Current biological day</div>}
         <div className="rings-row">
           <Ring pct={calPct} label="Calories" value={todayCal || "0"} unit="" big />
           <Ring pct={prtPct} label="Protein" value={todayProtein || "0"} unit="g" big />
@@ -1346,13 +1352,19 @@ function FuelCard({ data, goals, addEntry, deleteEntry }) {
   );
 }
 
-function DietForm({ onAdd, recent, goals, data, todayDiet = [], addEntry, deleteEntry }) {
+function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp = [], addEntry, deleteEntry }) {
+  // Running totals follow the ACTIVE day (biological or calendar) via the gateway.
+  const dayCtx = getDayContext(data, goals);
+  const todayDiet = data ? dayCtx.meals(dayCtx.currentDayKey()) : todayDietProp;
+  const bioEnabled = goals?.nutrition?.biologicalDay !== false;
   const [date, setDate] = useState(getTodayStr());
   const [time, setTime] = useState(() => {
     const d = new Date();
     return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
   });
   const [meal, setMeal] = useState("Breakfast");
+  const [when, setWhen] = useState("now"); // now | today | yesterday | 2days | pick
+  const [affectCoach, setAffectCoach] = useState(true); // past-day logs: include in coach analysis?
   const [text, setText] = useState("");
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState(null);
@@ -1407,12 +1419,23 @@ function DietForm({ onAdd, recent, goals, data, todayDiet = [], addEntry, delete
     };
   }
 
+  // Resolve the chosen "when" + time into stored {date,time,consumedAt}.
+  // consumedAt (when eaten) is authoritative; loggedAt (Save pressed) is audit-only.
+  function whenToStore() {
+    const cur = dayCtx.currentDayKey();
+    const isPast = when !== "now" && when !== "today";
+    const key = when === "yesterday" ? daysAgoFrom(cur, 1) : when === "2days" ? daysAgoFrom(cur, 2) : when === "pick" ? date : cur;
+    const r = dayCtx.resolveConsumedAt(key, time);
+    if (isPast && !affectCoach) r.excludeFromCoach = true; // audit/totals only, hidden from coach reasoning
+    return r;
+  }
+
   function saveBarcode() {
     const m = bcMacros();
     if (!m || !bcProduct) return;
-    const ts = (() => { try { return new Date(`${date}T${time}:00`).getTime(); } catch { return Date.now(); } })();
+    const r = whenToStore();
     const portionNote = useServing && bcProduct.perServing ? `1 serving${bcProduct.servingSize ? ` (${bcProduct.servingSize})` : ""}` : `${grams}g`;
-    onAdd({ date, time, ts, meal, food: bcProduct.name, calories: m.cal, protein: m.protein, carbs: m.carbs, fat: m.fat, notes: `Barcode ${bcProduct.code} · ${portionNote}`, id: Date.now() });
+    onAdd({ date: r.date, time: r.time, ts: r.consumedAt, consumedAt: r.consumedAt, loggedAt: Date.now(), ...(r.excludeFromCoach ? { excludeFromCoach: true } : {}), meal, food: bcProduct.name, calories: m.cal, protein: m.protein, carbs: m.carbs, fat: m.fat, notes: `Barcode ${bcProduct.code} · ${portionNote}`, id: Date.now() });
     toast("◉ " + bcProduct.name.slice(0, 24) + " added");
     setBcProduct(null); setError("");
   }
@@ -1439,9 +1462,8 @@ function DietForm({ onAdd, recent, goals, data, todayDiet = [], addEntry, delete
 
   function save() {
     if (!result) return;
-    // Combine date + time into a timestamp
-    const ts = (() => { try { return new Date(`${date}T${time}:00`).getTime(); } catch { return Date.now(); } })();
-    onAdd({ date, time, ts, meal, food: result.food, calories: result.calories, protein: result.protein, carbs: result.carbs, fat: result.fat, notes: result.notes || "", id: Date.now() });
+    const r = whenToStore();
+    onAdd({ date: r.date, time: r.time, ts: r.consumedAt, consumedAt: r.consumedAt, loggedAt: Date.now(), ...(r.excludeFromCoach ? { excludeFromCoach: true } : {}), meal, food: result.food, calories: result.calories, protein: result.protein, carbs: result.carbs, fat: result.fat, notes: result.notes || "", id: Date.now() });
     toast("◉ " + result.food.slice(0, 24) + " added");
     setResult(null); setText(""); setFile(null); setPreview(null); setError("");
   }
@@ -1480,11 +1502,96 @@ function DietForm({ onAdd, recent, goals, data, todayDiet = [], addEntry, delete
         <div className="rt-hint">{pLeft > 0 ? `${pLeft}g protein to go today` : "✓ protein goal hit"}</div>
       </div>
     )}
+    {/* Smart backfill — surface forgotten logging without extra taps (UI only) */}
+    {(() => {
+      const curKey = dayCtx.currentDayKey();
+      const prevKey = daysAgoFrom(curKey, 1);
+      const prevMeals = dayCtx.meals(prevKey);
+      const setType = (t, w) => { setMeal(t); setWhen(w); };
+      if (todayDiet.length === 0 && prevMeals.length > 0) {
+        return (
+          <div className="backfill-card">
+            <div className="backfill-q">Nothing logged for {dayCtx.mode === "biological" ? "this biological day" : "today"} yet — were you logging yesterday's meals?</div>
+            <div className="when-chips">
+              <button type="button" className="when-chip" onClick={() => setWhen("today")}>No, {dayCtx.mode === "biological" ? "current day" : "today"}</button>
+              <button type="button" className="when-chip" onClick={() => setWhen("yesterday")}>Yes, yesterday</button>
+            </div>
+          </div>
+        );
+      }
+      if (todayDiet.length === 0) {
+        return (
+          <div className="backfill-card">
+            <div className="backfill-q">Quick add to {dayCtx.mode === "biological" ? "this biological day" : "today"}:</div>
+            <div className="when-chips">
+              {mealTypes.map(t => <button key={t} type="button" className="when-chip" onClick={() => setType(t, "today")}>{t}</button>)}
+            </div>
+          </div>
+        );
+      }
+      // Incomplete previous day — nudge the single missing common meal (isolated; no aggregation impact)
+      if (prevMeals.length > 0) {
+        const have = new Set(prevMeals.map(m => m.meal));
+        const missing = ["Breakfast", "Lunch", "Dinner"].find(t => !have.has(t));
+        if (missing) return (
+          <div className="backfill-card subtle">
+            <span className="backfill-q">Yesterday looks incomplete — no {missing.toLowerCase()} logged.</span>
+            <button type="button" className="when-chip" onClick={() => setType(missing, "yesterday")}>Log {missing}</button>
+          </div>
+        );
+      }
+      return null;
+    })()}
     <Card title="Log meal" sub="Describe what you ate or upload a photo" className="log-meal-card">
-      <div className="field-grid three">
-        <label>Date<input type="date" value={date} onChange={e => setDate(e.target.value)} /></label>
-        <label>Time<input type="time" value={time} onChange={e => setTime(e.target.value)} /></label>
-        <label>Meal<select value={meal} onChange={e => setMeal(e.target.value)}>{mealTypes.map(m => <option key={m}>{m}</option>)}</select></label>
+      {/* Biological-day indicator — makes it obvious which day food will belong to */}
+      {(() => {
+        const c = dayCtx.circ;
+        if (dayCtx.mode === "biological" && c && c.ready) {
+          const nowD = new Date();
+          const nowM = nowD.getHours() * 60 + nowD.getMinutes();
+          let rem = c.boundaryMin - nowM; if (rem <= 0) rem += 1440;
+          const wd = new Date(dayCtx.currentDayKey() + "T00:00:00").toLocaleDateString("en-US", { weekday: "long" });
+          return (
+            <div className="bioday-banner">
+              <span className="bioday-banner-title">◐ Current biological day · {wd}</span>
+              <span className="bioday-banner-sub">Resets {c.biologicalDayEnd} · {Math.floor(rem / 60)}h {rem % 60}m left</span>
+            </div>
+          );
+        }
+        if (bioEnabled) return <div className="bioday-banner muted-banner">Using calendar day — log ~3 nights of sleep to unlock your biological day.</div>;
+        return null;
+      })()}
+
+      {/* Step 1 — meal type (label only, never auto-sets the time) */}
+      <div className="field-grid">
+        <label>Meal type<select value={meal} onChange={e => setMeal(e.target.value)}>{[...mealTypes, "Custom"].map(m => <option key={m}>{m}</option>)}</select></label>
+      </div>
+
+      {/* Step 2 — when did you eat? */}
+      <div className="when-block">
+        <div className="when-label">When did you eat?</div>
+        <div className="when-chips">
+          {[
+            { k: "now", label: "Just now" },
+            { k: "today", label: dayCtx.mode === "biological" ? "Current day" : "Today" },
+            { k: "yesterday", label: "Yesterday" },
+            { k: "2days", label: "2 days ago" },
+            { k: "pick", label: "Pick date" },
+          ].map(o => (
+            <button key={o.k} type="button" className={`when-chip ${when === o.k ? "active" : ""}`} onClick={() => {
+              setWhen(o.k);
+              if (o.k === "now") { const d = new Date(); setTime(`${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`); }
+            }}>{o.label}</button>
+          ))}
+        </div>
+        {/* Step 3 — time (current time by default; user always edits the real time) */}
+        <div className={`field-grid ${when === "pick" ? "two" : ""}`}>
+          {when === "pick" && <label>Date<input type="date" value={date} onChange={e => setDate(e.target.value)} /></label>}
+          <label>Time<input type="time" value={time} onChange={e => setTime(e.target.value)} /></label>
+        </div>
+        {when !== "now" && when !== "today" && (
+          <label className="coach-affect"><input type="checkbox" checked={affectCoach} onChange={e => setAffectCoach(e.target.checked)} /> Affect that day's coach analysis</label>
+        )}
       </div>
 
       <div className="seg seg-three">
@@ -2884,9 +2991,12 @@ function TrendsView({ data, goals }) {
   const [range, setRange] = useState(14);
   const series = useMemo(() => Array.from({ length: range }, (_, i) => daysAgo(range - 1 - i)), [range]);
 
+  // Nutrition series bucket by the ACTIVE day (bio keys share the calendar-date format,
+  // so the x-axis stays aligned with the calendar-day sleep/workout/water series).
+  const dietBucket = useMemo(() => getDayContext(data, goals).bucket(), [data, goals]);
   const sleepPts = series.map(d => { const s = data.sleep.find(x => x.date === d); return { value: s ? s.duration : null, label: d }; });
-  const calPts = series.map(d => { const day = data.diet.filter(x => x.date === d); return { value: day.length ? day.reduce((a, m) => a + (m.calories || 0), 0) : null, label: d }; });
-  const proteinPts = series.map(d => { const day = data.diet.filter(x => x.date === d); return { value: day.length ? day.reduce((a, m) => a + (m.protein || 0), 0) : null, label: d }; });
+  const calPts = series.map(d => { const day = dietBucket[d] || []; return { value: day.length ? day.reduce((a, m) => a + (m.calories || 0), 0) : null, label: d }; });
+  const proteinPts = series.map(d => { const day = dietBucket[d] || []; return { value: day.length ? day.reduce((a, m) => a + (m.protein || 0), 0) : null, label: d }; });
   const workoutPts = series.map(d => ({ value: data.exercise.filter(x => x.date === d).length + data.sports.filter(x => x.date === d).length, label: d }));
   const waterPts = series.map(d => { const ml = data.water.filter(x => x.date === d).reduce((a, w) => a + w.ml, 0); return { value: ml || null, label: d }; });
 
@@ -3425,6 +3535,15 @@ function GoalsSettings({ goals, onSave }) {
       <div className="field-grid">
         <label>Daily water (ml)<input type="number" step="100" value={form.waterGoalMl} onChange={e => set("waterGoalMl", +e.target.value)} /></label>
       </div>
+
+      <div className="divider" />
+      <label className="toggle-row">
+        <div className="toggle-text">
+          <div className="toggle-title">Biological day</div>
+          <div className="toggle-sub">When enabled, calories and meals are grouped by your average sleep schedule instead of midnight.</div>
+        </div>
+        <input type="checkbox" checked={form.nutrition?.biologicalDay !== false} onChange={e => { const next = { ...form, nutrition: { ...form.nutrition, biologicalDay: e.target.checked } }; setForm(next); onSave(next); }} />
+      </label>
 
       <button className="btn full" onClick={() => { onSave(form); setSaved(true); setTimeout(() => setSaved(false), 2000); }}>{saved ? "✓ Saved" : "Save goals"}</button>
     </Card>

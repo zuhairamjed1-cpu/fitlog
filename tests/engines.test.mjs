@@ -34,6 +34,8 @@ import { parseGoalMarkdown, buildRoadmapPhases } from "../src/engines/goalmd.js"
 import { computeCircadian, bioDayKey, bioDayNutrition } from "../src/engines/circadian.js";
 import { computeVolume, mapExercise, classifyVolume, volumeTrend, MUSCLE_KEYS, listExerciseMappings } from "../src/engines/volume.js";
 import { computeCorrelations } from "../src/engines/correlations.js";
+import { getDayContext, buildBoundaryHistory, boundaryForTs, mealTs, normMeal } from "../src/engines/dayContext.js";
+import { daysAgoFrom, localDateStr } from "../src/lib/dates.js";
 
 let pass = 0, fail = 0;
 const ok = (name, cond, got) => { if (cond) pass++; else { fail++; console.log("  ✗", name, "—", JSON.stringify(got)); } };
@@ -95,6 +97,70 @@ ok("correlations: links array", Array.isArray(corr.links), corr);
 ok("correlations: links well-formed (|r|≥0.35, n≥8)", corr.links.every(l => Math.abs(l.r) >= 0.35 && l.n >= 8 && l.dir === (l.r > 0 ? 1 : -1)), corr.links);
 ok("correlations: no tautological cal↔protein pair", !corr.links.some(l => [l.aKey, l.bKey].sort().join("|") === "cal|protein"), corr.links.map(l => `${l.aKey}|${l.bKey}`));
 ok("correlations: not-ready below threshold", computeCorrelations({ sleep: [], diet: [], water: [], exercise: [], sports: [], nicotine: [] }).ready === false, 1);
+
+// ── day context / biological day ──
+{
+  const tsAt = (d, t) => new Date(`${d}T${t}:00`).getTime();
+  const slp = (date, bed) => ({ date, bedtime: bed, wakeTime: "07:00", duration: 8, quality: "Good" });
+  // 3 nights @02:00 (after-midnight sleeper) in the same ISO week as the test meals → boundary ≈120
+  const sleeps = [slp("2026-06-08", "02:00"), slp("2026-06-09", "02:00"), slp("2026-06-10", "02:00")];
+  const onGoals = { nutrition: { biologicalDay: true } };
+  const offGoals = { nutrition: { biologicalDay: false } };
+  const baseOn = { sleep: sleeps, diet: [], water: [], exercise: [], sports: [], nicotine: [] };
+
+  // 1 — OFF → calendar bucketing
+  const ctxOff = getDayContext({ ...baseOn }, offGoals);
+  ok("dayContext: OFF mode is calendar", ctxOff.mode === "calendar", ctxOff.mode);
+  ok("dayContext: OFF 01:00 meal keeps calendar date", ctxOff.dayKeyOf({ consumedAt: tsAt("2026-06-10", "01:00") }) === "2026-06-10", 1);
+
+  // 2 — ON + ready: boundary ≈02:00 → after-midnight meal rolls to prior bio day
+  const ctxOn = getDayContext(baseOn, onGoals);
+  ok("dayContext: ON mode is biological", ctxOn.mode === "biological", ctxOn.mode);
+  ok("dayContext: ON 00:30 meal → prior bio day", ctxOn.dayKeyOf({ consumedAt: tsAt("2026-06-10", "00:30") }) === "2026-06-09", ctxOn.dayKeyOf({ consumedAt: tsAt("2026-06-10", "00:30") }));
+  ok("dayContext: ON 12:00 meal → same bio day", ctxOn.dayKeyOf({ consumedAt: tsAt("2026-06-10", "12:00") }) === "2026-06-10", 1);
+
+  // 3 — period-frozen: a meal's week keeps its own boundary even as later weeks drift
+  const frozen = { sleep: [slp("2026-06-01", "22:00"), slp("2026-06-02", "22:00"), slp("2026-06-03", "22:00"), slp("2026-06-15", "02:00"), slp("2026-06-16", "02:00"), slp("2026-06-17", "02:00")] };
+  const hist = buildBoundaryHistory(frozen);
+  const bA = boundaryForTs(tsAt("2026-06-02", "12:00"), hist);
+  const bB = boundaryForTs(tsAt("2026-06-16", "12:00"), hist);
+  ok("dayContext: week-A boundary frozen at 22:00 (1320)", bA === 1320, bA);
+  ok("dayContext: later week has a different (drifted) boundary", bB !== 1320, { bA, bB });
+
+  // 4 — sparse sleep → calendar fallback even when ON
+  const sparse = getDayContext({ sleep: [slp("2026-06-08", "23:00"), slp("2026-06-09", "23:00")], diet: [] }, onGoals);
+  ok("dayContext: sparse sleep falls back to calendar", sparse.mode === "calendar", sparse.mode);
+
+  // 5 — OFF-mode energy parity with a hand-rolled calendar mean
+  const calKcal = {};
+  data.diet.forEach(d => { if (d.date >= daysAgo(20)) calKcal[d.date] = (calKcal[d.date] || 0) + (d.calories || 0); });
+  const loggedCal = Object.keys(calKcal).filter(d => calKcal[d] >= 800);
+  const expMean = Math.round(loggedCal.reduce((a, d) => a + calKcal[d], 0) / loggedCal.length);
+  const enOff = computeEnergyBalance(data, { ...goals, nutrition: { biologicalDay: false } });
+  ok("dayContext: OFF energy matches calendar meanIntake", enOff.meanIntake === expMean, { got: enOff.meanIntake, exp: expMean });
+
+  // 6 — ON divergence: a 00:30 meal's calories shift to the prior bio day
+  const divData = { ...baseOn, diet: [
+    { id: 1, date: "2026-06-10", time: "12:00", consumedAt: tsAt("2026-06-10", "12:00"), calories: 500, protein: 0 },
+    { id: 2, date: "2026-06-10", time: "00:30", consumedAt: tsAt("2026-06-10", "00:30"), calories: 300, protein: 0 },
+  ] };
+  const ctxDiv = getDayContext(divData, onGoals);
+  ok("dayContext: divergence — daytime cals on the day", ctxDiv.totals("2026-06-10").cal === 500, ctxDiv.totals("2026-06-10"));
+  ok("dayContext: divergence — 00:30 cals on prior bio day", ctxDiv.totals("2026-06-09").cal === 300, ctxDiv.totals("2026-06-09"));
+
+  // 7 — resolveConsumedAt round-trip: bioKey + 00:30 → next calendar date, re-buckets to bioKey
+  const rc = ctxDiv.resolveConsumedAt("2026-06-10", "00:30");
+  ok("dayContext: resolveConsumedAt stores next calendar date", rc.date === "2026-06-11", rc);
+  ok("dayContext: resolveConsumedAt round-trips to chosen bio day", ctxDiv.dayKeyOf({ consumedAt: rc.consumedAt }) === "2026-06-10", ctxDiv.dayKeyOf({ consumedAt: rc.consumedAt }));
+
+  // 8 — normMeal tolerates a legacy row with no ts/id
+  const nm = normMeal({ date: "2026-06-10", time: "08:00", calories: 400 });
+  ok("dayContext: normMeal derives consumedAt/loggedAt without crash", typeof nm.consumedAt === "number" && typeof nm.loggedAt === "number", nm);
+
+  // 9 — memoization: same refs → same object, bucket cached
+  ok("dayContext: getDayContext memoized by data+toggle", getDayContext(divData, onGoals) === getDayContext(divData, onGoals), 1);
+  ok("dayContext: bucket() memoized on the context", ctxDiv.bucket() === ctxDiv.bucket(), 1);
+}
 
 // ── skin ──
 const sk = computeSkin(data, goals);

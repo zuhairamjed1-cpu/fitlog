@@ -20,6 +20,7 @@ import { computeNicotineStats } from "../engines/nicotine.js";
 import { computeSkin } from "../engines/skin.js";
 import { computeCarbTiming } from "../engines/carbtiming.js";
 import { planFueling, reconcileFueling, sleepWindow } from "../engines/fueling.js";
+import { getDayContext } from "../engines/dayContext.js";
 
 export function insightCategory(text) {
   const t = (text || "").toLowerCase();
@@ -58,6 +59,11 @@ export function buildBrain(data, goals) {
   const now = new Date();
   const today = getTodayStr();
   const yesterday = daysAgo(1);
+  // Nutrition is bucketed by the ACTIVE day (biological or calendar) via the gateway.
+  // Everything non-nutrition (sleep, training, water, streak, timelines) stays calendar.
+  const dayCtx = getDayContext(data, goals);
+  const nutriToday = dayCtx.currentDayKey();
+  const bioMode = dayCtx.mode === "biological";
   const todayName = WEEKDAYS[(now.getDay() + 6) % 7];
   const hour = now.getHours();
   const minute = now.getMinutes();
@@ -74,8 +80,8 @@ export function buildBrain(data, goals) {
   // Helper: parse HH:MM into minutes since midnight, or null
   const minsOf = t => { if (!t) return null; const m = /^(\d{1,2}):(\d{2})/.exec(t); return m ? +m[1] * 60 + +m[2] : null; };
 
-  // ── TODAY: nutrition + intake so far
-  const todayDiet = data.diet.filter(d => d.date === today);
+  // ── TODAY: nutrition + intake so far (active day — biological or calendar)
+  const todayDiet = dayCtx.meals(nutriToday);
   const todayCal = todayDiet.reduce((a, m) => a + (m.calories || 0), 0);
   const todayP = todayDiet.reduce((a, m) => a + (m.protein || 0), 0);
   const todayC = todayDiet.reduce((a, m) => a + (m.carbs || 0), 0);
@@ -151,21 +157,23 @@ export function buildBrain(data, goals) {
     return { date: d, dayName: WEEKDAYS[(new Date(d + "T00:00:00").getDay() + 6) % 7], events };
   });
 
-  // ── 7-DAY NUTRITION
-  const last7Diet = last7(data.diet);
+  // ── 7-DAY NUTRITION (bucketed by active day)
+  const dietWin7 = dayCtx.window(7);
   const dietByDay7 = {};
-  last7Diet.forEach(d => {
-    if (!dietByDay7[d.date]) dietByDay7[d.date] = { cal: 0, p: 0, c: 0, f: 0, meals: 0, firstMeal: null, lastMeal: null };
-    const day = dietByDay7[d.date];
-    day.cal += d.calories || 0;
-    day.p += d.protein || 0;
-    day.c += d.carbs || 0;
-    day.f += d.fat || 0;
-    day.meals++;
-    if (d.time) {
-      if (!day.firstMeal || d.time < day.firstMeal) day.firstMeal = d.time;
-      if (!day.lastMeal || d.time > day.lastMeal) day.lastMeal = d.time;
-    }
+  Object.keys(dietWin7).forEach(dayKey => {
+    dietWin7[dayKey].forEach(d => {
+      if (!dietByDay7[dayKey]) dietByDay7[dayKey] = { cal: 0, p: 0, c: 0, f: 0, meals: 0, firstMeal: null, lastMeal: null };
+      const day = dietByDay7[dayKey];
+      day.cal += d.calories || 0;
+      day.p += d.protein || 0;
+      day.c += d.carbs || 0;
+      day.f += d.fat || 0;
+      day.meals++;
+      if (d.time) {
+        if (!day.firstMeal || d.time < day.firstMeal) day.firstMeal = d.time;
+        if (!day.lastMeal || d.time > day.lastMeal) day.lastMeal = d.time;
+      }
+    });
   });
   const dietDays7 = Object.values(dietByDay7);
   const avgCal7 = dietDays7.length ? Math.round(dietDays7.reduce((a, d) => a + d.cal, 0) / dietDays7.length) : null;
@@ -178,11 +186,11 @@ export function buildBrain(data, goals) {
   const avgFirstMeal = firstMealTimes.length ? avgTimeHHMM(firstMealTimes) : null;
   const avgLastMeal = lastMealTimes.length ? avgTimeHHMM(lastMealTimes) : null;
 
-  // ── 14-day calorie trend (rising/falling)
-  const last14Diet = last14(data.diet);
+  // ── 14-day calorie trend (rising/falling) — bucketed by active day
+  const dietWin14 = dayCtx.window(14);
   const trendBucket = (start, end) => {
     const days = {};
-    last14Diet.filter(d => d.date >= start && d.date <= end).forEach(d => { days[d.date] = (days[d.date] || 0) + (d.calories || 0); });
+    Object.keys(dietWin14).forEach(k => { if (k >= start && k <= end) days[k] = dietWin14[k].reduce((a, m) => a + (m.calories || 0), 0); });
     const vs = Object.values(days);
     return vs.length ? Math.round(vs.reduce((a, b) => a + b, 0) / vs.length) : null;
   };
@@ -278,7 +286,7 @@ export function buildBrain(data, goals) {
   const carbTiming = computeCarbTiming(data, goals);
   const _sw = sleepWindow(data);
   const fuelPlan = planFueling({ sessions: (data.plannedSessions || []).filter(s => s.date === getTodayStr()), weightKg: goals && goals.profile && goals.profile.weightKg, goals, wakeMin: _sw.wakeMin, sleepMin: _sw.sleepMin });
-  const fuelStatus = (fuelPlan && fuelPlan.blocks) ? reconcileFueling({ plan: fuelPlan, meals: (data.diet || []).filter(d => d.date === getTodayStr()), nowMin: new Date().getHours() * 60 + new Date().getMinutes() }) : null;
+  const fuelStatus = (fuelPlan && fuelPlan.blocks) ? reconcileFueling({ plan: fuelPlan, meals: dayCtx.meals(nutriToday), nowMin: new Date().getHours() * 60 + new Date().getMinutes() }) : null;
 
   // ── EJAC (private metric — neutral data only, NO insights/judgments generated)
   const ejacAll = data.ejac || [];
@@ -399,12 +407,14 @@ export function buildBrain(data, goals) {
     // Real-time awareness
     now: { iso: now.toISOString(), date: today, dayName: todayName, time: timeNow, hour, timeOfDay, isWeekend },
     circadian: (() => {      const c = computeCircadian(data, today);
-      const bio = todaysBioNutrition(data.diet, c);
+      // NOTE: bio-day nutrition totals now live in todayProgress (bucketed by the
+      // active day via DayContext). We only expose the boundary description here to
+      // avoid double-counting the same calories with a second (possibly rounded) total.
       return {
         ready: c.ready, tier: c.tier, confidence: c.confidence,
         biologicalDayStart: c.biologicalDayStart, biologicalDayEnd: c.biologicalDayEnd,
         avgSleepTime: c.avgSleepTime, avgWakeTime: c.avgWakeTime, sleepConsistency: c.sleepConsistency,
-        bioDayNutrition: c.ready ? { calories: bio.calories, protein: bio.protein, carbs: bio.carbs, fat: bio.fat, meals: bio.meals } : null,
+        active: bioMode,
       };
     })(),
     weeklyVolume: (() => {
@@ -441,7 +451,7 @@ export function buildBrain(data, goals) {
       sleep: todaySleep ? { duration: todaySleep.duration, quality: todaySleep.quality, bedtime: todaySleep.bedtime, wakeTime: todaySleep.wakeTime } : null,
       yesterdaySleep: yestSleep ? { duration: yestSleep.duration, quality: yestSleep.quality, bedtime: yestSleep.bedtime, wakeTime: yestSleep.wakeTime } : null,
       workoutLogged: !!todayWorkout, sportLogged: !!todaySport,
-      meals: todayDiet.map(d => ({ time: d.time, meal: d.meal, food: d.food, cal: d.calories, p: d.protein })),
+      meals: todayDiet.filter(d => !d.excludeFromCoach).map(d => ({ time: d.time, meal: d.meal, food: d.food, cal: d.calories, p: d.protein })),
       lastMealTime, hoursSinceLastMeal,
     },
     plan: plan ? { split: plan.split, todayLabel: todayPlanLabel, tomorrowLabel: tomorrowPlanLabel, trainingDays: plan.trainingDays, isTrainingDay, tomorrowName } : null,
@@ -520,7 +530,7 @@ export function formatBrainText(brain) {
   }
   if (brain.circadian && brain.circadian.ready) {
     const cc = brain.circadian;
-    lines.push(`Biological day (Calculated, ${cc.confidence} confidence): runs ${cc.biologicalDayStart} → ${cc.biologicalDayEnd} (avg sleep ${cc.avgSleepTime}, wake ${cc.avgWakeTime}, consistency ${cc.sleepConsistency}/100). Late-night meals before ${cc.biologicalDayEnd} count toward the prior day. Prefer biological-day totals over calendar days.${cc.bioDayNutrition ? ` This biological day so far: ${cc.bioDayNutrition.calories}kcal, ${cc.bioDayNutrition.protein}g protein across ${cc.bioDayNutrition.meals} meals.` : ""}`);
+    lines.push(`Biological day (Calculated, ${cc.confidence} confidence): runs ${cc.biologicalDayStart} → ${cc.biologicalDayEnd} (avg sleep ${cc.avgSleepTime}, wake ${cc.avgWakeTime}, consistency ${cc.sleepConsistency}/100). Late-night meals before ${cc.biologicalDayEnd} count toward the prior day.${cc.active ? " The nutrition totals below ('TODAY SO FAR') are ALREADY bucketed by this biological day." : " (Biological-day grouping is currently OFF — nutrition totals below use calendar days.)"}`);
   }
   if (brain.weeklyVolume) {
     const wv = brain.weeklyVolume;
@@ -591,8 +601,9 @@ export function formatBrainText(brain) {
 
   // ─── TODAY SO FAR ─────────────────────────────────────────────────────────
   lines.push("");
-  lines.push(`== TODAY SO FAR (${n.date} only — counts ONLY events dated ${n.date}, never yesterday) ==`);
-  lines.push(`Nutrition consumed today: ${tp.cal}/${brain.targets.calories} kcal (${tp.calRemaining >= 0 ? tp.calRemaining + " remaining today" : Math.abs(tp.calRemaining) + " OVER today's target"}) | P ${tp.protein}/${brain.targets.protein}g (${tp.pRemaining > 0 ? tp.pRemaining + "g to go" : "hit"}) | C ${tp.carbs}g | F ${tp.fat}g`);
+  const bioActive = brain.circadian && brain.circadian.active;
+  lines.push(`== TODAY SO FAR ==${bioActive ? " (Nutrition = the CURRENT BIOLOGICAL DAY, so a late-night meal logged after midnight still counts toward the day it belongs to. Water/supplements/sleep/workout below are calendar-day for " + n.date + ".)" : ` (${n.date} only — counts ONLY events dated ${n.date}, never yesterday)`}`);
+  lines.push(`Nutrition consumed ${bioActive ? "this biological day" : "today"}: ${tp.cal}/${brain.targets.calories} kcal (${tp.calRemaining >= 0 ? tp.calRemaining + " remaining today" : Math.abs(tp.calRemaining) + " OVER today's target"}) | P ${tp.protein}/${brain.targets.protein}g (${tp.pRemaining > 0 ? tp.pRemaining + "g to go" : "hit"}) | C ${tp.carbs}g | F ${tp.fat}g`);
   lines.push(`Water today: ${tp.waterMl}/${brain.targets.waterMl}ml (${tp.waterRemainingMl > 0 ? tp.waterRemainingMl + "ml to go" : "hit"})`);
   if (tp.supplements.length) lines.push(`Supplements today: ${tp.supplements.join(", ")}`);
   if (tp.sleep) lines.push(`Slept last night: ${tp.sleep.duration}h (${tp.sleep.quality})${tp.sleep.bedtime ? `, ${tp.sleep.bedtime}→${tp.sleep.wakeTime}` : ""}`);

@@ -1,6 +1,7 @@
 // ─── ADAPTIVE TDEE / ENERGY-BALANCE ENGINE ────────────────────────────────
 import { computeWeightTrend } from "./weight.js";
 import { daysAgo, getTodayStr } from "../lib/dates.js";
+import { getDayContext } from "./dayContext.js";
 
 export const KCAL_PER_KG = 7700; // energy density of weight change (fat-dominant; rough for lean-mass gain)
 
@@ -18,12 +19,15 @@ export function mifflinBMR(profile, weightKg) {
 
 export function computeEnergyBalance(data, goals) {
   const WINDOW = 21;
-  const today = getTodayStr();
+  // Bucket intake by the ACTIVE day (biological or calendar) via the gateway.
+  const ctx = getDayContext(data, goals);
+  const today = ctx.currentDayKey();
 
   // Daily intake over the window — only days with real food logged (≥800 kcal,
   // to exclude days where a single snack was logged and the rest forgotten).
   const kcalByDay = {};
-  (data.diet || []).forEach(d => { if (d.date && d.date >= daysAgo(WINDOW - 1)) kcalByDay[d.date] = (kcalByDay[d.date] || 0) + (d.calories || 0); });
+  const win = ctx.window(WINDOW);
+  Object.keys(win).forEach(k => { kcalByDay[k] = win[k].reduce((a, m) => a + (m.calories || 0), 0); });
   const datesLogged = Object.keys(kcalByDay).filter(d => kcalByDay[d] >= 800).sort();
   const loggedDays = datesLogged.length;
   const earliest = datesLogged[0];

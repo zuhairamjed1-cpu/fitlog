@@ -17,6 +17,7 @@ export function loadGoals() {
     // Deep-merge nested objects so existing users get any new fields we add later.
     merged.profile = { ...defaultProfile, ...(p.profile || {}) };
     merged.strategy = { ...defaultStrategy, ...(p.strategy || {}) };
+    merged.nutrition = { ...defaultGoals.nutrition, ...(p.nutrition || {}) };
     // Existing users (who already saved goals before onboarding existed) skip the intro.
     if (r && merged.onboarded === undefined) merged.onboarded = true;
     return merged;

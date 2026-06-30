@@ -6,9 +6,12 @@ import { computeProteinDistribution } from "./protein.js";
 import { estimateSleepNeed, sleepTST } from "./sleep.js";
 import { parseWorkout } from "./workout.js";
 import { computeNicotineStats } from "./nicotine.js";
+import { getDayContext } from "./dayContext.js";
 
 export function computeRecovery(data, goals) {
   const today = getTodayStr();
+  // Nutrition (fuel) checks bucket by the ACTIVE day; sleep/load/training stay calendar.
+  const dayCtx = getDayContext(data, goals);
   const reasons = [];   // { text, dir: "neg" | "pos" } — neg pushes toward rest
   const unknown = [];
   let negScore = 0;     // weighted points pushing toward rest
@@ -96,8 +99,9 @@ export function computeRecovery(data, goals) {
   }
 
   // ── Under-fuelling over the last few days ──
+  const win3 = dayCtx.window(3);   // last 3 active days
   const calByDay = {};
-  (data.diet || []).filter(d => d.date >= daysAgo(2)).forEach(d => { calByDay[d.date] = (calByDay[d.date] || 0) + (d.calories || 0); });
+  Object.keys(win3).forEach(k => { calByDay[k] = win3[k].reduce((a, m) => a + (m.calories || 0), 0); });
   const calDays = Object.values(calByDay);
   if (calDays.length >= 2 && goals.calories) {
     const avg = calDays.reduce((a, b) => a + b, 0) / calDays.length;
@@ -121,7 +125,7 @@ export function computeRecovery(data, goals) {
       const pr = e._parsed || parseWorkout(e.text || "");
       return (pr.avgRPE != null && pr.avgRPE >= 8) || (pr.totalVolume != null && pr.totalVolume >= 12000);
     }) || (data.sports || []).some(s => (s.date === today || s.date === daysAgo(1)) && (s.duration || 0) >= 60);
-    const carbsToday = (data.diet || []).filter(d => d.date === today).reduce((a, d) => a + (d.carbs || 0), 0);
+    const carbsToday = dayCtx.totals(dayCtx.currentDayKey()).carbs;
     if (hardSession && carbsToday > 0 && carbsToday < goals.carbs * 0.5) {
       add(`Hard session but carbs are low today (~${Math.round(carbsToday)}g vs ${goals.carbs}g) — glycogen may be under-replenished`, "neg", 0.5, "carbs");
     }
