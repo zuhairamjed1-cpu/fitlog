@@ -19,7 +19,7 @@ const ALLOWED_MODELS = new Set([
 
 const MAX_TOKENS_CAP = 4000;
 const MAX_MESSAGES = 100;
-const MAX_BODY_BYTES = 200 * 1024; // 200 KB — generous for chat + one base64 image is sent separately
+const MAX_BODY_BYTES = 5 * 1024 * 1024; // 5 MB — fits one inline base64 image
 const RATE_LIMIT = 30; // requests
 const RATE_WINDOW_MS = 60 * 1000; // per minute, per key
 

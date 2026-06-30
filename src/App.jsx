@@ -1380,6 +1380,7 @@ function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp = [], a
   const [scanning, setScanning] = useState(false);
   const [bcLoading, setBcLoading] = useState(false);
   const [bcProduct, setBcProduct] = useState(null); // normalized OFF result
+  const [bcNotFound, setBcNotFound] = useState(null); // barcode string when OFF has no match → offer label photo
   const [grams, setGrams] = useState(100); // for per-100g scaling
   const [useServing, setUseServing] = useState(false);
 
@@ -1393,10 +1394,10 @@ function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp = [], a
 
   async function onBarcode(code) {
     setScanning(false);
-    setBcLoading(true); setError(""); setBcProduct(null); setResult(null);
+    setBcLoading(true); setError(""); setBcProduct(null); setBcNotFound(null); setResult(null);
     try {
       const prod = await lookupBarcode(code);
-      if (!prod) { setError(`No product found for barcode ${code}. Try the photo or describe it instead.`); }
+      if (!prod) { setBcNotFound(code); } // not a bug — Open Food Facts data gap → offer label photo
       else {
         setBcProduct(prod);
         setUseServing(!!prod.perServing);
@@ -1454,17 +1455,54 @@ function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp = [], a
       }
       const brain = data && goals ? buildBrain(data, goals) : null;
       const r = await analyzeFoodAI(mode === "text" ? text : "", b64, mt, useWeb, brain);
-      if (r && typeof r.calories === "number") setResult(r);
+      if (r && typeof r.calories === "number") setResult(withItems(r));
       else setError(mode === "image" ? "Couldn't read that photo well. Try a clearer shot, or describe the meal in words." : "Couldn't analyze that. Try being more specific (portion size, cooking method).");
     } catch (e) { setError("Network issue. Try again."); }
     setAnalyzing(false);
   }
 
+  // ── Editable-result helpers ──────────────────────────────────────────────
+  // coerceMacro is the SINGLE chokepoint that turns any field value into a safe
+  // number — empty string / null / NaN / negative all collapse to 0. Item fields
+  // hold the raw typed string mid-edit (so "", "12.", "12.5" stay editable);
+  // totals are always recomputed THROUGH coerceMacro and rounded.
+  const coerceMacro = (val) => { if (val === "" || val == null) return 0; const n = Number(val); return Number.isFinite(n) && n >= 0 ? n : 0; };
+  const recomputeTotals = (items) => ({
+    calories: Math.round(items.reduce((s, i) => s + coerceMacro(i.calories), 0)),
+    protein: Math.round(items.reduce((s, i) => s + coerceMacro(i.protein), 0)),
+    carbs: Math.round(items.reduce((s, i) => s + coerceMacro(i.carbs), 0)),
+    fat: Math.round(items.reduce((s, i) => s + coerceMacro(i.fat), 0)),
+  });
+  // Guarantee an items array so the editable list always has ≥1 row, even if the
+  // model (or an older/odd response) returned only top-level totals.
+  const withItems = (r) => (Array.isArray(r.items) && r.items.length)
+    ? r
+    : { ...r, items: [{ food: r.food, calories: r.calories, protein: r.protein, carbs: r.carbs, fat: r.fat }] };
+  const editItem = (i, key, val) => {
+    const items = result.items.map((it, j) => j === i ? { ...it, [key]: val } : it); // raw string; coercion happens in totals/save
+    setResult({ ...result, items, ...recomputeTotals(items) });
+  };
+  const addItem = () => {
+    const items = [...(result.items || []), { food: "", calories: "", protein: "", carbs: "", fat: "" }];
+    setResult({ ...result, items, ...recomputeTotals(items) });
+  };
+  const removeItem = (i) => {
+    let items = result.items.filter((_, j) => j !== i);
+    if (!items.length) items = [{ food: "", calories: "", protein: "", carbs: "", fat: "" }];
+    setResult({ ...result, items, ...recomputeTotals(items) });
+  };
+
   function save() {
     if (!result) return;
+    // Drop blank rows (no name AND no calories); never persist non-finite totals.
+    const cleanItems = (result.items || [])
+      .filter(it => (it.food && it.food.trim()) || coerceMacro(it.calories) > 0)
+      .map(it => ({ food: (it.food || "").trim(), calories: coerceMacro(it.calories), protein: coerceMacro(it.protein), carbs: coerceMacro(it.carbs), fat: coerceMacro(it.fat) }));
+    const totalsOk = ["calories", "protein", "carbs", "fat"].every(k => Number.isFinite(result[k]));
+    if (!totalsOk) return; // belt-and-suspenders: never write NaN/Infinity to the store
     const r = whenToStore();
-    onAdd({ date: r.date, time: r.time, ts: r.consumedAt, consumedAt: r.consumedAt, loggedAt: Date.now(), ...(r.excludeFromCoach ? { excludeFromCoach: true } : {}), meal, food: result.food, calories: result.calories, protein: result.protein, carbs: result.carbs, fat: result.fat, notes: result.notes || "", id: Date.now() });
-    toast("◉ " + result.food.slice(0, 24) + " added");
+    onAdd({ date: r.date, time: r.time, ts: r.consumedAt, consumedAt: r.consumedAt, loggedAt: Date.now(), ...(r.excludeFromCoach ? { excludeFromCoach: true } : {}), meal, food: result.food, calories: result.calories, protein: result.protein, carbs: result.carbs, fat: result.fat, notes: result.notes || "", items: cleanItems, id: Date.now() });
+    toast("◉ " + (result.food || "Meal").slice(0, 24) + " added");
     setResult(null); setText(""); setFile(null); setPreview(null); setError("");
   }
 
@@ -1560,9 +1598,20 @@ function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp = [], a
         <div className="bc-start">
           {bcLoading ? (
             <div className="loading-row"><span className="spinner" />Looking up product…</div>
+          ) : bcNotFound ? (
+            <>
+              <p className="muted small" style={{ lineHeight: 1.5, textAlign: "center", marginBottom: 12 }}>
+                No product found for barcode {bcNotFound}. Snap the nutrition label and AI will read it — or describe the food instead.
+              </p>
+              <button className="btn full" onClick={() => { setBcNotFound(null); setMode("image"); }}>📷 Photograph nutrition label</button>
+              <div className="row" style={{ marginTop: 8 }}>
+                <button className="btn-ghost flex" onClick={() => { setBcNotFound(null); setScanning(true); }}>Scan again</button>
+                <button className="btn-ghost flex" onClick={() => { setBcNotFound(null); setMode("text"); }}>Describe instead</button>
+              </div>
+            </>
           ) : (
             <>
-              <button className="btn full" onClick={() => { setError(""); setScanning(true); }}>▒ Scan barcode</button>
+              <button className="btn full" onClick={() => { setError(""); setBcNotFound(null); setScanning(true); }}>▒ Scan barcode</button>
               <p className="muted small" style={{ marginTop: 10, lineHeight: 1.5, textAlign: "center" }}>
                 Point your camera at a packaged food's barcode for exact nutrition. {barcodeScanSupported() ? "" : "(On iPhone you'll type the number — live scan isn't supported in Safari.)"}
               </p>
@@ -1663,8 +1712,22 @@ function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp = [], a
             AI analysis
             {result.confidence && <span className={`conf-badge conf-${result.confidence}`}>{result.confidence} confidence</span>}
           </div>
-          <div className="ai-card-name">{result.food}</div>
-          <div className="result-with-donut">
+          <input className="item-name-top" value={result.food || ""} onChange={e => setResult({ ...result, food: e.target.value })} placeholder="Meal name" />
+          <div className="item-list">
+            <div className="item-head"><span>Item</span><span>kcal</span><span>P</span><span>C</span><span>F</span><span /></div>
+            {(result.items || []).map((it, i) => (
+              <div className="item-row" key={i}>
+                <input className="it-food" value={it.food ?? ""} onChange={e => editItem(i, "food", e.target.value)} placeholder="Food" />
+                <input className="it-num" inputMode="numeric" value={it.calories ?? ""} onChange={e => editItem(i, "calories", e.target.value)} placeholder="0" />
+                <input className="it-num" inputMode="numeric" value={it.protein ?? ""} onChange={e => editItem(i, "protein", e.target.value)} placeholder="0" />
+                <input className="it-num" inputMode="numeric" value={it.carbs ?? ""} onChange={e => editItem(i, "carbs", e.target.value)} placeholder="0" />
+                <input className="it-num" inputMode="numeric" value={it.fat ?? ""} onChange={e => editItem(i, "fat", e.target.value)} placeholder="0" />
+                <button className="it-del" onClick={() => removeItem(i)} aria-label="Remove item">✕</button>
+              </div>
+            ))}
+          </div>
+          <button className="add-item" onClick={addItem}>+ Add item</button>
+          <div className="result-with-donut" style={{ marginTop: 14 }}>
             <MacroDonut protein={result.protein} carbs={result.carbs} fat={result.fat} />
             <div className="macros macros-compact">
               <div className="macro"><span className="macro-v">{result.calories}</span><span className="macro-l">kcal</span></div>

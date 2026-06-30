@@ -84,21 +84,56 @@ export async function callClaude({ system, userText, imageBase64, imageMediaType
 // The web search tool — lets Claude look up real nutrition data for branded/restaurant foods.
 export const WEB_SEARCH_TOOL = [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }];
 
+// Scan from the first "{" and return the first BALANCED {...} object, respecting
+// string literals/escapes. Recovers a clean object even when the model appends
+// trailing prose or an extra stray brace after valid JSON. Returns null if none.
+function scanBalancedObject(str) {
+  const i = str.indexOf("{");
+  if (i < 0) return null;
+  let depth = 0, inStr = false, esc = false;
+  for (let j = i; j < str.length; j++) {
+    const ch = str[j];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === "\\") esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === "{") depth++;
+    else if (ch === "}") { depth--; if (depth === 0) return str.slice(i, j + 1); }
+  }
+  return null; // never balanced
+}
+
 // Robustly pull a JSON object out of a response that may contain prose around it,
 // markdown fences, trailing commas, or smart quotes.
 export function extractJSON(raw) {
   if (!raw || typeof raw !== "string") throw new Error("Empty AI response");
-  let s = raw.replace(/```(?:json)?/gi, "").trim();
+  const fenceStripped = raw.replace(/```(?:json)?/gi, "").trim();
+  let s = fenceStripped;
   const start = s.indexOf("{");
   const end = s.lastIndexOf("}");
   if (start !== -1 && end !== -1 && end > start) s = s.slice(start, end + 1);
   s = s.replace(/,\s*([}\]])/g, "$1"); // remove trailing commas
-  try {
-    return JSON.parse(s);
-  } catch {
-    const s2 = s.replace(/[“”]/g, '"').replace(/[‘’]/g, "'");
-    return JSON.parse(s2);
+  const tryParse = str => { try { return JSON.parse(str); } catch { return undefined; } };
+  // 1) direct  2) smart quotes normalized — these reproduce the original behavior exactly
+  let r = tryParse(s);
+  if (r !== undefined) return r;
+  const sq = s.replace(/[“”]/g, '"').replace(/[‘’]/g, "'");
+  r = tryParse(sq);
+  if (r !== undefined) return r;
+  // 3) SALVAGE — brace-match the first complete object from the fence-stripped text
+  //    (smart quotes normalized first), tolerating trailing prose / a stray brace
+  //    that the outer indexOf/lastIndexOf slice would otherwise mangle.
+  const salvaged = scanBalancedObject(fenceStripped.replace(/[“”]/g, '"').replace(/[‘’]/g, "'"));
+  if (salvaged) {
+    r = tryParse(salvaged.replace(/,\s*([}\]])/g, "$1"));
+    if (r !== undefined) return r;
   }
+  // All attempts failed — throw, exactly as before. Callers like analyzeFoodAI
+  // catch this and return null, so external behavior is unchanged.
+  throw new Error("Could not parse JSON from AI response");
 }
 
 export async function estimateSportsCalories(sport, duration, intensity, weight) {
@@ -175,11 +210,12 @@ RULES:
 - Account for cooking method, oil/butter, sauces, and realistic portion sizes.
 - Be realistic — restaurant and fried foods are calorie-dense.
 - If multiple items are visible, SUM them all.
+- Break the meal into its individual foods/drinks in an "items" array (one entry per distinct item). If there's only one food, return a single-element "items" array. The top-level calories/protein/carbs/fat MUST equal the exact sum of the items — these top-level totals are the authoritative numbers.
 - The "notes" field MUST comment on how this meal fits the user's remaining day using SPECIFIC numbers from the context (e.g. "puts you at 1850/2500 cal with 65g protein left", "uses most of today's fat budget — go lean at dinner"). Reference the CURRENT STRATEGY if it provides direction (cut → call out high-calorie hits; bulk → call out under-eating).
 - If the meal contains anything in the user's allergies/restrictions, mention it in notes — but still return the estimate.
 
 Reply with ONLY this JSON object (no prose before or after, no markdown fence):
-{"food":"<concise meal name>","calories":<integer>,"protein":<integer grams>,"carbs":<integer grams>,"fat":<integer grams>,"confidence":"high|medium|low","notes":"<fit-to-day comment with concrete numbers, 1-2 sentences>"}${todayPart}`,
+{"items":[{"food":"<single food/drink name>","calories":<integer>,"protein":<integer grams>,"carbs":<integer grams>,"fat":<integer grams>}],"food":"<concise overall meal name>","calories":<integer total = sum of items>,"protein":<integer grams total>,"carbs":<integer grams total>,"fat":<integer grams total>,"confidence":"high|medium|low","notes":"<fit-to-day comment with concrete numbers, 1-2 sentences>"}${todayPart}`,
       userText: description
         ? `Analyze the nutrition of: "${description}".${useWeb ? " Search for official data if this is a branded or restaurant item." : ""}`
         : `Identify EVERY food item in this image and analyze the total nutrition for the whole meal shown.${useWeb ? " If you recognize a branded or restaurant dish, search for its official nutrition facts." : ""}`,

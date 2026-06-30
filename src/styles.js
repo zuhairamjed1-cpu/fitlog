@@ -475,6 +475,20 @@ select option { background: var(--surface-2); }
 .meal-redesign .analyze:disabled { opacity: .45; cursor: not-allowed; }
 .meal-redesign .coach-affect { margin-top: 11px; }
 .meal-redesign .bc-start { margin-top: 4px; }
+/* editable multi-item result card */
+.meal-redesign .ai-card .item-name-top { width: 100%; background: var(--surface2); border: 1px solid var(--line); border-radius: 10px; color: var(--ink); font-family: inherit; font-size: 15px; font-weight: 600; padding: 10px 12px; margin-bottom: 12px; outline: none; }
+.meal-redesign .ai-card .item-name-top:focus { border-color: var(--acc); }
+.meal-redesign .item-head, .meal-redesign .item-row { display: grid; grid-template-columns: 1fr 46px 36px 36px 36px 24px; gap: 6px; align-items: center; }
+.meal-redesign .item-head { font-size: 9px; text-transform: uppercase; letter-spacing: .04em; color: var(--mut); padding: 0 2px 5px; }
+.meal-redesign .item-head span:not(:first-child) { text-align: center; }
+.meal-redesign .item-row { margin-bottom: 6px; }
+.meal-redesign .item-row input { background: var(--surface2); border: 1px solid var(--line); border-radius: 8px; color: var(--ink); font-family: inherit; font-size: 13px; padding: 8px; min-height: 0; outline: none; width: 100%; }
+.meal-redesign .item-row input:focus { border-color: var(--acc); }
+.meal-redesign .item-row .it-num { text-align: center; padding: 8px 4px; }
+.meal-redesign .item-row .it-del { background: transparent; border: none; color: var(--mut); font-size: 14px; line-height: 1; cursor: pointer; padding: 4px; }
+.meal-redesign .item-row .it-del:active { color: #f47e6e; }
+.meal-redesign .add-item { margin: 4px 0 2px; width: 100%; background: transparent; border: 1px dashed var(--line2); color: var(--acc); border-radius: 10px; padding: 9px; font-size: 12.5px; font-weight: 600; cursor: pointer; font-family: inherit; -webkit-tap-highlight-color: transparent; }
+.meal-redesign .add-item:active { transform: scale(.99); }
 
 /* Settings toggle row */
 .toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; cursor: pointer; }
