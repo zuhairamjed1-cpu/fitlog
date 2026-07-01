@@ -2,7 +2,7 @@
 import { minsOfTime } from "../lib/time.js";
 import { daysAgo, getTodayStr } from "../lib/dates.js";
 import { computeWeightTrend } from "./weight.js";
-import { getDayContext } from "./dayContext.js";
+import { getDayContext, mealTs } from "./dayContext.js";
 
 // Per-meal protein target ≈ 0.4 g/kg bodyweight (the per-bout MPS-saturation dose).
 function proteinPerMealTarget(data, goals) {
@@ -13,18 +13,29 @@ function proteinPerMealTarget(data, goals) {
 }
 
 export function clusterFeedings(dayEntries) {
-  const timed = dayEntries.filter(e => minsOfTime(e.time) != null).map(e => ({ ...e, _m: minsOfTime(e.time) })).sort((a, b) => a._m - b._m);
+  // Order + cluster by the REAL timestamp (consumedAt) so a biological day that
+  // crosses midnight stays chronological (e.g. 07:00 → 22:00 → 03:11 → 04:08).
+  // startMin is retained ONLY for the HH:MM display, never for ordering/gaps.
+  const GAP = 45 * 60000; // 45 min, in ms
+  const timed = dayEntries
+    .filter(e => minsOfTime(e.time) != null)
+    .map(e => ({ ...e, _m: minsOfTime(e.time), _ts: mealTs(e) }))
+    .sort((a, b) => (a._ts ?? 0) - (b._ts ?? 0));
   const untimed = dayEntries.filter(e => minsOfTime(e.time) == null);
   const feedings = [];
   let cur = null;
   for (const e of timed) {
     const pro = e.protein || 0;
-    if (cur && e._m - cur.endMin <= 45) { cur.proteinG += pro; cur.endMin = e._m; }
-    else { cur = { proteinG: pro, startMin: e._m, endMin: e._m, hasTime: true }; feedings.push(cur); }
+    if (cur && e._ts != null && cur.endTs != null && e._ts - cur.endTs <= GAP) {
+      cur.proteinG += pro; cur.endTs = e._ts; cur.endMin = e._m;
+    } else {
+      cur = { proteinG: pro, startMin: e._m, endMin: e._m, startTs: e._ts, endTs: e._ts, hasTime: true };
+      feedings.push(cur);
+    }
   }
   const byLabel = {};
   untimed.forEach(e => { const k = e.meal || "Meal"; byLabel[k] = (byLabel[k] || 0) + (e.protein || 0); });
-  Object.values(byLabel).forEach(p => feedings.push({ proteinG: p, startMin: null, endMin: null, hasTime: false }));
+  Object.values(byLabel).forEach(p => feedings.push({ proteinG: p, startMin: null, endMin: null, startTs: null, endTs: null, hasTime: false }));
   return feedings;
 }
 
@@ -47,9 +58,9 @@ export function computeProteinDistribution(data, goals) {
     const dayProtein = entries.reduce((a, e) => a + (e.protein || 0), 0);
     const effective = feedings.filter(f => f.proteinG >= perMeal).length;
     const anyTime = feedings.some(f => f.hasTime);
-    const timed = feedings.filter(f => f.hasTime).sort((a, b) => a.startMin - b.startMin);
+    const timed = feedings.filter(f => f.hasTime).sort((a, b) => (a.startTs ?? 0) - (b.startTs ?? 0));
     let largestGap = null;
-    if (timed.length >= 2) { let g = 0; for (let i = 1; i < timed.length; i++) g = Math.max(g, (timed[i].startMin - timed[i - 1].startMin) / 60); largestGap = +g.toFixed(1); }
+    if (timed.length >= 2) { let g = 0; for (let i = 1; i < timed.length; i++) g = Math.max(g, (timed[i].startTs - timed[i - 1].startTs) / 3600000); largestGap = +g.toFixed(1); }
     const maxFeed = feedings.reduce((m, f) => Math.max(m, f.proteinG), 0);
     const skew = dayProtein > 0 ? maxFeed / dayProtein : null;
     const slp = (data.sleep || []).find(s => s.date === date);
@@ -82,7 +93,7 @@ export function computeProteinDistribution(data, goals) {
   if (daysWithMeals >= 6 && daysWithTimes >= 4) confidence = "High";
 
   const todayEntries = ctx.meals(today);
-  const todayFeedings = clusterFeedings(todayEntries).sort((a, b) => (a.startMin ?? 99999) - (b.startMin ?? 99999));
+  const todayFeedings = clusterFeedings(todayEntries).sort((a, b) => (a.startTs ?? Infinity) - (b.startTs ?? Infinity));
   const todaySnap = {
     dayProtein: Math.round(todayEntries.reduce((a, e) => a + (e.protein || 0), 0)),
     effective: todayFeedings.filter(f => f.proteinG >= perMeal).length,
