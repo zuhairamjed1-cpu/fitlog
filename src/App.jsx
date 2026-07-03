@@ -6655,6 +6655,7 @@ function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, setData, 
       { key: "nicotine", label: "Nicotine", icon: "●", color: "#d98fa8" },
       { key: "skin", label: "Skin", icon: "✦", color: "#e89ab0" },
       { key: "journal", label: "Journal", icon: "✎", color: "#9aa8e8" },
+      { key: "ejac", label: "Private", icon: "◯", color: "#c9a2e8" },
     ] },
   ];
   const labelFor = k => { for (const g of groups) for (const it of g.items) if (it.key === k) return it.label; return "Log"; };
@@ -6673,6 +6674,7 @@ function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, setData, 
       case "journal": return <JournalTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} setData={setData} />;
       case "skin": return <SkinSection data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} updateEntry={updateEntry} onSaveGoals={onSaveGoals} />;
       case "goalplan": return <GoalPlanV3 data={data} goals={goals} onSaveGoals={onSaveGoals} addEntry={addEntry} deleteEntry={deleteEntry} />;
+      case "ejac": return <EjacTab data={data} addEntry={addEntry} deleteEntry={deleteEntry} />;
       default: return null;
     }
   };
@@ -6926,6 +6928,22 @@ function EjacTab({ data, addEntry, deleteEntry }) {
 
   const inDays = (n) => ejac.filter(e => e.date >= daysAgo(n - 1));
   const todayList = ejac.filter(e => e.date === today).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+
+  // Streaks — full days WITHOUT a session. current = days since the last one
+  // (0 if today has a session); best = longest clean run ever, incl. the current
+  // one; pornFree = days since the last porn-flagged session (or since first log
+  // if never). Neutral data, no judgment — same policy as the rest of this tab.
+  const streaks = (() => {
+    if (!ejac.length) return null;
+    const dayDiff = (a, b) => Math.round((new Date(b + "T00:00:00") - new Date(a + "T00:00:00")) / 86400000);
+    const dates = [...new Set(ejac.map(e => e.date))].sort();
+    const current = Math.max(0, dayDiff(dates[dates.length - 1], today));
+    let best = current;
+    for (let i = 1; i < dates.length; i++) best = Math.max(best, dayDiff(dates[i - 1], dates[i]) - 1);
+    const pornDates = [...new Set(ejac.filter(e => e.porn).map(e => e.date))].sort();
+    const pornFree = pornDates.length ? Math.max(0, dayDiff(pornDates[pornDates.length - 1], today)) : Math.max(0, dayDiff(dates[0], today));
+    return { current, best, pornFree };
+  })();
   const wk = inDays(7), mo = inDays(30);
   const tally = arr => ({ total: arr.length, porn: arr.filter(e => e.porn).length, goon: arr.filter(e => e.gooning).length });
   const T = tally(todayList), W = tally(wk), M = tally(mo);
@@ -6976,6 +6994,19 @@ function EjacTab({ data, addEntry, deleteEntry }) {
           <button className="btn btn-ghost" onClick={quickAdd}>+1 quick</button>
         </div>
       </Card>
+
+      {streaks && (
+        <Card title="🔥 Streaks" sub="full days without a session">
+          <div style={{ display: "flex", gap: 8 }}>
+            <Stat label="current" value={`${streaks.current}d`} />
+            <Stat label="best" value={`${streaks.best}d`} />
+            <Stat label="porn-free" value={`${streaks.pornFree}d`} />
+          </div>
+          {streaks.current > 0 && streaks.current >= streaks.best && streaks.best >= 2 && (
+            <div className="muted small" style={{ marginTop: 10, textAlign: "center" }}>🏆 This is your longest run yet.</div>
+          )}
+        </Card>
+      )}
 
       <Card title="This week" sub="last 7 days">
         <div style={{ display: "flex", gap: 8 }}>
