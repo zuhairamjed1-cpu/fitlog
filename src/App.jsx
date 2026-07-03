@@ -1506,11 +1506,22 @@ function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp = [], a
     setResult(null); setText(""); setFile(null); setPreview(null); setError("");
   }
 
-  // Running daily totals
-  const dayCal = todayDiet.reduce((a, m) => a + (m.calories || 0), 0);
-  const dayP = todayDiet.reduce((a, m) => a + (m.protein || 0), 0);
-  const dayC = todayDiet.reduce((a, m) => a + (m.carbs || 0), 0);
-  const dayF = todayDiet.reduce((a, m) => a + (m.fat || 0), 0);
+  // Gauge/totals follow the "When" selection — the hero reflects the SAME day the
+  // user is about to log into (today / yesterday / 2 days ago / picked date).
+  const curDayKey = dayCtx.currentDayKey();
+  const selDayKey = when === "yesterday" ? daysAgoFrom(curDayKey, 1)
+    : when === "2days" ? daysAgoFrom(curDayKey, 2)
+    : when === "pick" ? date
+    : curDayKey;
+  const selMeals = dayCtx.meals(selDayKey);
+  const dayLabel = when === "yesterday" ? "Yesterday"
+    : when === "2days" ? "2 days ago"
+    : when === "pick" ? formatShortDate(date)
+    : (dayCtx.mode === "biological" ? "Current bio day" : "Today");
+  const dayCal = selMeals.reduce((a, m) => a + (m.calories || 0), 0);
+  const dayP = selMeals.reduce((a, m) => a + (m.protein || 0), 0);
+  const dayC = selMeals.reduce((a, m) => a + (m.carbs || 0), 0);
+  const dayF = selMeals.reduce((a, m) => a + (m.fat || 0), 0);
   const calLeft = (goals?.calories || 0) - dayCal;
   const pLeft = (goals?.protein || 0) - dayP;
 
@@ -1528,7 +1539,7 @@ function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp = [], a
     <div className="stack meal-redesign">
     {goals && (
       <div className="semi">
-        <div className="gauge-h"><i /> CALORIES TODAY</div>
+        <div className="gauge-h"><i /> CALORIES · {dayLabel.toUpperCase()}</div>
         <div className="swrap">
           <svg viewBox="0 0 200 120" aria-hidden="true">
             <path d="M16,100 A84,84 0 0 1 184,100" fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="13" strokeLinecap="round" />
