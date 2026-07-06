@@ -12,6 +12,7 @@ import { loadData, loadGoals, saveData, saveGoals, setCurrentUser, cloudSync, cl
 import { fileToResizedBase64, COACH_PRINCIPLES, callClaude, WEB_SEARCH_TOOL, extractJSON, estimateSportsCalories, lookupBarcode, barcodeScanSupported, analyzeFoodAI, analyzeAllData, suggestSplitSchedule, buildPlanFromPrompt, recommendRest, analyzePhysique, renderMarkdown } from "./api/client";
 import { haptic, SFX, soundEnabled, setSoundPref } from "./lib/fx";
 import { Ring, MacroDonut, MiniChart, Card, Empty, toast, ToastHost, ConfirmModal, useConfirm } from "./components/primitives";
+import { StatusPill } from "./components/StatusPill";
 import { styles } from "./styles";
 import { localDateStr, getTodayStr, formatDate, formatShortDate, daysAgo, daysAgoFrom, WEEKDAYS } from "./lib/dates";
 import { computeWeightTrend } from "./engines/weight";
@@ -768,13 +769,6 @@ function SleepForm({ onAdd, recent }) {
 }
 
 // ─── SLEEP SECTION (the smartest section: log + full intelligence dashboard) ──
-const SLEEP_STATUS = { good: { c: "var(--good)", w: "Good" }, warn: { c: "#f9c97e", w: "Watch" }, bad: { c: "var(--bad)", w: "Fix" } };
-
-function StatusPill({ status, label }) {
-  if (!status) return <span className="sleep-pill" style={{ color: "var(--muted)", borderColor: "var(--border)" }}>Need data</span>;
-  const m = SLEEP_STATUS[status];
-  return <span className="sleep-pill" style={{ color: m.c, borderColor: m.c }}>{label || m.w}</span>;
-}
 
 // Disorder-screening risk from the occasional check-in (non-diagnostic).
 function computeScreenRisk(items, profile) {
