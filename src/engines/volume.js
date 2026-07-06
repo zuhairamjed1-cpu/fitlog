@@ -7,8 +7,8 @@
 // Week = calendar Monday 00:00 → Sunday 23:59 (NOT rolling, NOT biological day).
 // Secondary muscles get half credit (0.5) — volume is distributed, not duplicated.
 
-import { localDateStr, daysAgo } from "../lib/dates.js";
-import { parseWorkout } from "./workout.js";
+import { localDateStr, daysAgo } from "../lib/dates";
+import { parseWorkout } from "./workout";
 
 // 17 trackable groups, with display label, push/pull/legs/core role, and body side.
 // Detailed muscle taxonomy. `region` = which body-art polygon this rolls up to

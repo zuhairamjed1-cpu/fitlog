@@ -10,7 +10,7 @@
 // calories are still emitted (calorieTrend) for the chart; maintenance/adaptation
 // are emitted as weekly step series.
 
-import { localDateStr } from "../lib/dates.js";
+import { localDateStr } from "../lib/dates";
 
 export const MAINTENANCE_PRIOR = 2730;
 const KCAL_PER_KG = 7700;

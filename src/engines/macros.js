@@ -8,10 +8,10 @@
 //  • Protein/fat are evidence-based g/kg starting points, not a prescription.
 //  • Tiered: "measured" TDEE when there's enough logging, else "estimated".
 
-import { computeEnergyBalance, mifflinBMR, KCAL_PER_KG } from "./energy.js";
-import { computeWeightTrend } from "./weight.js";
-import { activePhase, phaseReqRate, phaseDir } from "./phases.js";
-import { getTodayStr } from "../lib/dates.js";
+import { computeEnergyBalance, mifflinBMR, KCAL_PER_KG } from "./energy";
+import { computeWeightTrend } from "./weight";
+import { activePhase, phaseReqRate, phaseDir } from "./phases";
+import { getTodayStr } from "../lib/dates";
 
 const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
 // Total-daily-energy multipliers over BMR. Deliberately conservative — the high

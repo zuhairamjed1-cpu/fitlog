@@ -1,7 +1,7 @@
 // ─── CORRELATION ENGINE (cross-metric patterns from the user's own logs) ──────
 // Pure. Aggregates each tracked metric to a daily value, then runs Pearson
 // across every meaningful pair and surfaces the strongest, plain-English links.
-import { daysAgo } from "../lib/dates.js";
+import { daysAgo } from "../lib/dates";
 
 // Daily-metric registry. `unit` only flavors phrasing.
 const METRICS = [

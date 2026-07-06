@@ -9,7 +9,7 @@
 // No measured-partitioning claims: "rate above the lean-gain ceiling → a growing
 // share is likely fat", never "partitioning deteriorating".
 
-import { activePhase, phaseReqRate, phaseDir, applyPhaseChange } from "./phases.js";
+import { activePhase, phaseReqRate, phaseDir, applyPhaseChange } from "./phases";
 
 const COOLDOWN_DAYS = 21;
 const ADH_FLOOR = 70;

@@ -11,9 +11,9 @@
 //
 // `consumedAt` (when the food was eaten) is authoritative. `loggedAt` (when Save
 // was pressed) is audit-only and never used for bucketing.
-import { localDateStr, daysAgoFrom } from "../lib/dates.js";
-import { avgTimeMins, minsOfTime } from "../lib/time.js";
-import { computeCircadian } from "./circadian.js";
+import { localDateStr, daysAgoFrom } from "../lib/dates";
+import { avgTimeMins, minsOfTime } from "../lib/time";
+import { computeCircadian } from "./circadian";
 
 const DAY = 86400000;
 

@@ -1,7 +1,7 @@
 // ─── NICOTINE ENGINE (stats, correlations, impact-timing) ─────────────────
-import { daysAgo, getTodayStr, WEEKDAYS } from "../lib/dates.js";
-import { avgTimeMins } from "../lib/time.js";
-import { parseWorkout } from "./workout.js";
+import { daysAgo, getTodayStr, WEEKDAYS } from "../lib/dates";
+import { avgTimeMins } from "../lib/time";
+import { parseWorkout } from "./workout";
 
 // Per-unit nicotine content (mg). Pouches use their own mg when set.
 export const NIC_MG = { cigarette: 1.2, vape: 0.05, pouch: 6 };

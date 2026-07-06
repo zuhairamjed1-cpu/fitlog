@@ -1,7 +1,7 @@
 // ─── ADAPTIVE TDEE / ENERGY-BALANCE ENGINE ────────────────────────────────
-import { computeWeightTrend } from "./weight.js";
-import { daysAgo, getTodayStr } from "../lib/dates.js";
-import { getDayContext } from "./dayContext.js";
+import { computeWeightTrend } from "./weight";
+import { daysAgo, getTodayStr } from "../lib/dates";
+import { getDayContext } from "./dayContext";
 
 export const KCAL_PER_KG = 7700; // energy density of weight change (fat-dominant; rough for lean-mass gain)
 

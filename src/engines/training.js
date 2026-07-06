@@ -1,6 +1,6 @@
 // ─── TRAINING INTELLIGENCE ENGINE ─────────────────────────────────────────
-import { parseWorkout, bestSet, e1rm } from "./workout.js";
-import { daysAgo } from "../lib/dates.js";
+import { parseWorkout, bestSet, e1rm } from "./workout";
+import { daysAgo } from "../lib/dates";
 
 export const MUSCLE_LABELS = { chest: "Chest", back: "Back", shoulders: "Shoulders", biceps: "Biceps", triceps: "Triceps", quads: "Quads", hamstrings: "Hamstrings", glutes: "Glutes", calves: "Calves", abs: "Abs" };
 

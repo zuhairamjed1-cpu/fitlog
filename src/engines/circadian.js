@@ -6,7 +6,7 @@
 // tier "calc" — with a confidence that drops when sleep data is sparse or erratic.
 // Nothing is hardcoded to midnight.
 
-import { localDateStr } from "../lib/dates.js";
+import { localDateStr } from "../lib/dates";
 
 const DAY = 86400000;
 

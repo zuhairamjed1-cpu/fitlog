@@ -7,7 +7,7 @@
 //
 // Needs both workout times and meal times to work (the app logs both).
 
-import { daysAgo } from "../lib/dates.js";
+import { daysAgo } from "../lib/dates";
 
 const minsOf = t => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ""); return m ? +m[1] * 60 + +m[2] : null; };
 

@@ -7,9 +7,9 @@
 // confidence is reported honestly and capped when inputs are thin. Everything is
 // compared to the user's OWN baseline via z-scores, never fixed thresholds.
 
-import { localDateStr, getTodayStr } from "../lib/dates.js";
-import { parseWorkout } from "./workout.js";
-import { resolveMuscle, MUSCLES, MUSCLE_KEYS, MUSCLE_RANGE } from "./volume.js";
+import { localDateStr, getTodayStr } from "../lib/dates";
+import { parseWorkout } from "./workout";
+import { resolveMuscle, MUSCLES, MUSCLE_KEYS, MUSCLE_RANGE } from "./volume";
 
 const clamp = (x, a = 0, b = 100) => Math.max(a, Math.min(b, x));
 const mean = a => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : null);

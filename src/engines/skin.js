@@ -9,9 +9,9 @@
 //   • evidence is graded (nicotine/UV strong; dairy/GL moderate; hydration weak);
 //   • nothing here diagnoses or prescribes — it defers to a clinician.
 
-import { daysAgo, daysAgoFrom, getTodayStr } from "../lib/dates.js";
-import { sleepTST, estimateSleepNeed } from "./sleep.js";
-import { estimateGlycemicLoad } from "./glycemic.js";
+import { daysAgo, daysAgoFrom, getTodayStr } from "../lib/dates";
+import { sleepTST, estimateSleepNeed } from "./sleep";
+import { estimateGlycemicLoad } from "./glycemic";
 
 const DAIRY_RE = /\b(milk|cheese|yogurt|yoghurt|dairy|whey|ice ?cream|latte|cappuccino|cereal)\b/i;
 const STRESS_RE = /\b(stress|stressed|anxious|anxiety|overwhelmed|exhausted|burnt out|burned out|wrecked|rough day)\b/i;

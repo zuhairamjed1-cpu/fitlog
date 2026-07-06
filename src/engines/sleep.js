@@ -1,8 +1,8 @@
 // ─── SLEEP INTELLIGENCE ENGINE (3-axis + cross-domain coupling) ───────────
-import { daysAgo, daysAgoFrom, getTodayStr } from "../lib/dates.js";
-import { computeWeightTrend } from "./weight.js";
-import { parseWorkout } from "./workout.js";
-import { clusterFeedings } from "./protein.js";
+import { daysAgo, daysAgoFrom, getTodayStr } from "../lib/dates";
+import { computeWeightTrend } from "./weight";
+import { parseWorkout } from "./workout";
+import { clusterFeedings } from "./protein";
 
 export function sleepTST(s) {
   const tib = s.duration || 0;

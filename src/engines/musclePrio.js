@@ -7,11 +7,11 @@
 // (green/amber/red) plus an instant 2×2 diagnosis. It NEVER changes the user's
 // chosen volume; it only recommends, warns, and diagnoses. The user is final.
 
-import { localDateStr } from "../lib/dates.js";
-import { resolveMuscle } from "./volume.js";
-import { parseWorkout, e1rm, bestSet } from "./workout.js";
-import { computeRecoveryCapacity } from "./recoveryCapacity.js";
-import { computeFatigue } from "./fatigue.js";
+import { localDateStr } from "../lib/dates";
+import { resolveMuscle } from "./volume";
+import { parseWorkout, e1rm, bestSet } from "./workout";
+import { computeRecoveryCapacity } from "./recoveryCapacity";
+import { computeFatigue } from "./fatigue";
 
 export const PRIO_DEFAULT_SETS = 10, PRIO_MIN = 12, PRIO_MAX = 16, PRIO_MAX_COUNT = 3;
 export const RIR_TARGET = "0–2 RIR";

@@ -7,8 +7,8 @@
 // card reads the active phase's LENS (template thresholds, overridable) to decide
 // what a raw metric MEANS in the current phase.
 
-import { localDateStr } from "../lib/dates.js";
-import { mifflinBMR } from "./energy.js";
+import { localDateStr } from "../lib/dates";
+import { mifflinBMR } from "./energy";
 
 const addDays = (iso, n) => { const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() + n); return localDateStr(d); };
 const r1 = x => Math.round(x * 10) / 10;

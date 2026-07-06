@@ -9,7 +9,7 @@
 // the meal name) and is then BLUNTED by the protein + fat in the same meal,
 // which slow gastric emptying and flatten the spike. Always shown as an estimate.
 
-import { lookupGI } from "./gi-database.js";
+import { lookupGI } from "./gi-database";
 
 const GI_HIGH_RE = /\b(white rice|jasmine rice|sticky rice|fried rice|white bread|bagel|baguette|naan|roti|potato|mashed|fries|chips|crisps|corn ?flakes|cereal|granola|sugar|candy|sweets|soda|cola|soft drink|juice|\boj\b|smoothie|honey|jam|jelly|donut|doughnut|cake|cookie|biscuit|pastry|croissant|muffin|pretzel|cracker|rice cake|watermelon|pineapple|mango|dates|raisin|maple|syrup|gatorade|sports drink|energy drink|ice cream|pizza|pasta|noodle|ramen)\b/i;
 const GI_LOW_RE = /\b(lentil|chickpea|chick pea|bean|kidney|hummus|oat|oatmeal|porridge|steel ?cut|quinoa|barley|bulgur|sweet potato|yam|berry|berries|strawberr|blueberr|raspberr|apple|pear|orange|cherry|plum|peach|grapefruit|yogurt|yoghurt|greek yog|milk|nut|almond|peanut|walnut|cashew|pistachio|avocado|broccoli|spinach|kale|lettuce|salad|greens|cucumber|tomato|pepper|carrot|cauliflower|zucchini|courgette|asparagus|cabbage|mushroom|\begg|chicken|beef|steak|pork|lamb|fish|salmon|tuna|shrimp|tofu|tempeh|cheese|cottage)\b/i;

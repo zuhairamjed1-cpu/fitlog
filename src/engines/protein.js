@@ -1,8 +1,8 @@
 // ─── PROTEIN DISTRIBUTION / MPS ENGINE (B1) ───────────────────────────────
-import { minsOfTime } from "../lib/time.js";
-import { daysAgo, getTodayStr } from "../lib/dates.js";
-import { computeWeightTrend } from "./weight.js";
-import { getDayContext, mealTs } from "./dayContext.js";
+import { minsOfTime } from "../lib/time";
+import { daysAgo, getTodayStr } from "../lib/dates";
+import { computeWeightTrend } from "./weight";
+import { getDayContext, mealTs } from "./dayContext";
 
 // Per-meal protein target ≈ 0.4 g/kg bodyweight (the per-bout MPS-saturation dose).
 function proteinPerMealTarget(data, goals) {

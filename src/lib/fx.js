@@ -2,7 +2,7 @@
 // Tactile + audio feedback. Haptics: subtle vibration on supported mobile devices,
 // no-op elsewhere. Sound: synthesized via Web Audio API — no audio files, tiny,
 // works offline. Sound respects a user preference in localStorage (default ON).
-import { STORAGE_KEY } from "./keys.js";
+import { STORAGE_KEY } from "./keys";
 
 export function haptic(pattern = 12) {
   try { if (navigator.vibrate) navigator.vibrate(pattern); } catch {}

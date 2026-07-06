@@ -1,26 +1,26 @@
 // ─── THE BRAIN ────────────────────────────────────────────────────────────
 // Digests all engines + raw logs into structured signals (buildBrain) and
 // flattens them to the text every AI call reads (formatBrainText).
-import { daysAgo, daysAgoFrom, getTodayStr, localDateStr, formatDate, formatShortDate, WEEKDAYS } from "../lib/dates.js";
-import { avgTimeMins, avgTimeHHMM, minsOfTime } from "../lib/time.js";
-import { computeWeightTrend } from "../engines/weight.js";
-import { parseWorkout } from "../engines/workout.js";
-import { computeProteinDistribution } from "../engines/protein.js";
-import { computeEnergyBalance } from "../engines/energy.js";
-import { computeTraining } from "../engines/training.js";
-import { computeSleep, estimateSleepNeed, sleepTST } from "../engines/sleep.js";
-import { computeRecovery } from "../engines/recovery.js";
-import { computeCircadian, todaysBioNutrition, bioDayKey } from "../engines/circadian.js";
-import { computeVolume } from "../engines/volume.js";
-import { computeHistoricalPhases } from "../engines/historyPhases.js";
-import { suggestTransitions } from "../engines/transitions.js";
-import { computeRecoveryCapacity } from "../engines/recoveryCapacity.js";
-import { computeFatigue } from "../engines/fatigue.js";
-import { computeNicotineStats } from "../engines/nicotine.js";
-import { computeSkin } from "../engines/skin.js";
-import { computeCarbTiming } from "../engines/carbtiming.js";
-import { planFueling, reconcileFueling, sleepWindow } from "../engines/fueling.js";
-import { getDayContext } from "../engines/dayContext.js";
+import { daysAgo, daysAgoFrom, getTodayStr, localDateStr, formatDate, formatShortDate, WEEKDAYS } from "../lib/dates";
+import { avgTimeMins, avgTimeHHMM, minsOfTime } from "../lib/time";
+import { computeWeightTrend } from "../engines/weight";
+import { parseWorkout } from "../engines/workout";
+import { computeProteinDistribution } from "../engines/protein";
+import { computeEnergyBalance } from "../engines/energy";
+import { computeTraining } from "../engines/training";
+import { computeSleep, estimateSleepNeed, sleepTST } from "../engines/sleep";
+import { computeRecovery } from "../engines/recovery";
+import { computeCircadian, todaysBioNutrition, bioDayKey } from "../engines/circadian";
+import { computeVolume } from "../engines/volume";
+import { computeHistoricalPhases } from "../engines/historyPhases";
+import { suggestTransitions } from "../engines/transitions";
+import { computeRecoveryCapacity } from "../engines/recoveryCapacity";
+import { computeFatigue } from "../engines/fatigue";
+import { computeNicotineStats } from "../engines/nicotine";
+import { computeSkin } from "../engines/skin";
+import { computeCarbTiming } from "../engines/carbtiming";
+import { planFueling, reconcileFueling, sleepWindow } from "../engines/fueling";
+import { getDayContext } from "../engines/dayContext";
 
 export function insightCategory(text) {
   const t = (text || "").toLowerCase();

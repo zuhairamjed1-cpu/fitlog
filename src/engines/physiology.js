@@ -12,13 +12,13 @@
 //    (are we actually moving toward it). Kept deliberately separate.
 //  • This module imports NO goalplan code (one-way DAG: goalplan may read this).
 
-import { computeWeightTrend } from "./weight.js";
-import { computeRecovery } from "./recovery.js";
-import { computeTraining } from "./training.js";
-import { computeEnergyBalance } from "./energy.js";
-import { estimateSleepNeed, sleepTST } from "./sleep.js";
-import { activePhase, phaseReqRate, phaseDir } from "./phases.js";
-import { getTodayStr, daysAgo } from "../lib/dates.js";
+import { computeWeightTrend } from "./weight";
+import { computeRecovery } from "./recovery";
+import { computeTraining } from "./training";
+import { computeEnergyBalance } from "./energy";
+import { estimateSleepNeed, sleepTST } from "./sleep";
+import { activePhase, phaseReqRate, phaseDir } from "./phases";
+import { getTodayStr, daysAgo } from "../lib/dates";
 
 const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
 const r1 = x => (x == null ? null : Math.round(x * 10) / 10);

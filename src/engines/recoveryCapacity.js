@@ -6,8 +6,8 @@
 // yet, so the Stress component runs neutral and caps confidence (honest, not
 // fabricated). Critically-low energy availability caps the whole score.
 
-import { localDateStr, getTodayStr } from "../lib/dates.js";
-import { mifflinBMR } from "./energy.js";
+import { localDateStr, getTodayStr } from "../lib/dates";
+import { mifflinBMR } from "./energy";
 
 const Q = { Excellent: 100, Great: 90, Good: 78, Fair: 55, Poor: 35 };
 const clamp = (x, a = 0, b = 100) => Math.max(a, Math.min(b, x));

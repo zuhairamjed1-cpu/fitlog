@@ -1,12 +1,12 @@
 // ─── RECOVERY ENGINE (D1 — readiness, limiter, train/rest verdict) ────────
-import { daysAgo, getTodayStr, localDateStr, WEEKDAYS } from "../lib/dates.js";
-import { avgTimeMins } from "../lib/time.js";
-import { computeWeightTrend } from "./weight.js";
-import { computeProteinDistribution } from "./protein.js";
-import { estimateSleepNeed, sleepTST } from "./sleep.js";
-import { parseWorkout } from "./workout.js";
-import { computeNicotineStats } from "./nicotine.js";
-import { getDayContext } from "./dayContext.js";
+import { daysAgo, getTodayStr, localDateStr, WEEKDAYS } from "../lib/dates";
+import { avgTimeMins } from "../lib/time";
+import { computeWeightTrend } from "./weight";
+import { computeProteinDistribution } from "./protein";
+import { estimateSleepNeed, sleepTST } from "./sleep";
+import { parseWorkout } from "./workout";
+import { computeNicotineStats } from "./nicotine";
+import { getDayContext } from "./dayContext";
 
 export function computeRecovery(data, goals) {
   const today = getTodayStr();

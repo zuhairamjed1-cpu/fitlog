@@ -14,12 +14,12 @@
 //  • Sustainable fat loss is ~0.5–1.0% BW/week; past ~1.25%/wk muscle-loss and
 //    rebound risk climb. Higher body-fat tolerates the faster end.
 
-import { computeWeightTrend } from "./weight.js";
-import { computeRecovery } from "./recovery.js";
-import { estimateSleepNeed, sleepTST } from "./sleep.js";
-import { getTodayStr, daysAgo } from "../lib/dates.js";
-import { mifflinBMR } from "./energy.js";
-import { generatePhases } from "./phases.js";
+import { computeWeightTrend } from "./weight";
+import { computeRecovery } from "./recovery";
+import { estimateSleepNeed, sleepTST } from "./sleep";
+import { getTodayStr, daysAgo } from "../lib/dates";
+import { mifflinBMR } from "./energy";
+import { generatePhases } from "./phases";
 
 const r1 = x => (x == null ? null : Math.round(x * 10) / 10);
 const r2 = x => (x == null ? null : Math.round(x * 100) / 100);
