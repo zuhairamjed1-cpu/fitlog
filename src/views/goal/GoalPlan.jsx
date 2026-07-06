@@ -1663,6 +1663,7 @@ function GoalPlanSection({ data, goals, onSaveGoals, addEntry, deleteEntry }) {
               </Card>
             );
             const bio = todaysBioNutrition(data.diet, circ);
+            // TODO(bio-day): calendar-`.date` sum bypasses getDayContext() bio-day bucketing; see refactor report.
             const calToday = (data.diet || []).filter(d => d.date === getTodayStr()).reduce((a, d) => a + (d.calories || 0), 0);
             return (
               <Card title="Biological day" sub="your day runs wake → sleep, not midnight" action={<span style={{ display: "flex", gap: 6, alignItems: "center" }}><span className="small" style={{ color: confColor[circ.confidence] }}>{circ.confidence}</span><TierBadge tier="calc" /></span>}>

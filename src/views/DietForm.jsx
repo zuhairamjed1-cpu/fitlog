@@ -201,6 +201,9 @@ function FuelCard({ data, goals, addEntry, deleteEntry }) {
   const now = new Date();
   const nowMin = now.getHours() * 60 + now.getMinutes();
   const isToday = planDate === today;
+  // TODO(bio-day): filters by stored calendar `.date`, bypassing getDayContext()'s
+  // biological-day bucketing — in bio-day mode this can group meals differently than
+  // the rest of the app. Left as-is (pre-existing); see refactor report.
   const meals = (data.diet || []).filter(d => d.date === planDate);
   const rec = useMemo(() => (plan && plan.blocks) ? reconcileFueling({ plan, meals, nowMin: isToday ? nowMin : -1 }) : null, [plan, meals, nowMin, isToday]);
 
