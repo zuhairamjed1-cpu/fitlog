@@ -1,9 +1,9 @@
 // ─── TIME UTILITIES ───────────────────────────────────────────────────────
 
-export function avgTimeMins(times) {
+export function avgTimeMins(times: (string | null | undefined)[]): number | null {
   const valid = times
-    .map(t => { const m = /^(\d{1,2}):(\d{2})/.exec(t); return m ? (+m[1] * 60 + +m[2]) : null; })
-    .filter(v => v != null && v >= 0 && v < 1440);
+    .map(t => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ""); return m ? (+m[1] * 60 + +m[2]) : null; })
+    .filter((v): v is number => v != null && v >= 0 && v < 1440);
   if (!valid.length) return null;
   let sx = 0, sy = 0;
   for (const v of valid) {
@@ -20,9 +20,9 @@ export function avgTimeMins(times) {
   return Math.round((ang / (2 * Math.PI)) * 1440) % 1440;
 }
 
-export function minsOfTime(t) { if (!t) return null; const m = /^(\d{1,2}):(\d{2})/.exec(t); return m ? +m[1] * 60 + +m[2] : null; }
+export function minsOfTime(t: string | null | undefined): number | null { if (!t) return null; const m = /^(\d{1,2}):(\d{2})/.exec(t); return m ? +m[1] * 60 + +m[2] : null; }
 
-export function avgTimeHHMM(times, wrapPM = false) {
+export function avgTimeHHMM(times: (string | null | undefined)[], wrapPM = false): string | null {
   // wrapPM kept for call-site compatibility but no longer needed — circular mean
   // handles midnight-straddling times correctly.
   if (!times || !times.length) return null;
