@@ -229,6 +229,42 @@ function SleepDebtCard({ debt }) {
   );
 }
 
+// ─── SLEEP DEBT CALCULATOR (onboarding / what-if; no history needed) ──
+// Standalone: lets a brand-new user feel the debt feature in 30 seconds by
+// punching in their last week. In-app debt (SleepDebtCard) stays automatic.
+function SleepDebtCalculator() {
+  const [need, setNeed] = useState("8");
+  const [nights, setNights] = useState(["", "", "", "", "", "", ""]);
+  const setN = (i, v) => setNights(a => a.map((x, j) => (j === i ? v : x)));
+  const needH = Math.max(4, Math.min(12, parseFloat(need) || DEFAULT_SLEEP_NEED_H));
+  const vals = nights.map(parseFloat).filter(v => v > 0 && v < 24);
+  const debt = vals.length ? Math.max(0, +vals.reduce((a, h) => a + (needH - h), 0).toFixed(1)) : null;
+  const band = debt == null ? null
+    : debt < 2 ? "You're basically square."
+    : debt < 6 ? "A manageable backlog — a couple of longer nights clears it."
+    : "A real backlog — worth prioritising sleep this week.";
+  return (
+    <Card title="Try it: sleep debt" sub="No history needed — punch in your last week">
+      <div className="row" style={{ alignItems: "center", gap: 8, marginBottom: 12 }}>
+        <span className="muted small">Your nightly need</span>
+        <input type="number" step="0.5" inputMode="decimal" value={need} onChange={e => setNeed(e.target.value)} style={{ width: 80 }} />
+        <span className="muted">h</span>
+      </div>
+      <div className="sleep-field-label">Hours slept — last 7 nights</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 6 }}>
+        {nights.map((v, i) => (
+          <input key={i} type="number" step="0.5" inputMode="decimal" value={v} onChange={e => setN(i, e.target.value)} placeholder="–" style={{ textAlign: "center", padding: "8px 4px" }} />
+        ))}
+      </div>
+      <div className="center-stack" style={{ marginTop: 16 }}>
+        <div style={{ fontSize: 34, fontWeight: 800, lineHeight: 1 }}>{debt == null ? "—" : debt}<span className="muted" style={{ fontSize: 15, marginLeft: 4 }}>h behind</span></div>
+        {band && <div className="muted small" style={{ marginTop: 4 }}>{band}</div>}
+      </div>
+      <p className="muted small" style={{ marginTop: 12, lineHeight: 1.5 }}>Log a few nights above and this becomes automatic — tracked over a rolling 14-night window, with a pay-down plan.</p>
+    </Card>
+  );
+}
+
 // ─── SLEEP SECTION (the smartest section: log + full intelligence dashboard) ──
 
 
@@ -253,6 +289,7 @@ export function SleepSection({ data, goals, addEntry, onSaveGoals }) {
         <Card title="Sleep intelligence">
           <Empty icon="◐" title="Log a few nights to wake this up" hint="Once you've logged sleep for several nights, this section learns your personal sleep need and starts reading how sleep is shaping your training, weight, and mood." />
         </Card>
+        <SleepDebtCalculator />
       </div>
     );
   }
