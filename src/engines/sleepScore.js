@@ -12,6 +12,10 @@
 // can't read efficiency, so that contributor is skipped for that night.
 
 const QMAP = { Poor: 1, Fair: 2, Good: 3, Great: 4, Excellent: 5 };
+// Band-aligned subjective scores — each quality word lands in its matching rating
+// band (Fair→Fair, Good→Good, Great→Optimal), instead of a linear 0–100 map that
+// collapsed Poor/Fair/Good into the worst band.
+const FELT_SCORE = { Poor: 30, Fair: 55, Good: 75, Great: 90, Excellent: 100 };
 
 // ── curves: anchor points [input, score], linearly interpolated ──
 const DURATION_CURVE = [[0.50, 15], [0.60, 35], [0.70, 55], [0.80, 75], [0.90, 90], [1.00, 100], [1.15, 100], [1.30, 92]];
@@ -89,7 +93,7 @@ export function computeNightScore(entry, priorMids, needMin) {
   const durScore = ratio != null ? curve(ratio, DURATION_CURVE) : null;
   const regScore = regSD != null ? curve(regSD, REG_CURVE) : null;
   const effScore = eff != null ? curve(eff, EFF_CURVE) : null;
-  const subjScore = ((q - 1) / 4) * 100;
+  const subjScore = FELT_SCORE[entry.quality] ?? 55;
 
   const defs = [
     { key: "duration", label: "Duration", icon: "🕐", score: durScore, w: 0.30 },
