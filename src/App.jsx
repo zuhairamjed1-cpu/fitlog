@@ -10,7 +10,7 @@ import { WelcomeSplash } from "./views/WelcomeSplash";
 import { LogOverlay } from "./views/LogOverlay";
 import { MeTab } from "./views/MeTab";
 import { NicotineTab } from "./views/NicotineTab";
-import { IntakeTab, WaterForm, SupplementForm, WeightForm } from "./views/IntakeTab";
+import { IntakeTab, WaterForm, WeightForm } from "./views/IntakeTab";
 import { SleepForm, SleepSection } from "./views/SleepSection";
 import { WorkoutScreen, WorkoutAnalysis, V3MusclePrioCard, ExerciseForm, SportsForm } from "./views/WorkoutScreen";
 import { PlanTab } from "./views/PlanTab";

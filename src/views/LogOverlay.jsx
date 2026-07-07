@@ -4,7 +4,7 @@ import { haptic, SFX } from "../lib/fx";
 import { DietForm } from "../views/DietForm";
 import { EjacTab } from "../views/EjacTab";
 import { GoalPlanV3 } from "../views/goal/GoalPlan";
-import { WaterForm, SupplementForm, WeightForm } from "../views/IntakeTab";
+import { WaterForm, WeightForm } from "../views/IntakeTab";
 import { JournalTab } from "../views/JournalTab";
 import { NicotineTab } from "../views/NicotineTab";
 import { PlanTab } from "../views/PlanTab";
@@ -27,7 +27,6 @@ export function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, se
     { title: "Nutrition", items: [
       { key: "diet", label: "Meal", icon: "◉", color: "#f9c97e" },
       { key: "water", label: "Water", icon: "◊", color: "#5cc8df" },
-      { key: "supps", label: "Supps", icon: "⊕", color: "#b4a8e8" },
     ] },
     { title: "Training", items: [
       { key: "exercise", label: "Workout", icon: "◆", color: "#f47e6e" },
@@ -48,7 +47,6 @@ export function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, se
     switch (view) {
       case "diet": return <DietForm onAdd={addEntry("diet")} recent={data.diet} goals={goals} data={data} todayDiet={data.diet.filter(d => d.date === today)} addEntry={addEntry} deleteEntry={deleteEntry} />;
       case "water": return <WaterForm data={data} goals={goals} onAdd={addEntry("water")} onDelete={deleteEntry("water")} />;
-      case "supps": return <SupplementForm data={data} onAdd={addEntry("supplements")} onDelete={deleteEntry("supplements")} />;
       case "weight": return <WeightForm data={data} goals={goals} onAdd={addEntry("weight")} onDelete={deleteEntry("weight")} />;
       case "exercise": return <WorkoutScreen data={data} goals={goals} addEntry={addEntry} onSaveGoals={onSaveGoals} />;
       case "sports": return <SportsForm onAdd={addEntry("sports")} recent={data.sports} />;

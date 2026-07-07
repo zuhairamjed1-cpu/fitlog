@@ -122,7 +122,7 @@ function BarcodeScanner({ onResult, onClose }) {
 // the library, set the amount, and log it. The ＋ flow takes a free-text
 // "brand + product", asks the AI (web search) to resolve the exact product, and
 // saves it to the library so it's one tap next time.
-function SupplementCard({ data, addEntry, deleteEntry }) {
+function SupplementCard({ data, addEntry }) {
   const lib = data.supplementLib || [];
   const today = getTodayStr();
   const [selId, setSelId] = useState("");
@@ -132,8 +132,6 @@ function SupplementCard({ data, addEntry, deleteEntry }) {
   const [busy, setBusy] = useState(false);
 
   const sel = lib.find(s => s.id === selId) || null;
-  const todaySupps = (data.supplements || []).filter(s => s.date === today);
-  const onDelete = deleteEntry("supplements");
 
   const pick = id => { setSelId(id); const it = lib.find(s => s.id === id); if (it && !amount) setAmount(it.dose || ""); };
 
@@ -170,7 +168,11 @@ function SupplementCard({ data, addEntry, deleteEntry }) {
   };
 
   return (
-    <Card title="Supplements" sub="Quick-log from your library, or add a product with AI">
+    <Card
+      title="Supplements"
+      sub="Quick-log from your library, or add a product with AI"
+      action={<button className="btn-ghost" title="Add a product with AI" aria-label="Add supplement with AI" onClick={() => setAdding(a => !a)} style={{ minWidth: 40, padding: "8px 12px" }}>{adding ? "×" : "＋"}</button>}
+    >
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
         <select value={selId} onChange={e => pick(e.target.value ? +e.target.value : "")} style={{ flex: "1 1 160px", minWidth: 140 }}>
           <option value="">{lib.length ? "Choose a supplement…" : "No saved supplements yet"}</option>
@@ -178,7 +180,6 @@ function SupplementCard({ data, addEntry, deleteEntry }) {
         </select>
         <input placeholder="amount" value={amount} onChange={e => setAmount(e.target.value)} style={{ flex: "0 1 92px", minWidth: 72 }} />
         <button className="btn" onClick={logIt} disabled={!selId && !amount.trim()}>Log</button>
-        <button className="btn-ghost" title="Add a product with AI" aria-label="Add supplement with AI" onClick={() => setAdding(a => !a)} style={{ minWidth: 46, padding: "12px 14px" }}>{adding ? "×" : "＋"}</button>
       </div>
 
       {adding && (
@@ -190,18 +191,6 @@ function SupplementCard({ data, addEntry, deleteEntry }) {
 
       {sel && (sel.serving || sel.notes) && (
         <p className="muted small" style={{ marginTop: 8 }}>{[sel.serving && `Serving: ${sel.serving}`, sel.notes].filter(Boolean).join(" · ")}</p>
-      )}
-
-      {todaySupps.length > 0 && (
-        <div className="list" style={{ marginTop: 12 }}>
-          {todaySupps.slice().reverse().map(s => (
-            <div key={s.id} className="list-row">
-              <span className="list-main">{[s.brand, s.name].filter(Boolean).join(" ")}{s.dose ? ` · ${s.dose}` : ""}</span>
-              <span className="muted small">{s.ts ? new Date(s.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}</span>
-              <button className="x" onClick={() => onDelete(s.id)}>×</button>
-            </div>
-          ))}
-        </div>
       )}
     </Card>
   );
@@ -798,10 +787,18 @@ export function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp 
         </div>
       )}
       </div>
-      <SupplementCard data={data} addEntry={addEntry} deleteEntry={deleteEntry} />
+      <SupplementCard data={data} addEntry={addEntry} />
       <ProteinTimingCard data={data} goals={goals} todayDiet={todayDiet} />
       <FuelCard data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />
-      <RecentList entries={recent} render={m => <><span className="ra-main">{m.meal} · {m.calories} kcal · {m.food.slice(0, 26)}{m.food.length > 26 ? "…" : ""} <GLPill meal={m} showValue={false} /></span><span className="ra-date">{formatShortDate(m.date)}</span></>} />
+      <RecentList
+        entries={[
+          ...(recent || []).map(m => ({ ...m, _kind: "meal", _t: m.consumedAt ?? m.ts ?? new Date(`${m.date}T${m.time || "12:00"}:00`).getTime() })),
+          ...(data.supplements || []).map(s => ({ ...s, _kind: "supp", _t: s.ts ?? 0 })),
+        ].sort((a, b) => (b._t || 0) - (a._t || 0)).slice(0, 5)}
+        render={e => e._kind === "supp"
+          ? <><span className="ra-main">⊕ {[e.brand, e.name].filter(Boolean).join(" ")}{e.dose ? ` · ${e.dose}` : ""}</span><span className="ra-date">{formatShortDate(e.date)}</span></>
+          : <><span className="ra-main">{e.meal} · {e.calories} kcal · {e.food.slice(0, 26)}{e.food.length > 26 ? "…" : ""} <GLPill meal={e} showValue={false} /></span><span className="ra-date">{formatShortDate(e.date)}</span></>}
+      />
     </div>
   );
 }

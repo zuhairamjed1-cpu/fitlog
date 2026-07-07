@@ -10,11 +10,9 @@ export function IntakeTab({ data, goals, addEntry, deleteEntry }) {
     <div className="stack">
       <div className="seg">
         <button className={`seg-btn ${view === "water" ? "active" : ""}`} onClick={() => setView("water")}>💧 Water</button>
-        <button className={`seg-btn ${view === "supp" ? "active" : ""}`} onClick={() => setView("supp")}>⊕ Supps</button>
         <button className={`seg-btn ${view === "weight" ? "active" : ""}`} onClick={() => setView("weight")}>⚖ Weight</button>
       </div>
       {view === "water" && <WaterForm data={data} goals={goals} onAdd={addEntry("water")} onDelete={deleteEntry("water")} />}
-      {view === "supp" && <SupplementForm data={data} onAdd={addEntry("supplements")} onDelete={deleteEntry("supplements")} />}
       {view === "weight" && <WeightForm data={data} goals={goals} onAdd={addEntry("weight")} onDelete={deleteEntry("weight")} />}
     </div>
   );
@@ -94,43 +92,6 @@ export function WaterForm({ data, goals, onAdd, onDelete }) {
   );
 }
 
-// ─── SUPPLEMENT ──
-export function SupplementForm({ data, onAdd, onDelete }) {
-  const [name, setName] = useState("");
-  const [dose, setDose] = useState("");
-  const todaySupps = data.supplements.filter(s => s.date === getTodayStr());
-  return (
-    <div className="stack">
-      <Card title="Log supplement">
-        <div className="field-grid">
-          <label>Name<input type="text" value={name} onChange={e => setName(e.target.value)} placeholder="Creatine, Multi, Whey" /></label>
-          <label>Dose / notes<input type="text" value={dose} onChange={e => setDose(e.target.value)} placeholder="5g, 1 cap" /></label>
-        </div>
-        <button className="btn full" onClick={() => { if (!name.trim()) return; onAdd({ id: Date.now(), date: getTodayStr(), name: name.trim(), dose: dose.trim(), ts: Date.now() }); toast("⊕ " + name.trim() + " logged"); setName(""); setDose(""); }} disabled={!name.trim()}>Save</button>
-      </Card>
-
-      {todaySupps.length > 0 && (
-        <Card title="Today's supplements">
-          <div className="list">
-            {todaySupps.slice().reverse().map(s => {
-              const t = new Date(s.ts || Date.now());
-              return (
-                <div key={s.id} className="list-row">
-                  <div className="list-main">
-                    <div>{s.name}</div>
-                    {s.dose && <div className="muted small">{s.dose}</div>}
-                  </div>
-                  <span className="muted">{t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-                  <button className="x" onClick={() => onDelete(s.id)}>×</button>
-                </div>
-              );
-            })}
-          </div>
-        </Card>
-      )}
-    </div>
-  );
-}
 
 // ─── BODYWEIGHT ──
 export function WeightForm({ data, goals, onAdd, onDelete }) {
