@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { MiniChart, Card, Empty, toast } from "../components/primitives";
 import { StatusPill } from "../components/StatusPill";
-import { sleepQuality } from "../config";
+import { sleepQuality, DEFAULT_SLEEP_NEED_H } from "../config";
 import { estimateSleepNeed, computeSleep } from "../engines/sleep";
 import { computeSleepScores } from "../engines/sleepScore";
 import { computeWeightTrend } from "../engines/weight";
@@ -227,7 +227,11 @@ export function SleepSection({ data, goals, addEntry, onSaveGoals }) {
   }
 
   const q = sleep.quantity, r = sleep.regularity, c = sleep.continuity;
-  const needSrc = sleep.need.source === "override" ? "you set this" : sleep.need.source === "learned" ? `learned from ${sleep.need.nUnassisted ?? sleep.need.nGood} alarm-free mornings` : "provisional default — log more alarm-free nights to personalize";
+  const nFree = sleep.need.nUnassisted ?? sleep.need.nGood;
+  const needSrc = sleep.need.source === "override" ? "you set this"
+    : sleep.need.source === "learned" ? `learned from ${nFree} alarm-free mornings`
+    : sleep.need.source === "learning" ? `learning from ${nFree} alarm-free morning${nFree === 1 ? "" : "s"} so far — still near the ${DEFAULT_SLEEP_NEED_H}h default`
+    : "provisional default — log more alarm-free nights to personalize";
 
   return (
     <div className="stack">

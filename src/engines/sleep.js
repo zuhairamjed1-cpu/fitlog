@@ -18,14 +18,21 @@ export function estimateSleepNeed(data, goals) {
   // still count (we don't assume an alarm).
   const good = (data.sleep || []).filter(s => s && s.date >= daysAgo(59) && s.alarmUsed !== true && /^(Good|Great|Excellent)$/.test(s.quality || ""));
   const tsts = good.map(sleepTST).sort((a, b) => a - b);
-  const nUnassisted = tsts.length;
-  if (tsts.length >= 5) {
-    const m = tsts.length >> 1;
-    let need = tsts.length % 2 ? tsts[m] : (tsts[m - 1] + tsts[m]) / 2;
+  const n = tsts.length;
+  const nUnassisted = n;
+  if (n >= 1) {
+    // Shrinkage: blend the personal median toward the DEFAULT prior. With n << K the
+    // estimate sits near 8h and glides smoothly toward personal as good nights
+    // accumulate — no cliff at any single night count.
+    const m = n >> 1;
+    const personal = n % 2 ? tsts[m] : (tsts[m - 1] + tsts[m]) / 2;
+    const K = 10;
+    let need = (K * DEFAULT_SLEEP_NEED_H + n * personal) / (K + n);
     need = Math.max(6, Math.min(9.5, +need.toFixed(1)));
-    return { hours: need, source: "learned", confidence: tsts.length >= 10 ? "high" : "moderate", nGood: tsts.length, nUnassisted };
+    const confidence = n >= 10 ? "high" : n >= 5 ? "moderate" : "low";
+    return { hours: need, source: n >= 5 ? "learned" : "learning", confidence, nGood: n, nUnassisted };
   }
-  return { hours: DEFAULT_SLEEP_NEED_H, source: "default", confidence: "low", nGood: tsts.length, nUnassisted };
+  return { hours: DEFAULT_SLEEP_NEED_H, source: "default", confidence: "low", nGood: 0, nUnassisted };
 }
 
 export function computeSleep(data, goals) {
