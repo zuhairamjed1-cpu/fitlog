@@ -122,12 +122,12 @@ function BarcodeScanner({ onResult, onClose }) {
 // the library, set the amount, and log it. The ＋ flow takes a free-text
 // "brand + product", asks the AI (web search) to resolve the exact product, and
 // saves it to the library so it's one tap next time.
-function SupplementCard({ data, addEntry }) {
+function SupplementCard({ data, addEntry, deleteEntry }) {
   const lib = data.supplementLib || [];
   const today = getTodayStr();
   const [selId, setSelId] = useState("");
   const [amount, setAmount] = useState("");
-  const [adding, setAdding] = useState(false);
+  const [manageOpen, setManageOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -156,8 +156,7 @@ function SupplementCard({ data, addEntry }) {
         const item = { id: Date.now(), name: r.name, brand: r.brand || "", dose: r.dose || "", form: r.form || "", serving: r.serving || "", notes: r.notes || "" };
         addEntry("supplementLib")(item);
         pick(item.id);
-        setAmount(item.dose || "");
-        setQuery(""); setAdding(false);
+        setQuery("");
         haptic(10);
         toast(`✓ Added ${[item.brand, item.name].filter(Boolean).join(" ")}`, { silent: true });
       } else {
@@ -167,11 +166,17 @@ function SupplementCard({ data, addEntry }) {
     setBusy(false);
   };
 
+  const removeItem = id => {
+    deleteEntry("supplementLib")(id);
+    if (selId === id) { setSelId(""); setAmount(""); }
+    haptic(8);
+  };
+
   return (
     <Card
       title="Supplements"
       sub="Quick-log from your library, or add a product with AI"
-      action={<button className="btn-ghost" title="Add a product with AI" aria-label="Add supplement with AI" onClick={() => setAdding(a => !a)} style={{ minWidth: 40, padding: "8px 12px" }}>{adding ? "×" : "＋"}</button>}
+      action={<button className="btn-ghost" title="Manage supplements" aria-label="Manage supplements" onClick={() => setManageOpen(true)} style={{ minWidth: 40, padding: "8px 12px" }}>＋</button>}
     >
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
         <select value={selId} onChange={e => pick(e.target.value ? +e.target.value : "")} style={{ flex: "1 1 160px", minWidth: 140 }}>
@@ -182,15 +187,42 @@ function SupplementCard({ data, addEntry }) {
         <button className="btn" onClick={logIt} disabled={!selId && !amount.trim()}>Log</button>
       </div>
 
-      {adding && (
-        <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-          <input autoFocus placeholder="Brand + product, e.g. “ON Gold Standard Creatine”" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Enter") lookup(); }} style={{ flex: "1 1 200px", minWidth: 160 }} />
-          <button className="btn" onClick={lookup} disabled={busy || !query.trim()}>{busy ? <span className="spinner" /> : "✦ Find product"}</button>
-        </div>
-      )}
-
       {sel && (sel.serving || sel.notes) && (
         <p className="muted small" style={{ marginTop: 8 }}>{[sel.serving && `Serving: ${sel.serving}`, sel.notes].filter(Boolean).join(" · ")}</p>
+      )}
+
+      {manageOpen && (
+        <div className="modal-overlay" onClick={() => { setManageOpen(false); setQuery(""); }}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h3 className="modal-title">Supplement library</h3>
+            <p className="muted small" style={{ marginBottom: 12 }}>Add a product with AI, or remove one you no longer take.</p>
+
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+              <input autoFocus placeholder="Brand + product, e.g. “ON Gold Standard Creatine”" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Enter") lookup(); }} style={{ flex: "1 1 200px", minWidth: 160 }} />
+              <button className="btn" onClick={lookup} disabled={busy || !query.trim()}>{busy ? <span className="spinner" /> : "✦ Find"}</button>
+            </div>
+
+            {lib.length > 0 ? (
+              <div className="list" style={{ maxHeight: 260, overflowY: "auto" }}>
+                {lib.map(s => (
+                  <div key={s.id} className="list-row">
+                    <div className="list-main">
+                      <div>{[s.brand, s.name].filter(Boolean).join(" ")}</div>
+                      {(s.serving || s.notes) && <div className="muted small">{[s.serving && `Serving: ${s.serving}`, s.notes].filter(Boolean).join(" · ")}</div>}
+                    </div>
+                    <button className="x" aria-label={`Remove ${s.name}`} onClick={() => removeItem(s.id)}>×</button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="muted small" style={{ textAlign: "center", padding: "8px 0" }}>No saved supplements yet. Add one above.</p>
+            )}
+
+            <div className="modal-actions" style={{ marginTop: 16 }}>
+              <button className="btn" onClick={() => { setManageOpen(false); setQuery(""); }}>Done</button>
+            </div>
+          </div>
+        </div>
       )}
     </Card>
   );
@@ -787,7 +819,7 @@ export function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp 
         </div>
       )}
       </div>
-      <SupplementCard data={data} addEntry={addEntry} />
+      <SupplementCard data={data} addEntry={addEntry} deleteEntry={deleteEntry} />
       <ProteinTimingCard data={data} goals={goals} todayDiet={todayDiet} />
       <FuelCard data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />
       <RecentList
