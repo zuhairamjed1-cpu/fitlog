@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from "react";
+import { createPortal } from "react-dom";
 import { fileToResizedBase64, lookupBarcode, barcodeScanSupported, analyzeFoodAI, lookupSupplement } from "../api/client";
 import { buildBrain } from "../brain/brain";
 import { MacroDonut, Card, toast } from "../components/primitives";
@@ -191,7 +192,7 @@ function SupplementCard({ data, addEntry, deleteEntry }) {
         <p className="muted small" style={{ marginTop: 8 }}>{[sel.serving && `Serving: ${sel.serving}`, sel.notes].filter(Boolean).join(" · ")}</p>
       )}
 
-      {manageOpen && (
+      {manageOpen && createPortal(
         <div className="modal-overlay" onClick={() => { setManageOpen(false); setQuery(""); }}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <h3 className="modal-title">Supplement library</h3>
@@ -222,7 +223,8 @@ function SupplementCard({ data, addEntry, deleteEntry }) {
               <button className="btn" onClick={() => { setManageOpen(false); setQuery(""); }}>Done</button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </Card>
   );
