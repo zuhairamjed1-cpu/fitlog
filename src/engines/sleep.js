@@ -1,4 +1,5 @@
 // ─── SLEEP INTELLIGENCE ENGINE (3-axis + cross-domain coupling) ───────────
+import { DEFAULT_SLEEP_NEED_H } from "../config";
 import { daysAgo, daysAgoFrom, getTodayStr } from "../lib/dates";
 import { computeWeightTrend } from "./weight";
 import { parseWorkout } from "./workout";
@@ -20,7 +21,7 @@ export function estimateSleepNeed(data, goals) {
     need = Math.max(6, Math.min(9.5, +need.toFixed(1)));
     return { hours: need, source: "learned", confidence: tsts.length >= 10 ? "high" : "moderate", nGood: tsts.length };
   }
-  return { hours: 8, source: "default", confidence: "low", nGood: tsts.length };
+  return { hours: DEFAULT_SLEEP_NEED_H, source: "default", confidence: "low", nGood: tsts.length };
 }
 
 export function computeSleep(data, goals) {

@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { callClaude } from "../../api/client";
+import { DEFAULT_SLEEP_NEED_H } from "../../config";
 import { Card, Empty, toast } from "../../components/primitives";
 import { TierBadge } from "../../components/TierBadge";
 import { proposeAdaptation } from "../../engines/adaptation";
@@ -1826,7 +1827,7 @@ function GpStepper({ label, value, set, min, max, step, fmt, unit }) {
 function GoalSimulateTab({ gp, goals }) {
   const cw = (gp && gp.currentWeight) || 75;
   const baseProt = Math.min(2.4, Math.max(1.4, Math.round((((goals && goals.protein) || 1.8 * cw) / cw) * 5) / 5));
-  const baseSleep = Math.min(9, Math.max(5, Math.round(((goals && goals.profile && goals.profile.sleepNeedH) || 8) * 2) / 2));
+  const baseSleep = Math.min(9, Math.max(5, Math.round(((goals && goals.profile && goals.profile.sleepNeedH) || DEFAULT_SLEEP_NEED_H) * 2) / 2));
   const [cal, setCal] = useState(0);
   const [cardio, setCardio] = useState(0);
   const [prot, setProt] = useState(baseProt);

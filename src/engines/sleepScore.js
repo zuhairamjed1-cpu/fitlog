@@ -10,6 +10,8 @@
 // Works over the user's existing history: `duration` on a sleep entry is TIME IN
 // BED (see SleepForm), latencyMin/wakeMin are optional. When they're absent we
 // can't read efficiency, so that contributor is skipped for that night.
+import { DEFAULT_SLEEP_NEED_H } from "../config";
+import { sleepTST } from "./sleep";
 
 const QMAP = { Poor: 1, Fair: 2, Good: 3, Great: 4, Excellent: 5 };
 // Band-aligned subjective scores — each quality word lands in its matching rating
@@ -79,7 +81,7 @@ export function computeNightScore(entry, priorMids, needMin) {
   const hasDetail = entry.latencyMin != null || entry.wakeMin != null;
   const lat = entry.latencyMin != null ? entry.latencyMin : 0;
   const waso = entry.wakeMin != null ? entry.wakeMin : 0;
-  const tst = tib != null ? Math.max(0, tib - (hasDetail ? lat + waso : 0)) : null;
+  const tst = tib != null ? sleepTST(entry) * 60 : null; // shared derivation (hours→min)
   const eff = (hasDetail && tib > 0) ? tst / tib : null;
   const ratio = (tst != null && needMin > 0) ? tst / needMin : null;
 
@@ -121,7 +123,7 @@ export function computeNightScore(entry, priorMids, needMin) {
 // Score every logged night (ascending by date). Each night's regularity uses the
 // trailing ≤14 nights before it — real, growing history from the data you have.
 export function computeSleepScores(sleepArr, needHours) {
-  const needMin = (needHours > 0 ? needHours : 8) * 60;
+  const needMin = (needHours > 0 ? needHours : DEFAULT_SLEEP_NEED_H) * 60;
   const sorted = [...(sleepArr || [])].filter(e => e && e.date).sort((a, b) => a.date.localeCompare(b.date));
   const out = [];
   for (let i = 0; i < sorted.length; i++) {
