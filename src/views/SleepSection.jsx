@@ -64,6 +64,13 @@ export function SleepForm({ onAdd, recent }) {
           ))}
         </div>
 
+        {/* Woke to an alarm? — kept visible; feeds the sleep-need learning gate */}
+        <div className="sleep-field-label">Woke to an alarm?</div>
+        <div className="seg">
+          <button className={`seg-btn ${form.alarmUsed === false ? "active" : ""}`} onClick={() => { set("alarmUsed", false); haptic(8); }}>No — woke naturally</button>
+          <button className={`seg-btn ${form.alarmUsed === true ? "active" : ""}`} onClick={() => { set("alarmUsed", true); haptic(8); }}>Yes — alarm</button>
+        </div>
+
         {/* Optional depth — tucked away */}
         <button className="sleep-detail-toggle" onClick={() => setShowDetail(s => !s)}>
           {showDetail ? "− Hide detail" : "+ Add fall-asleep time, wake-ups & notes"}
@@ -73,11 +80,6 @@ export function SleepForm({ onAdd, recent }) {
             <div className="field-grid">
               <label>Mins to fall asleep<input type="number" inputMode="numeric" value={form.latencyMin} onChange={e => set("latencyMin", e.target.value)} placeholder="e.g. 15" /></label>
               <label>Mins awake in night<input type="number" inputMode="numeric" value={form.wakeMin} onChange={e => set("wakeMin", e.target.value)} placeholder="e.g. 0" /></label>
-            </div>
-            <div className="sleep-field-label">Woke to an alarm?</div>
-            <div className="seg">
-              <button className={`seg-btn ${form.alarmUsed === false ? "active" : ""}`} onClick={() => { set("alarmUsed", false); haptic(8); }}>No — woke naturally</button>
-              <button className={`seg-btn ${form.alarmUsed === true ? "active" : ""}`} onClick={() => { set("alarmUsed", true); haptic(8); }}>Yes — alarm</button>
             </div>
             <label>Notes<textarea value={form.notes} onChange={e => set("notes", e.target.value)} placeholder="Anything worth remembering about last night?" rows={2} /></label>
             <p className="muted small" style={{ lineHeight: 1.45 }}>These two numbers unlock your sleep-efficiency reading — add them when you have them, skip when you don't.</p>
