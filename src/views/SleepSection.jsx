@@ -296,7 +296,7 @@ export function SleepSection({ data, goals, addEntry, onSaveGoals }) {
     );
   }
 
-  const q = sleep.quantity, r = sleep.regularity, c = sleep.continuity;
+  const q = sleep.quantity, r = sleep.regularity;
   const nFree = sleep.need.nUnassisted ?? sleep.need.nGood;
   const needSrc = sleep.need.source === "override" ? "you set this"
     : sleep.need.source === "learned" ? `learned from ${nFree} alarm-free mornings`
@@ -354,7 +354,7 @@ export function SleepSection({ data, goals, addEntry, onSaveGoals }) {
         </Card>
       )}
 
-      {/* THREE AXES */}
+      {/* DURATION */}
       <Card title="Duration" sub="vs your personal need" action={<StatusPill status={q.status} label={q.label} />}>
         <div className="center-stack" style={{ marginBottom: 6 }}>
           <div style={{ fontSize: 30, fontWeight: 700, lineHeight: 1 }}>{q.avgTST7 ?? "—"}<span className="muted" style={{ fontSize: 15, marginLeft: 4 }}>h avg asleep (7d)</span></div>
@@ -362,43 +362,6 @@ export function SleepSection({ data, goals, addEntry, onSaveGoals }) {
         </div>
         <MiniChart points={sleep.series.tst} showGoal={q.need} rollingAvg unit="h" />
       </Card>
-
-      <Card title="Regularity" sub="timing consistency & social jetlag" action={<StatusPill status={r.status} label={r.label} />}>
-        <div className="sleep-axis-stats">
-          <div className="ts"><span className="ts-l">Mid-sleep swing</span><span className="ts-v">{r.midSD != null ? `±${Math.round(r.midSD)}min` : "—"}</span></div>
-          <div className="ts"><span className="ts-l">Social jetlag</span><span className={`ts-v ${r.socialJetlag != null && r.socialJetlag >= 1.5 ? "warn" : ""}`}>{r.socialJetlag != null ? `${r.socialJetlag}h` : "—"}</span></div>
-        </div>
-        <p className="muted small" style={{ marginTop: 8, lineHeight: 1.5 }}>{r.status === "good" ? "Your timing is consistent — keep it." : "Variable timing is one of the highest-leverage things to tighten; the research ranks it alongside total hours."}</p>
-      </Card>
-
-      <Card title="Continuity & quality" sub="how consolidated your sleep is" action={<StatusPill status={c.status} label={c.label} />}>
-        <div className="sleep-axis-stats">
-          {c.hasEffData && <div className="ts"><span className="ts-l">Efficiency</span><span className={`ts-v ${c.avgEff != null && c.avgEff < 85 ? "warn" : ""}`}>{c.avgEff != null ? `${c.avgEff}%` : "—"}</span></div>}
-          {c.avgLatency != null && <div className="ts"><span className="ts-l">Fall-asleep</span><span className="ts-v">{c.avgLatency}min</span></div>}
-          {c.avgWaso != null && <div className="ts"><span className="ts-l">Awake/night</span><span className="ts-v">{c.avgWaso}min</span></div>}
-          {!c.hasEffData && c.avgLatency == null && <div className="ts"><span className="ts-l">Quality trend</span><span className="ts-v">{c.qualityTrend != null ? (c.qualityTrend > 0 ? "↑ improving" : c.qualityTrend < 0 ? "↓ slipping" : "→ flat") : "—"}</span></div>}
-        </div>
-        {c.unrefreshing && (
-          <div className="sleep-flag">
-            ⚠ Unrefreshing sleep: enough hours but poor quality on {c.unrefreshCount} of {c.recentNights} recent nights. This is the top pattern worth raising with a clinician — it can't be fixed by routine alone.
-          </div>
-        )}
-        {!c.hasEffData && <p className="muted small" style={{ marginTop: 8, lineHeight: 1.5 }}>Add "mins to fall asleep" and "mins awake" when logging to unlock efficiency — the real continuity metric.</p>}
-      </Card>
-
-      {/* COUPLING */}
-      {sleep.coupling.length > 0 && (
-        <Card title="How sleep is affecting you" sub="patterns from your own data — correlation, not proof">
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {sleep.coupling.map((co, i) => (
-              <div key={i} className="sleep-couple-row">
-                <span className="sleep-couple-dot" style={{ background: co.severity === "critical" ? "var(--bad)" : co.severity === "important" ? "#f9c97e" : "var(--accent)" }} />
-                <span className="small" style={{ lineHeight: 1.5 }}>{co.text}</span>
-              </div>
-            ))}
-          </div>
-        </Card>
-      )}
 
       {/* RECENT — collapsed at the very bottom */}
       <RecentSleepDropdown sleep={data.sleep} />
