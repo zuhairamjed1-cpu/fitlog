@@ -130,10 +130,14 @@ export interface SportsEntry extends BaseEntry {
 
 // ─── WELLNESS ───────────────────────────────────────────────────────────────
 export interface SleepEntry extends BaseEntry {
-  duration: number;             // hours in bed
+  duration: number;             // hours in bed (TIB), NOT sleep time
   quality?: string;             // see config.sleepQuality
   bedtime?: string;             // "HH:MM"
   wakeTime?: string;            // "HH:MM"
+  latencyMin?: number;          // mins to fall asleep (optional detail)
+  wakeMin?: number;             // mins awake in the night (optional detail)
+  notes?: string;
+  alarmUsed?: boolean;          // true/false only if the user tapped; omitted when untouched
 }
 
 export type NicotineType = "cigarette" | "vape" | "pouch";

@@ -11,7 +11,7 @@ import { haptic } from "../lib/fx";
 
 // ─── SLEEP FORM ──
 export function SleepForm({ onAdd, recent }) {
-  const [form, setForm] = useState({ date: getTodayStr(), bedtime: "22:30", wakeTime: "06:30", quality: "Good", latencyMin: "", wakeMin: "", notes: "" });
+  const [form, setForm] = useState({ date: getTodayStr(), bedtime: "22:30", wakeTime: "06:30", quality: "Good", latencyMin: "", wakeMin: "", notes: "", alarmUsed: null });
   const [showDetail, setShowDetail] = useState(false);
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const tibH = (() => {
@@ -29,9 +29,10 @@ export function SleepForm({ onAdd, recent }) {
     const entry = { date: form.date, bedtime: form.bedtime, wakeTime: form.wakeTime, quality: form.quality, notes: form.notes, duration: +tibH.toFixed(1), id: Date.now() };
     if (form.latencyMin !== "") entry.latencyMin = Math.max(0, Math.round(parseFloat(form.latencyMin)) || 0);
     if (form.wakeMin !== "") entry.wakeMin = Math.max(0, Math.round(parseFloat(form.wakeMin)) || 0);
+    if (form.alarmUsed !== null) entry.alarmUsed = form.alarmUsed; // true | false; omit if untouched
     onAdd(entry);
     toast("◐ Sleep logged");
-    setForm(f => ({ ...f, latencyMin: "", wakeMin: "", notes: "" }));
+    setForm(f => ({ ...f, latencyMin: "", wakeMin: "", notes: "", alarmUsed: null }));
     setShowDetail(false);
   }
   return (
@@ -72,6 +73,11 @@ export function SleepForm({ onAdd, recent }) {
             <div className="field-grid">
               <label>Mins to fall asleep<input type="number" inputMode="numeric" value={form.latencyMin} onChange={e => set("latencyMin", e.target.value)} placeholder="e.g. 15" /></label>
               <label>Mins awake in night<input type="number" inputMode="numeric" value={form.wakeMin} onChange={e => set("wakeMin", e.target.value)} placeholder="e.g. 0" /></label>
+            </div>
+            <div className="sleep-field-label">Woke to an alarm?</div>
+            <div className="seg">
+              <button className={`seg-btn ${form.alarmUsed === false ? "active" : ""}`} onClick={() => { set("alarmUsed", false); haptic(8); }}>No — woke naturally</button>
+              <button className={`seg-btn ${form.alarmUsed === true ? "active" : ""}`} onClick={() => { set("alarmUsed", true); haptic(8); }}>Yes — alarm</button>
             </div>
             <label>Notes<textarea value={form.notes} onChange={e => set("notes", e.target.value)} placeholder="Anything worth remembering about last night?" rows={2} /></label>
             <p className="muted small" style={{ lineHeight: 1.45 }}>These two numbers unlock your sleep-efficiency reading — add them when you have them, skip when you don't.</p>
