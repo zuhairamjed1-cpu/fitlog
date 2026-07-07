@@ -227,7 +227,7 @@ export function SleepSection({ data, goals, addEntry, onSaveGoals }) {
   }
 
   const q = sleep.quantity, r = sleep.regularity, c = sleep.continuity;
-  const needSrc = sleep.need.source === "override" ? "you set this" : sleep.need.source === "learned" ? `learned from ${sleep.need.nGood} of your best nights` : "provisional default — log more good nights to personalize";
+  const needSrc = sleep.need.source === "override" ? "you set this" : sleep.need.source === "learned" ? `learned from ${sleep.need.nUnassisted ?? sleep.need.nGood} alarm-free mornings` : "provisional default — log more alarm-free nights to personalize";
 
   return (
     <div className="stack">

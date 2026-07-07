@@ -12,16 +12,20 @@ export function sleepTST(s) {
 
 export function estimateSleepNeed(data, goals) {
   const override = parseFloat(goals?.profile?.sleepNeedH);
-  if (override > 0) return { hours: Math.max(4, Math.min(12, override)), source: "override", confidence: "set", nGood: 0 };
-  const good = (data.sleep || []).filter(s => s && s.date >= daysAgo(59) && /^(Good|Great|Excellent)$/.test(s.quality || ""));
+  if (override > 0) return { hours: Math.max(4, Math.min(12, override)), source: "override", confidence: "set", nGood: 0, nUnassisted: 0 };
+  // Learn only from good nights the user woke from UNASSISTED — a confirmed alarm
+  // truncates real need, so those nights are excluded. Untouched (undefined) nights
+  // still count (we don't assume an alarm).
+  const good = (data.sleep || []).filter(s => s && s.date >= daysAgo(59) && s.alarmUsed !== true && /^(Good|Great|Excellent)$/.test(s.quality || ""));
   const tsts = good.map(sleepTST).sort((a, b) => a - b);
+  const nUnassisted = tsts.length;
   if (tsts.length >= 5) {
     const m = tsts.length >> 1;
     let need = tsts.length % 2 ? tsts[m] : (tsts[m - 1] + tsts[m]) / 2;
     need = Math.max(6, Math.min(9.5, +need.toFixed(1)));
-    return { hours: need, source: "learned", confidence: tsts.length >= 10 ? "high" : "moderate", nGood: tsts.length };
+    return { hours: need, source: "learned", confidence: tsts.length >= 10 ? "high" : "moderate", nGood: tsts.length, nUnassisted };
   }
-  return { hours: DEFAULT_SLEEP_NEED_H, source: "default", confidence: "low", nGood: tsts.length };
+  return { hours: DEFAULT_SLEEP_NEED_H, source: "default", confidence: "low", nGood: tsts.length, nUnassisted };
 }
 
 export function computeSleep(data, goals) {
