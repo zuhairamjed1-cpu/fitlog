@@ -38,15 +38,29 @@ export function estimateSleepNeed(data, goals) {
 // ─── SLEEP DEBT — rolling 14-night deficit vs need ──────────────────────────
 // Debt = Σ (need − TST) over the trailing 14 logged nights, floored at 0 (surplus
 // nights pay it down; you can't bank below zero). Nights older than 14 age out.
-export function computeSleepDebt(sleep, needH) {
+export function computeSleepDebt(sleep, needH, data) {
   const byDate = {};
   (sleep || []).forEach(s => { if (s && s.date && s.duration != null) byDate[s.date] = s; });
+  const ex = (data && data.exercise) || [];
+  const sp = (data && data.sports) || [];
+  // Workout-aware need: a hard lift or a long, intense session raises that night's
+  // recovery need a little. Uses training logs — no wearable required.
+  const nightNeed = date => {
+    const hardLift = ex.some(e => e.date === date && (() => {
+      const p = e._parsed || parseWorkout(e.text || "");
+      const sets = (p.exercises || []).reduce((a, x) => a + (x.sets ? x.sets.length : 0), 0);
+      return (p.totalVolume || 0) >= 5000 || sets >= 18;
+    })());
+    const longCardio = sp.some(s => s.date === date && (s.duration || 0) >= 60 && /Intense|All-out/i.test(s.intensity || ""));
+    return needH + ((hardLift || longCardio) ? 0.3 : 0);
+  };
   const today = getTodayStr();
   const debtAsOf = asOf => {
     let sum = 0, logged = 0;
     for (let i = 0; i < 14; i++) {
-      const n = byDate[daysAgoFrom(asOf, i)];
-      if (n) { logged++; sum += needH - sleepTST(n); }
+      const d = daysAgoFrom(asOf, i);
+      const n = byDate[d];
+      if (n) { logged++; const w = 1 - (i / 13) * 0.3; sum += (nightNeed(d) - sleepTST(n)) * w; } // mild recency weight 1.0→0.7
     }
     return { debtH: Math.max(0, +sum.toFixed(1)), logged };
   };
@@ -55,8 +69,9 @@ export function computeSleepDebt(sleep, needH) {
   const debtH = cur.debtH;
   const deltaVsYesterdayH = +(cur.debtH - prev.debtH).toFixed(1);
   // The night that just rolled out of the window (in yesterday's 14, not today's).
-  const agedNight = byDate[daysAgoFrom(today, 14)];
-  const agedOutReliefH = agedNight ? Math.max(0, +(needH - sleepTST(agedNight)).toFixed(1)) : 0;
+  const agedDate = daysAgoFrom(today, 14);
+  const agedNight = byDate[agedDate];
+  const agedOutReliefH = agedNight ? Math.max(0, +(nightNeed(agedDate) - sleepTST(agedNight)).toFixed(1)) : 0;
   // Pay-down plan: spread the debt over up to 5 nights of extra sleep.
   let paydownNights = 0, paydownExtraMin = 0;
   if (debtH > 0.2) {
@@ -291,7 +306,7 @@ export function computeSleep(data, goals) {
     regularity: { midSD, wakeSD, socialJetlag, status: rStatus, label: rLabel, anchorWake: fmtClock(anchorWakeMin), bedTarget: fmtClock(bedTargetMin) },
     continuity: { avgEff, avgLatency, avgWaso, qualityTrend, unrefreshing, unrefreshCount: unrefreshNights.length, recentNights: last14.length, status: cStatus, label: cLabel, hasEffData: effNights.length > 0 },
     coupling, insights, topLever, appetite,
-    debt: computeSleepDebt(sleep, need.hours),
+    debt: computeSleepDebt(sleep, need.hours, data),
     today: todayRec ? { tst: +todayRec.tst.toFixed(1), eff: todayRec.eff, quality: todayRec.quality } : null,
     series: { tst: tstSeries, quality: qSeries },
   };
