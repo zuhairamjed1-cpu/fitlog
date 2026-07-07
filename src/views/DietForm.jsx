@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from "react";
-import { fileToResizedBase64, lookupBarcode, barcodeScanSupported, analyzeFoodAI } from "../api/client";
+import { fileToResizedBase64, lookupBarcode, barcodeScanSupported, analyzeFoodAI, lookupSupplement } from "../api/client";
 import { buildBrain } from "../brain/brain";
 import { MacroDonut, Card, toast } from "../components/primitives";
 import { RecentList } from "../components/RecentList";
@@ -118,6 +118,95 @@ function BarcodeScanner({ onResult, onClose }) {
 }
 
 // ─── DIET FORM ──
+// Supplement quick-log (sits under the meal card). Pick a saved supplement from
+// the library, set the amount, and log it. The ＋ flow takes a free-text
+// "brand + product", asks the AI (web search) to resolve the exact product, and
+// saves it to the library so it's one tap next time.
+function SupplementCard({ data, addEntry, deleteEntry }) {
+  const lib = data.supplementLib || [];
+  const today = getTodayStr();
+  const [selId, setSelId] = useState("");
+  const [amount, setAmount] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [query, setQuery] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const sel = lib.find(s => s.id === selId) || null;
+  const todaySupps = (data.supplements || []).filter(s => s.date === today);
+  const onDelete = deleteEntry("supplements");
+
+  const pick = id => { setSelId(id); const it = lib.find(s => s.id === id); if (it && !amount) setAmount(it.dose || ""); };
+
+  const logIt = () => {
+    if (!sel && !amount.trim()) return;
+    const name = sel ? sel.name : "Supplement";
+    const brand = sel ? (sel.brand || "") : "";
+    const dose = amount.trim() || (sel ? (sel.dose || "") : "");
+    addEntry("supplements")({ id: Date.now(), date: today, ts: Date.now(), name, brand, dose });
+    haptic(12); SFX.tap();
+    toast(`⊕ ${[brand, name].filter(Boolean).join(" ")} logged`, { silent: true });
+    setAmount("");
+  };
+
+  const lookup = async () => {
+    const q = query.trim();
+    if (!q) return;
+    setBusy(true);
+    try {
+      const r = await lookupSupplement(q);
+      if (r && r.name) {
+        const item = { id: Date.now(), name: r.name, brand: r.brand || "", dose: r.dose || "", form: r.form || "", serving: r.serving || "", notes: r.notes || "" };
+        addEntry("supplementLib")(item);
+        pick(item.id);
+        setAmount(item.dose || "");
+        setQuery(""); setAdding(false);
+        haptic(10);
+        toast(`✓ Added ${[item.brand, item.name].filter(Boolean).join(" ")}`, { silent: true });
+      } else {
+        toast("Couldn't find that product — try a fuller name", { silent: true });
+      }
+    } catch { toast("Lookup failed", { silent: true }); }
+    setBusy(false);
+  };
+
+  return (
+    <Card title="Supplements" sub="Quick-log from your library, or add a product with AI">
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <select value={selId} onChange={e => pick(e.target.value ? +e.target.value : "")} style={{ flex: "1 1 160px", minWidth: 140 }}>
+          <option value="">{lib.length ? "Choose a supplement…" : "No saved supplements yet"}</option>
+          {lib.map(s => <option key={s.id} value={s.id}>{[s.brand, s.name].filter(Boolean).join(" ")}</option>)}
+        </select>
+        <input placeholder="amount" value={amount} onChange={e => setAmount(e.target.value)} style={{ flex: "0 1 92px", minWidth: 72 }} />
+        <button className="btn" onClick={logIt} disabled={!selId && !amount.trim()}>Log</button>
+        <button className="btn-ghost" title="Add a product with AI" aria-label="Add supplement with AI" onClick={() => setAdding(a => !a)} style={{ minWidth: 46, padding: "12px 14px" }}>{adding ? "×" : "＋"}</button>
+      </div>
+
+      {adding && (
+        <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+          <input autoFocus placeholder="Brand + product, e.g. “ON Gold Standard Creatine”" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Enter") lookup(); }} style={{ flex: "1 1 200px", minWidth: 160 }} />
+          <button className="btn" onClick={lookup} disabled={busy || !query.trim()}>{busy ? <span className="spinner" /> : "✦ Find product"}</button>
+        </div>
+      )}
+
+      {sel && (sel.serving || sel.notes) && (
+        <p className="muted small" style={{ marginTop: 8 }}>{[sel.serving && `Serving: ${sel.serving}`, sel.notes].filter(Boolean).join(" · ")}</p>
+      )}
+
+      {todaySupps.length > 0 && (
+        <div className="list" style={{ marginTop: 12 }}>
+          {todaySupps.slice().reverse().map(s => (
+            <div key={s.id} className="list-row">
+              <span className="list-main">{[s.brand, s.name].filter(Boolean).join(" ")}{s.dose ? ` · ${s.dose}` : ""}</span>
+              <span className="muted small">{s.ts ? new Date(s.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}</span>
+              <button className="x" onClick={() => onDelete(s.id)}>×</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 // Protein timing card (B1) — shows today's feedings vs the MPS threshold.
 function ProteinTimingCard({ data, goals, todayDiet = [] }) {
   const pd = computeProteinDistribution(data, goals);
@@ -709,6 +798,7 @@ export function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp 
         </div>
       )}
       </div>
+      <SupplementCard data={data} addEntry={addEntry} deleteEntry={deleteEntry} />
       <ProteinTimingCard data={data} goals={goals} todayDiet={todayDiet} />
       <FuelCard data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />
       <RecentList entries={recent} render={m => <><span className="ra-main">{m.meal} · {m.calories} kcal · {m.food.slice(0, 26)}{m.food.length > 26 ? "…" : ""} <GLPill meal={m} showValue={false} /></span><span className="ra-date">{formatShortDate(m.date)}</span></>} />

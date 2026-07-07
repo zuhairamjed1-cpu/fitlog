@@ -5,7 +5,7 @@ import { STORAGE_KEY } from "./lib/keys";
 
 export const TABS = ["Home", "Log", "History", "Coach", "Journal", "Settings", "Ejac"];
 
-export const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], nicotine: [], nicotinePlans: [], journal: [], weight: [], ejac: [], skin: [], skinResearch: [], skinProcedures: [], plannedSessions: [], skinRoutineLogs: [], skinProductIntros: [], skinRoutineChanges: [], skinCoachPlans: [], goalSnapshots: [], goalReports: [], completedPhases: [], decisionLog: [], constraintSnapshots: [] };
+export const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], supplementLib: [], nicotine: [], nicotinePlans: [], journal: [], weight: [], ejac: [], skin: [], skinResearch: [], skinProcedures: [], plannedSessions: [], skinRoutineLogs: [], skinProductIntros: [], skinRoutineChanges: [], skinCoachPlans: [], goalSnapshots: [], goalReports: [], completedPhases: [], decisionLog: [], constraintSnapshots: [] };
 
 export const defaultProfile = {
   // Body

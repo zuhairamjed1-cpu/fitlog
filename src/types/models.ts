@@ -66,6 +66,18 @@ export interface WaterEntry extends BaseEntry {
 export interface SupplementEntry extends BaseEntry {
   name: string;
   dose: string;
+  brand?: string;               // set when logged from a library item
+}
+
+/** A saved supplement definition (the "library"), added via AI product lookup. */
+export interface SupplementLibItem {
+  id: number;
+  name: string;
+  brand?: string;
+  dose?: string;                // default single serving
+  form?: string;                // powder | capsule | tablet | liquid | gummy | other
+  serving?: string;             // serving-size text from the label
+  notes?: string;               // key active + amount per serving
 }
 
 // ─── TRAINING ───────────────────────────────────────────────────────────────
@@ -222,6 +234,8 @@ export interface AppData {
   sports: SportsEntry[];
   water: WaterEntry[];
   supplements: SupplementEntry[];
+  /** User's saved supplement library (definitions), populated via AI product lookup. */
+  supplementLib: SupplementLibItem[];
   nicotine: NicotineEntry[];
   nicotinePlans: unknown[];
   journal: unknown[];

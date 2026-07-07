@@ -148,6 +148,24 @@ export async function estimateSportsCalories(sport, duration, intensity, weight)
   } catch { return { calories: 0, note: "Could not estimate." }; }
 }
 
+// ─── SUPPLEMENT PRODUCT LOOKUP ────────────────────────────────────────────────
+// Given a free-text "brand + product" query, web-search the exact product and
+// return normalized label facts to store in the user's supplement library.
+export async function lookupSupplement(query) {
+  try {
+    const raw = await callClaude({
+      model: currentModelId(),
+      maxTokens: 800,
+      tools: WEB_SEARCH_TOOL,
+      system: "You are a supplement label assistant. Given a brand + product name, use web search to find the EXACT product and read its Supplement Facts panel. Prefer the manufacturer's own listing. Reply with ONLY the JSON object, no prose.",
+      userText: `Find the exact supplement product: "${query}". Return JSON: {"name":"<clean product name, no brand>","brand":"<brand>","dose":"<one serving as label states, e.g. '5 g' or '2 capsules'>","form":"<powder|capsule|tablet|liquid|gummy|other>","serving":"<serving size text from the label>","notes":"<one short sentence: the key active + amount per serving>"}. If you truly cannot identify it, return the same shape with your best structured estimate and say so in notes.`,
+    });
+    const r = extractJSON(raw);
+    if (!r || !r.name) return null;
+    return r;
+  } catch { return null; }
+}
+
 // useWeb = true only when the user opts in (branded/restaurant foods). Keeps cost low by default.
 // ─── BARCODE LOOKUP (Open Food Facts) ────────────────────────────────────────
 // Free, no API key. Returns normalized nutrition or null if not found.
