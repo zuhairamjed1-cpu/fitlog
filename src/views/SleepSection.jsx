@@ -198,6 +198,37 @@ function RecentSleepDropdown({ sleep }) {
   );
 }
 
+// ─── SLEEP DEBT CARD ──
+// Everyday view of the rolling 14-night debt. Neutral debt number; teal for the
+// pay-down plan and the aged-out relief nudge (shown only when relief > 0).
+function SleepDebtCard({ debt }) {
+  if (!debt) return null;
+  const { debtH, deltaVsYesterdayH, agedOutReliefH, paydownNights, paydownExtraMin, lowConfidence, loggedNights } = debt;
+  const square = debtH <= 0.2;
+  return (
+    <Card title="Sleep debt" sub="rolling 14 nights vs your need">
+      <div className="center-stack" style={{ marginBottom: 6 }}>
+        <div style={{ fontSize: 34, fontWeight: 800, lineHeight: 1 }}>
+          {square ? "0" : debtH}<span className="muted" style={{ fontSize: 15, marginLeft: 4 }}>{square ? "h — you're square" : "h behind"}</span>
+        </div>
+        {!square && deltaVsYesterdayH !== 0 && (
+          <div className="muted small">{deltaVsYesterdayH > 0 ? `+${deltaVsYesterdayH}` : deltaVsYesterdayH}h since yesterday</div>
+        )}
+      </div>
+      {!square && paydownNights > 0 && (
+        <div className="ss-insight" style={{ marginTop: 4 }}>
+          <div className="ss-insight-h">Clear it</div>
+          <div className="ss-insight-t">Sleep <strong>+{paydownExtraMin} min</strong> for <strong>{paydownNights} night{paydownNights === 1 ? "" : "s"}</strong> to wipe the slate.</div>
+        </div>
+      )}
+      {agedOutReliefH > 0 && (
+        <p className="small" style={{ marginTop: 10, color: "var(--accent)", lineHeight: 1.5 }}>↓ A rough night just aged out of the 14-night window — {agedOutReliefH}h of debt rolled off on its own.</p>
+      )}
+      {lowConfidence && <p className="muted small" style={{ marginTop: 8 }}>Only {loggedNights}/14 nights logged — treat this as a rough estimate.</p>}
+    </Card>
+  );
+}
+
 // ─── SLEEP SECTION (the smartest section: log + full intelligence dashboard) ──
 
 
@@ -261,6 +292,9 @@ export function SleepSection({ data, goals, addEntry, onSaveGoals }) {
           </div>
         )}
       </Card>
+
+      {/* SLEEP DEBT */}
+      <SleepDebtCard debt={sleep.debt} />
 
       {/* BIGGEST LEVER */}
       {sleep.topLever && (
