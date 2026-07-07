@@ -87,139 +87,9 @@ export function SleepForm({ onAdd, recent }) {
 
 // ─── SLEEP SECTION (the smartest section: log + full intelligence dashboard) ──
 
-// Disorder-screening risk from the occasional check-in (non-diagnostic).
-function computeScreenRisk(items, profile) {
-  const it = items || {};
-  let positives = 0;
-  Object.values(it).forEach(v => { if (v) positives++; });
-  const bmi = (() => { const h = parseFloat(profile?.heightCm), w = parseFloat(profile?.weightKg); return (h > 0 && w > 0) ? w / ((h / 100) ** 2) : null; })();
-  const osaCluster = it.gasp || (it.snore && it.sleepy) || (it.snore && bmi != null && bmi >= 30);
-  const insomniaCluster = it.onset && it.maintain;
-  if (osaCluster || positives >= 4) return { band: "elevated", osaCluster: !!osaCluster, insomniaCluster: !!insomniaCluster, rls: !!it.legs };
-  if (positives >= 2) return { band: "some", osaCluster: false, insomniaCluster: !!insomniaCluster, rls: !!it.legs };
-  return { band: "low", osaCluster: false, insomniaCluster: false, rls: false };
-}
-
-const SCREEN_ITEMS = [
-  { key: "snore", label: "I snore loudly (or I've been told I do)" },
-  { key: "gasp", label: "I've been seen gasping / stopping breathing in sleep" },
-  { key: "sleepy", label: "I'm very sleepy in the day even after enough hours" },
-  { key: "headache", label: "I often wake with a headache or dry mouth" },
-  { key: "onset", label: "I regularly take >30 min to fall asleep" },
-  { key: "maintain", label: "I wake in the night and struggle to get back to sleep" },
-  { key: "legs", label: "I get an urge to move my legs that delays sleep" },
-];
-
-function SleepScreenModal({ goals, onSave, onClose }) {
-  const prev = goals.sleepScreen?.items || {};
-  const [items, setItems] = useState(() => SCREEN_ITEMS.reduce((a, x) => ({ ...a, [x.key]: !!prev[x.key] }), {}));
-  const toggle = k => { setItems(i => ({ ...i, [k]: !i[k] })); haptic(8); };
-  const p = goals.profile || {};
-  const bmi = (() => { const h = parseFloat(p.heightCm), w = parseFloat(p.weightKg); return (h > 0 && w > 0) ? +(w / ((h / 100) ** 2)).toFixed(1) : null; })();
-  function save() {
-    const risk = computeScreenRisk(items, p);
-    onSave({ ts: Date.now(), items, risk });
-  }
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxHeight: "82vh", overflowY: "auto" }}>
-        <h3 className="modal-title">Quick sleep check</h3>
-        <p className="muted small" style={{ lineHeight: 1.5, marginTop: -4 }}>
-          Tick anything that's been true lately. This is a screen, not a diagnosis — it just tells you whether it's worth raising with a clinician.
-        </p>
-        {(p.age || p.sex || bmi) && (
-          <p className="muted small" style={{ marginTop: 6 }}>Using from your profile: {[p.sex, p.age && `${p.age}y`, bmi && `BMI ${bmi}`].filter(Boolean).join(" · ") || "—"}</p>
-        )}
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, margin: "12px 0" }}>
-          {SCREEN_ITEMS.map(x => (
-            <button key={x.key} className={`screen-item ${items[x.key] ? "on" : ""}`} onClick={() => toggle(x.key)}>
-              <span className="screen-check">{items[x.key] ? "✓" : ""}</span>
-              <span>{x.label}</span>
-            </button>
-          ))}
-        </div>
-        <div className="modal-actions">
-          <button className="btn-ghost flex" onClick={onClose}>Cancel</button>
-          <button className="btn flex" onClick={save}>Save check</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function SleepBlockCard({ data, goals, onSaveGoals, sleep }) {
-  const exp = goals.sleepExperiment;
-  const [open, setOpen] = useState(false);
-
-  // Snapshot of the trailing 14 days, used as baseline and for live comparison.
-  function snapshot() {
-    const s = computeSleep(data, goals);
-    const wt = computeWeightTrend(data);
-    const rpeVals = (data.exercise || []).filter(e => e.date >= daysAgo(13)).map(e => (e._parsed || parseWorkout(e.text || "")).avgRPE).filter(v => v != null);
-    const prCount = (data.exercise || []).filter(e => e.date >= daysAgo(13)).reduce((n, e) => n + (e.prs?.length || 0), 0);
-    return {
-      avgTST: s?.quantity.avgTST14 ?? null,
-      avgRPE: rpeVals.length ? +(rpeVals.reduce((a, b) => a + b, 0) / rpeVals.length).toFixed(1) : null,
-      weightRate: wt?.pctBWPerWeek ?? null,
-      prCount,
-    };
-  }
-
-  function start() {
-    const need = estimateSleepNeed(data, goals);
-    const target = Math.min(9.5, +(need.hours + 0.75).toFixed(1));
-    onSaveGoals({ ...goals, sleepExperiment: { startDate: getTodayStr(), targetH: target, baseline: snapshot(), status: "active" } });
-    toast("🌙 Sleep block started");
-  }
-  function end() {
-    onSaveGoals({ ...goals, sleepExperiment: null });
-    toast("Sleep block ended");
-  }
-
-  if (!exp || exp.status !== "active") {
-    return (
-      <Card title="🌙 Run a Sleep Block" sub="A 2-week experiment — extend sleep, measure what changes in your own data">
-        <button className="link-btn" onClick={() => setOpen(o => !o)}>{open ? "Hide" : "What is this?"}</button>
-        {open && (
-          <p className="muted small" style={{ lineHeight: 1.55, marginTop: 8 }}>
-            FitLog snapshots your last 14 days (sleep, training RPE, weight-trend rate, PRs), then sets a nightly sleep target a bit above your need. After two weeks you'll see whether extending sleep actually moved your numbers — partitioning, perceived effort, performance. Evidence says banking sleep helps most if you're carrying debt.
-          </p>
-        )}
-        <button className="btn full" style={{ marginTop: 10 }} onClick={start}>Start a 2-week sleep block</button>
-      </Card>
-    );
-  }
-
-  const daysIn = Math.max(0, Math.round((Date.now() - new Date(exp.startDate + "T00:00:00").getTime()) / 86400000));
-  const now = snapshot();
-  const b = exp.baseline || {};
-  const delta = (cur, base, dp = 1) => (cur != null && base != null) ? +(cur - base).toFixed(dp) : null;
-  const dTST = delta(now.avgTST, b.avgTST);
-  const dRPE = delta(now.avgRPE, b.avgRPE);
-  const dRate = delta(now.weightRate, b.weightRate, 2);
-
-  return (
-    <Card title="🌙 Sleep Block — active" sub={`Day ${daysIn} of ~14 · target ${exp.targetH}h/night`}>
-      <div className="rt-bar" style={{ margin: "4px 0 14px" }}>
-        <div className="rt-bar-fill" style={{ width: `${Math.min(100, (daysIn / 14) * 100)}%` }} />
-      </div>
-      <div className="sleep-block-grid">
-        <div className="sbg-item"><span className="sbg-l">Sleep</span><span className="sbg-v">{now.avgTST ?? "—"}h{dTST != null ? <span className={dTST >= 0 ? "good" : "bad"}> {dTST >= 0 ? "+" : ""}{dTST}</span> : ""}</span></div>
-        <div className="sbg-item"><span className="sbg-l">Avg RPE</span><span className="sbg-v">{now.avgRPE ?? "—"}{dRPE != null ? <span className={dRPE <= 0 ? "good" : "bad"}> {dRPE >= 0 ? "+" : ""}{dRPE}</span> : ""}</span></div>
-        <div className="sbg-item"><span className="sbg-l">Wt trend</span><span className="sbg-v">{now.weightRate != null ? `${now.weightRate > 0 ? "+" : ""}${now.weightRate}%` : "—"}{dRate != null ? <span className="muted"> ({dRate >= 0 ? "+" : ""}{dRate})</span> : ""}</span></div>
-        <div className="sbg-item"><span className="sbg-l">PRs</span><span className="sbg-v">{now.prCount}{b.prCount != null ? <span className="muted"> vs {b.prCount}</span> : ""}</span></div>
-      </div>
-      <p className="muted small" style={{ marginTop: 10, lineHeight: 1.5 }}>
-        Deltas compare the block so far against your 14 days before it. {daysIn >= 12 ? "You've got enough data to judge it." : "Give it the full two weeks before drawing conclusions."}
-      </p>
-      <button className="btn-ghost full" style={{ marginTop: 10 }} onClick={end}>End block</button>
-    </Card>
-  );
-}
 
 export function SleepSection({ data, goals, addEntry, onSaveGoals }) {
   const sleep = useMemo(() => computeSleep(data, goals), [data, goals]);
-  const [screenOpen, setScreenOpen] = useState(false);
   const [editNeed, setEditNeed] = useState(false);
   const [needVal, setNeedVal] = useState(goals.profile?.sleepNeedH || "");
 
@@ -228,12 +98,6 @@ export function SleepSection({ data, goals, addEntry, onSaveGoals }) {
     onSaveGoals({ ...goals, profile: { ...goals.profile, sleepNeedH: v > 0 ? v : "" } });
     setEditNeed(false);
     toast(v > 0 ? `Sleep need set to ${v}h` : "Back to auto-learned need");
-  }
-  function saveScreen(payload) {
-    onSaveGoals({ ...goals, sleepScreen: payload });
-    setScreenOpen(false);
-    haptic([12, 30, 12]);
-    toast("✓ Sleep check saved");
   }
 
   const log = <SleepForm onAdd={addEntry("sleep")} recent={data.sleep} />;
@@ -251,8 +115,6 @@ export function SleepSection({ data, goals, addEntry, onSaveGoals }) {
 
   const q = sleep.quantity, r = sleep.regularity, c = sleep.continuity;
   const needSrc = sleep.need.source === "override" ? "you set this" : sleep.need.source === "learned" ? `learned from ${sleep.need.nGood} of your best nights` : "provisional default — log more good nights to personalize";
-  const screen = goals.sleepScreen;
-  const screenStale = !screen || (Date.now() - screen.ts) > 90 * 86400000;
 
   return (
     <div className="stack">
@@ -346,35 +208,6 @@ export function SleepSection({ data, goals, addEntry, onSaveGoals }) {
         </Card>
       )}
 
-      {/* DISORDER SCREEN */}
-      <Card title="Sleep health check" sub="a quick, non-diagnostic screen">
-        {screen && screen.risk ? (
-          <>
-            <div className={`sleep-screen-band ${screen.risk.band}`}>
-              {screen.risk.band === "elevated" ? "Some answers are worth following up" : screen.risk.band === "some" ? "A couple of things to keep an eye on" : "Nothing flagged"}
-            </div>
-            {screen.risk.band !== "low" && (
-              <p className="muted small" style={{ marginTop: 8, lineHeight: 1.5 }}>
-                {screen.risk.osaCluster && "Your answers point toward possible obstructive sleep apnea — the highest-leverage treatable sleep disorder. "}
-                {screen.risk.insomniaCluster && "There's an insomnia pattern (onset + maintenance) that CBT-I treats well. "}
-                {screen.risk.rls && "Leg-urge symptoms can point to restless legs. "}
-                This isn't a diagnosis — it means it's worth a conversation with a doctor.
-              </p>
-            )}
-            <button className="btn-ghost full" style={{ marginTop: 10 }} onClick={() => setScreenOpen(true)}>Retake check</button>
-          </>
-        ) : (
-          <>
-            <p className="muted small" style={{ lineHeight: 1.5 }}>{screenStale && screen ? "It's been a while — worth retaking." : "Diagnosis, not optimization, is the biggest population-level sleep win. Two minutes here screens for the disorders routine can't fix."}</p>
-            <button className="btn full" style={{ marginTop: 10 }} onClick={() => setScreenOpen(true)}>Take the 2-min check</button>
-          </>
-        )}
-      </Card>
-
-      {/* EXPERIMENT */}
-      <SleepBlockCard data={data} goals={goals} onSaveGoals={onSaveGoals} sleep={sleep} />
-
-      {screenOpen && <SleepScreenModal goals={goals} onSave={saveScreen} onClose={() => setScreenOpen(false)} />}
     </div>
   );
 }
