@@ -642,6 +642,28 @@ select option { background: var(--surface-2); }
 .modal-body { color: var(--text-2); font-size: .88rem; line-height: 1.55; margin-bottom: 18px; }
 .modal-actions { display: flex; gap: 8px; }
 
+/* ── Sleep score card ── */
+.ss-ring-wrap { position: relative; width: 150px; height: 150px; margin: 4px auto 6px; }
+.ss-ring-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.ss-score { font-size: 44px; font-weight: 800; line-height: 1; letter-spacing: -0.02em; }
+.ss-band { font-size: .9rem; font-weight: 600; margin-top: 3px; }
+.ss-stats { display: flex; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); margin: 8px 0 14px; }
+.ss-stat { flex: 1; text-align: center; padding: 12px 4px; }
+.ss-stat + .ss-stat { border-left: 1px solid var(--border); }
+.ss-stat-v { font-size: 1.15rem; font-weight: 700; }
+.ss-stat-l { font-size: .72rem; color: var(--muted); margin-top: 2px; }
+.ss-shaped-h { font-size: .7rem; letter-spacing: .08em; color: var(--muted); font-weight: 600; margin-bottom: 10px; }
+.ss-contribs { display: flex; flex-direction: column; gap: 12px; }
+.ss-contrib-top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 5px; }
+.ss-contrib-name { font-weight: 600; font-size: .92rem; }
+.ss-contrib-val { font-size: .82rem; color: var(--muted); }
+.ss-bar { height: 7px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.ss-bar i { display: block; height: 100%; border-radius: 999px; transition: width .6s cubic-bezier(.22,1,.36,1); }
+.ss-insight { margin-top: 16px; background: rgba(110,231,247,0.08); border: 1px solid var(--accent-dim); border-radius: 12px; padding: 12px 14px; }
+.ss-insight-h { color: var(--accent); font-weight: 700; font-size: .92rem; margin-bottom: 4px; }
+.ss-insight-t { font-size: .86rem; line-height: 1.5; color: var(--text-2); }
+.ss-recent-toggle { display: flex; align-items: center; justify-content: space-between; width: 100%; background: none; border: 0; color: inherit; font-family: inherit; font-size: .95rem; font-weight: 600; cursor: pointer; padding: 2px 0; -webkit-tap-highlight-color: transparent; }
+
 /* Boot spinner */
 .boot { min-height: 100vh; min-height: 100dvh; display: flex; align-items: center; justify-content: center; color: var(--accent); }
 

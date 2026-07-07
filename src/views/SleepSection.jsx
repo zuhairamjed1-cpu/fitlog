@@ -1,9 +1,9 @@
 import { useState, useMemo } from "react";
 import { MiniChart, Card, Empty, toast } from "../components/primitives";
 import { StatusPill } from "../components/StatusPill";
-import { RecentList } from "../components/RecentList";
 import { sleepQuality } from "../config";
 import { estimateSleepNeed, computeSleep } from "../engines/sleep";
+import { computeSleepScores } from "../engines/sleepScore";
 import { computeWeightTrend } from "../engines/weight";
 import { parseWorkout } from "../engines/workout";
 import { getTodayStr, formatShortDate, daysAgo } from "../lib/dates";
@@ -80,8 +80,115 @@ export function SleepForm({ onAdd, recent }) {
 
         <button className="btn full" style={{ marginTop: 14 }} onClick={save}>Save {isToday ? "last night" : "sleep"}</button>
       </Card>
-      <RecentList entries={recent} render={s => <><span className="ra-main">{s.duration}h · {s.quality}</span><span className="ra-date">{formatShortDate(s.date)}</span></>} />
     </>
+  );
+}
+
+// ─── SLEEP SCORE CARD ──
+// Oura-style nightly score computed from the user's real history. Shows the most
+// recent night: ring + band, key stats, the contributor breakdown, and one tip.
+const fmtHm = min => { const h = Math.floor(min / 60), m = Math.round(min % 60); return m ? `${h}h ${m}m` : `${h}h`; };
+
+function scoreInsight(night, data) {
+  if (!night || night.score >= 85 || !night.contributors.length) return null;
+  const low = night.contributors.reduce((a, b) => (b.score < a.score ? b : a));
+  const lateMeal = (data.diet || []).some(d => d.date === night.date && (() => {
+    const t = d.consumedAt ?? d.ts; if (!t) return false; const h = new Date(t).getHours(); return h >= 21 || h < 4;
+  })());
+  const tips = {
+    duration: "Total sleep was the drag — an earlier lights-out is the fastest single win here.",
+    regularity: "Your sleep timing drifted from your recent nights — holding a fixed wake time steadies this quickest.",
+    efficiency: "Time in bed outran time asleep — trimming wind-down, late caffeine or screens lifts efficiency.",
+    subjective: lateMeal
+      ? "You logged a late meal and rated how you felt low despite decent numbers — worth testing an earlier dinner."
+      : "The numbers were fine but you didn't feel it — check late meals, screens or stress before bed.",
+  };
+  return { label: low.label, text: tips[low.key] || tips.subjective };
+}
+
+function SleepScoreCard({ data, need }) {
+  const scores = useMemo(() => computeSleepScores(data.sleep, need), [data.sleep, need]);
+  if (!scores.length) return null;
+  const night = scores[scores.length - 1];
+  const band = night.band;
+  const frac = Math.min(1, Math.max(0, night.score / 100));
+  const size = 150, stroke = 11, R = (size - stroke) / 2, C = 2 * Math.PI * R;
+  const trend = scores.slice(-14).map(s => ({ value: s.score, label: s.date.slice(5) }));
+  const insight = scoreInsight(night, data);
+  const stat = (v, l) => (<div className="ss-stat"><div className="ss-stat-v">{v}</div><div className="ss-stat-l">{l}</div></div>);
+
+  return (
+    <Card title="Sleep score" action={<span className="muted small">{formatShortDate(night.date)}</span>}>
+      <div className="ss-ring-wrap">
+        <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
+          <circle cx={size / 2} cy={size / 2} r={R} fill="none" stroke="var(--line)" strokeWidth={stroke} />
+          <circle cx={size / 2} cy={size / 2} r={R} fill="none" stroke={band.color} strokeWidth={stroke} strokeLinecap="round"
+            strokeDasharray={C} strokeDashoffset={C * (1 - frac)} style={{ transition: "stroke-dashoffset .7s cubic-bezier(.22,1,.36,1)" }} />
+        </svg>
+        <div className="ss-ring-center">
+          <div className="ss-score">{night.score}</div>
+          <div className="ss-band" style={{ color: band.color }}>{band.label}</div>
+        </div>
+      </div>
+
+      <div className="ss-stats">
+        {stat(night.tstMin != null ? fmtHm(night.tstMin) : "—", "slept")}
+        {stat(night.efficiency != null ? `${night.efficiency}%` : "—", "efficiency")}
+        {stat(night.regSD != null ? `${night.regSD}m` : "—", "SD regularity")}
+      </div>
+
+      <div className="ss-shaped-h">WHAT SHAPED IT</div>
+      <div className="ss-contribs">
+        {night.contributors.map(c => (
+          <div className="ss-contrib" key={c.key}>
+            <div className="ss-contrib-top">
+              <span className="ss-contrib-name">{c.icon} {c.label}</span>
+              <span className="ss-contrib-val">{c.band.label} · {c.score}</span>
+            </div>
+            <div className="ss-bar"><i style={{ width: `${c.score}%`, background: c.band.color }} /></div>
+          </div>
+        ))}
+      </div>
+
+      {insight && (
+        <div className="ss-insight">
+          <div className="ss-insight-h">💡 Worth testing</div>
+          <div className="ss-insight-t">{insight.text}</div>
+        </div>
+      )}
+
+      {trend.length >= 3 && (
+        <div style={{ marginTop: 14 }}>
+          <div className="ss-shaped-h">SCORE · LAST {trend.length} NIGHTS</div>
+          <MiniChart points={trend} height={64} />
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// Collapsible "Recent nights" — lives at the very bottom of the section.
+function RecentSleepDropdown({ sleep }) {
+  const [open, setOpen] = useState(false);
+  const nights = [...(sleep || [])].filter(s => s && s.date).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 30);
+  if (!nights.length) return null;
+  return (
+    <Card>
+      <button className="ss-recent-toggle" onClick={() => setOpen(o => !o)}>
+        <span>Recent nights<span className="muted small" style={{ marginLeft: 8 }}>{nights.length}</span></span>
+        <span className="muted">{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (
+        <div className="list" style={{ marginTop: 12 }}>
+          {nights.map(s => (
+            <div key={s.id} className="list-row">
+              <span className="list-main">{s.duration}h · {s.quality}</span>
+              <span className="muted small">{formatShortDate(s.date)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -119,6 +226,8 @@ export function SleepSection({ data, goals, addEntry, onSaveGoals }) {
   return (
     <div className="stack">
       {log}
+
+      <SleepScoreCard data={data} need={sleep.need.hours} />
 
       {/* NEED + CONFIDENCE */}
       <Card>
@@ -208,6 +317,8 @@ export function SleepSection({ data, goals, addEntry, onSaveGoals }) {
         </Card>
       )}
 
+      {/* RECENT — collapsed at the very bottom */}
+      <RecentSleepDropdown sleep={data.sleep} />
     </div>
   );
 }
