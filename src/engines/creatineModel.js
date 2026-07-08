@@ -134,18 +134,8 @@ export function inLoadingPhase(history, saturation) {
   return started && !isLoadingComplete(consecutiveDosingDays(history), saturation);
 }
 
-// ─── INTAKE ADAPTER — read creatine grams out of the supplements log ──────────
-// grams from a dose string: "5 g" / "5g" / "1 scoop (5g)" / "3". Prefer an
-// explicit "<n> g"; fall back to the first number.
-export function doseGrams(dose) {
-  if (!dose) return 0;
-  const m = /(\d+(?:\.\d+)?)\s*g\b/i.exec(dose) || /(\d+(?:\.\d+)?)/.exec(dose);
-  return m ? parseFloat(m[1]) : 0;
-}
-
-export function isCreatine(entry) {
-  return /creatin/i.test(entry?.name || "") || /creatin/i.test(entry?.brand || "");
-}
+// Intake parsing (dose string → grams) and the supplement-log → CreatineDay[]
+// adapter live in ./creatineIntakeAdapter — the model stays pure kinetics.
 
 // Local date string (yyyy-mm-dd) — mirrors lib/dates without importing types.
 function ymd(d) {
@@ -153,36 +143,6 @@ function ymd(d) {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
-}
-
-/**
- * Build a continuous CreatineDay[] from the app's supplement log: first logged
- * creatine day → today, with every missing calendar day filled as doseGrams=0
- * (so decay applies across gaps). Returns [] when no creatine has been logged.
- * @param {Array<{name?:string,brand?:string,dose?:string,date?:string}>} supplements
- * @param {string} todayStr  yyyy-mm-dd
- * @returns {CreatineDay[]}
- */
-export function creatineDaysFromSupplements(supplements, todayStr) {
-  const creat = (supplements || []).filter(isCreatine);
-  if (!creat.length) return [];
-  const byDate = {};
-  creat.forEach(s => { if (s.date) byDate[s.date] = (byDate[s.date] || 0) + doseGrams(s.dose); });
-  const dates = Object.keys(byDate).sort();
-  if (!dates.length) return [];
-  const first = dates[0];
-  const last = dates[dates.length - 1];
-  const end = todayStr && todayStr > last ? todayStr : last;
-  const out = [];
-  const d = new Date(first + "T00:00:00");
-  const endD = new Date(end + "T00:00:00");
-  let guard = 0;
-  while (d <= endD && guard++ < 3660) {
-    const ds = ymd(d);
-    out.push({ date: ds, doseGrams: +(byDate[ds] || 0).toFixed(2) });
-    d.setDate(d.getDate() + 1);
-  }
-  return out;
 }
 
 // ─── WEEK HELPERS (ISO week, Monday-anchored) ────────────────────────────────

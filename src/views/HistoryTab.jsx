@@ -75,7 +75,7 @@ function TrainingCard({ data, goals }) {
   );
 }
 
-function TrendsView({ data, goals }) {
+function TrendsView({ data, goals, addEntry }) {
   const [range, setRange] = useState(14);
   const series = useMemo(() => Array.from({ length: range }, (_, i) => daysAgo(range - 1 - i)), [range]);
 
@@ -129,7 +129,7 @@ function TrendsView({ data, goals }) {
         ))}
       </div>
 
-      <CreatineSaturationCard data={data} />
+      <CreatineSaturationCard data={data} addEntry={addEntry} />
 
       <EnergyBalanceCard data={data} goals={goals} />
 
@@ -366,7 +366,7 @@ export function HistoryTab({ data, goals, addEntry, deleteEntry }) {
         <button className={`subtab ${view === "trends" ? "active" : ""}`} onClick={() => setView("trends")}>📊 Trends</button>
         <button className={`subtab ${view === "lists" ? "active" : ""}`} onClick={() => setView("lists")}>≡ Lists</button>
       </div>
-      {view === "trends" && <TrendsView data={data} goals={goals} />}
+      {view === "trends" && <TrendsView data={data} goals={goals} addEntry={addEntry} />}
       {view === "lists" && <ListsView data={data} deleteEntry={deleteEntry} />}
     </div>
   );

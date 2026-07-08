@@ -54,24 +54,32 @@ maintenance `0.03 g/kg` (default 5 g, floor 3 g).
 
 ## Connecting your real intake
 
-The card reads `creatineDaysFromSupplements(data.supplements, today)` — it scans
-the **supplement log** (the same entries `SupplementCard` writes) for anything
-whose name/brand matches `creatin`, parses grams from the dose string
-(`"5 g"`, `"1 scoop (5g)"`, `"3"`), and builds a continuous daily series.
+Intake comes from the **supplement log** (`data.supplements` — the same entries
+the Supplements card in the Log tab writes). `creatineIntakeAdapter.js` filters
+to name/brand matching `creatin`, normalizes each free-text dose to grams
+(mg → ÷1000; scoops/servings → × **`GRAMS_PER_SERVING`, default 5 g** since the
+app stores no structured serving size), sums same-day doses, buckets by local
+date, and gap-fills to a continuous ≤90-day series. The card is **read-only** on
+the log: it never keeps its own intake store.
 
-Integration seams, each marked `// TODO` in code:
+Live updates are automatic — `data` is one App-level state shared by the writer
+(SupplementCard → `addEntry`) and this card, so a logged dose re-renders the card
+and moves the ring / flips the tick. Tapping a bar logs a dose for that day
+through the **same `addEntry("supplements")` path** (one source of truth). The
+sample loading week is used only when no creatine has ever been logged (the
+new-user default-loading state).
 
-1. **`CreatineSaturationCard.jsx`** — falls back to `sampleLoadingWeek(today)`
-   (7 × 20 g) when no creatine is logged, so the card renders with the tick
-   checked. Remove the fallback once real data is reliable.
-2. **Bar edits** — tapping a bar writes to local `overrides` state and recomputes
-   saturation. Persist those back to the supplement log to make edits durable.
-3. **`settings`** — pass a `CreatineSettings` (body weight enables per-kg dosing)
-   from wherever profile/goals live; defaults to `DEFAULT_SETTINGS`.
+- **`settings`** — pass a `CreatineSettings` (body weight enables per-kg dosing)
+  from wherever profile/goals live; defaults to `DEFAULT_SETTINGS`.
 
 ## Tests
 
 `creatineModel.test.js` (vitest) asserts: loading ≈99% by day 5; 5 g ≥90% by
 day 28; a 6-week 0 g gap returns near baseline; saturation stays within
 `[baseline, 100]`; `needsLoading` true for a new user and after a 3-day gap;
-`isLoadingComplete` / `recommendedDose` / dose parsing.
+`isLoadingComplete` / `recommendedDose`.
+
+`creatineIntakeAdapter.test.js` covers the log→CreatineDay[] adapter: unit
+conversion (g/mg/scoops/unknown), same-day summation, gap-fill to zeros,
+local-date bucketing (incl. `ts`-only fallback), out-of-order entries, and the
+lookback cap.

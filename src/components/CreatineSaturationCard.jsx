@@ -3,7 +3,6 @@ import { Card } from "./primitives";
 import { getTodayStr, formatShortDate, WEEKDAYS } from "../lib/dates";
 import {
   computeSaturation,
-  creatineDaysFromSupplements,
   sampleLoadingWeek,
   needsLoading,
   isLoadingComplete,
@@ -15,40 +14,34 @@ import {
   weekDates,
   shiftWeek,
 } from "../engines/creatineModel";
+import { supplementsToCreatineDays } from "../engines/creatineIntakeAdapter";
 
 // ─── CREATINE SATURATION CARD ───────────────────────────────────────────────
 // One ISO week at a time (Monday-anchored). Amber dose bars per day + a ring for
 // the latest day's modeled saturation + a system-driven "loading phase" tick.
 // There is NO saturation line — the ring is the only place saturation is shown.
-export function CreatineSaturationCard({ data, settings = DEFAULT_SETTINGS }) {
+export function CreatineSaturationCard({ data, addEntry, settings = DEFAULT_SETTINGS }) {
   const uid = useId().replace(/:/g, "");
   const today = getTodayStr();
 
-  // ── Real intake, read from the supplement log. Falls back to a sample loading
-  //    week so the card renders before real data is wired.
-  // TODO: connect to real creatine intake source — thread the same store the
-  //       SupplementCard writes to, and drop the sample fallback.
+  // ── Real intake, derived from the supplement log (data.supplements). This is
+  //    live: logging creatine anywhere calls setData in App, which re-renders
+  //    this card with fresh supplements. The sample fallback is used ONLY for the
+  //    empty case — no creatine ever logged, i.e. the new-user default-loading state.
   const { history, isSample } = useMemo(() => {
-    const real = creatineDaysFromSupplements(data?.supplements, today);
+    const real = supplementsToCreatineDays(data?.supplements, { today });
     if (real.length) return { history: real, isSample: false };
     return { history: sampleLoadingWeek(today), isSample: true };
   }, [data?.supplements, today]);
 
-  // ── Local per-day edits (tap a bar to set grams). Merged over history, then
-  //    saturation is recomputed for that day and every day after it.
-  // TODO: persist these back to the supplement log instead of local state.
-  const [overrides, setOverrides] = useState({}); // { [date]: grams }
-  const [editing, setEditing] = useState(null);    // date being edited
+  const [editing, setEditing] = useState(null); // date being logged via a bar tap
 
   const model = useMemo(() => {
-    const merged = history.map(d =>
-      overrides[d.date] != null ? { ...d, doseGrams: overrides[d.date] } : d
-    );
-    const sat = computeSaturation(merged, settings); // continuous across weeks
+    const sat = computeSaturation(history, settings); // continuous across weeks
     const byDate = {};
-    merged.forEach((d, i) => { byDate[d.date] = { doseGrams: d.doseGrams, sat: sat[i] }; });
-    return { merged, sat, byDate, firstDate: merged[0]?.date, lastDate: merged[merged.length - 1]?.date };
-  }, [history, overrides, settings]);
+    history.forEach((d, i) => { byDate[d.date] = { doseGrams: d.doseGrams, sat: sat[i] }; });
+    return { merged: history, sat, byDate, firstDate: history[0]?.date, lastDate: history[history.length - 1]?.date };
+  }, [history, settings]);
 
   // ── Visible week (Monday-anchored). Defaults to the week containing today.
   const [anchor, setAnchor] = useState(() => mondayOf(today));
@@ -96,9 +89,16 @@ export function CreatineSaturationCard({ data, settings = DEFAULT_SETTINGS }) {
 
   // ── Bar geometry ──
   const maxDose = Math.max(10, ...cells.map(c => c.doseGrams)); // scale, min ceiling 10 g
-  const commitEdit = (date, raw) => {
-    const g = Math.max(0, Math.min(100, Number(raw) || 0));
-    setOverrides(o => ({ ...o, [date]: g }));
+
+  // Tapping a bar logs a creatine dose for that day THROUGH THE SUPPLEMENT LOG —
+  // the same path SupplementCard uses — so there's a single source of truth. The
+  // card never writes its own intake store; the new entry flows back via `data`.
+  const canLog = typeof addEntry === "function";
+  const logDose = (date, raw) => {
+    const g = Math.max(0, Math.min(200, Number(raw) || 0));
+    if (g > 0 && canLog) {
+      addEntry("supplements")({ id: Date.now(), date, ts: Date.now(), name: "Creatine", brand: "", dose: `${g} g` });
+    }
     setEditing(null);
   };
 
@@ -131,7 +131,9 @@ export function CreatineSaturationCard({ data, settings = DEFAULT_SETTINGS }) {
             const y = bottom - bh;
             const empty = c.doseGrams <= 0;
             return (
-              <g key={c.date} className="creat-bar-g" onClick={() => setEditing(c.date)} style={{ cursor: "pointer" }}>
+              <g key={c.date} className="creat-bar-g"
+                onClick={() => { if (canLog && !c.isFuture) setEditing(c.date); }}
+                style={{ cursor: canLog && !c.isFuture ? "pointer" : "default" }}>
                 {c.isToday && <rect x={i * slot + 1} y={12} width={slot - 2} height={128} rx="8" className="creat-today" />}
                 {empty ? (
                   <rect x={x} y={top} width={bw} height={h} rx="6" className="creat-slot" />
@@ -151,15 +153,15 @@ export function CreatineSaturationCard({ data, settings = DEFAULT_SETTINGS }) {
 
       <p className="creat-range">{rangeLabel}{isSample ? " · sample data" : ""}</p>
 
-      {/* Inline dose editor for the tapped day */}
+      {/* Tap a bar to log a creatine dose for that day — writes to the supplement
+          log (same path as the Supplements card), not a private store. */}
       {editing && (
         <div className="creat-edit">
-          <label htmlFor={`creat-in-${uid}`}>{formatShortDate(editing)} dose</label>
-          <input id={`creat-in-${uid}`} type="number" min="0" max="100" step="1" autoFocus
-            defaultValue={Math.round(cells.find(c => c.date === editing)?.doseGrams || 0)}
-            onKeyDown={e => { if (e.key === "Enter") commitEdit(editing, e.currentTarget.value); if (e.key === "Escape") setEditing(null); }} />
+          <label htmlFor={`creat-in-${uid}`}>Log creatine · {formatShortDate(editing)}</label>
+          <input id={`creat-in-${uid}`} type="number" min="0" max="200" step="1" autoFocus placeholder="grams"
+            onKeyDown={e => { if (e.key === "Enter") logDose(editing, e.currentTarget.value); if (e.key === "Escape") setEditing(null); }} />
           <span className="creat-edit-u">g</span>
-          <button className="btn-ghost" onClick={() => { const el = document.getElementById(`creat-in-${uid}`); commitEdit(editing, el?.value); }}>Set</button>
+          <button className="btn-ghost" onClick={() => { const el = document.getElementById(`creat-in-${uid}`); logDose(editing, el?.value); }}>Log</button>
           <button className="btn-ghost" onClick={() => setEditing(null)}>Cancel</button>
         </div>
       )}

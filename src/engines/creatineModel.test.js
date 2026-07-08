@@ -6,7 +6,6 @@ import {
   isLoadingComplete,
   daysSinceLastDose,
   consecutiveDosingDays,
-  doseGrams,
   DEFAULT_SETTINGS,
 } from "./creatineModel";
 
@@ -80,6 +79,8 @@ describe("isLoadingComplete", () => {
   });
 });
 
+// Note: dose-string parsing moved to creatineIntakeAdapter.test.js.
+
 describe("recommendedDose", () => {
   it("defaults to 20 g loading / 5 g maintenance without body weight", () => {
     expect(recommendedDose(DEFAULT_SETTINGS, "loading")).toBe(20);
@@ -90,14 +91,5 @@ describe("recommendedDose", () => {
     expect(recommendedDose({ bodyWeightKg: 80 }, "loading")).toBe(24);   // 0.3 * 80
     expect(recommendedDose({ bodyWeightKg: 80 }, "maintenance")).toBe(3); // round(2.4) -> floor 3
     expect(recommendedDose({ bodyWeightKg: 100 }, "maintenance")).toBe(3);
-  });
-});
-
-describe("doseGrams parsing", () => {
-  it("prefers an explicit '<n> g', falls back to the first number", () => {
-    expect(doseGrams("5 g")).toBe(5);
-    expect(doseGrams("1 scoop (5g)")).toBe(5);
-    expect(doseGrams("3")).toBe(3);
-    expect(doseGrams("")).toBe(0);
   });
 });
