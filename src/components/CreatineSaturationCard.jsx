@@ -69,7 +69,15 @@ export function CreatineSaturationCard({ data, addEntry, settings = DEFAULT_SETT
     [...cells].reverse().find(c => c.hasData && c.date <= today) ||
     [...cells].reverse().find(c => c.hasData) ||
     null;
-  const ringSat = ringCell ? Math.round(ringCell.sat) : null;
+  const ringSat = ringCell ? Math.round(ringCell.sat) : null; // true saturation (feeds the tick)
+
+  // Ring DISPLAY = how full the loadable range is: 0% at dietary baseline, 100%
+  // when fully saturated. Avoids the "93% with nothing logged" confusion caused
+  // by the 65% baseline floor. Model + thresholds still use true saturation.
+  const baseline = settings.baselineSaturation ?? DEFAULT_SETTINGS.baselineSaturation;
+  const ringPct = ringCell
+    ? Math.max(0, Math.min(100, Math.round(((ringCell.sat - baseline) / (100 - baseline)) * 100)))
+    : null;
 
   // ── Loading tick — system-driven, computed over the FULL history up to the
   //    ring day (not just the visible week).
@@ -111,9 +119,12 @@ export function CreatineSaturationCard({ data, addEntry, settings = DEFAULT_SETT
           <span className={`creat-tick-box ${loadingOn ? "on" : ""}`} aria-hidden="true">{loadingOn ? "✓" : ""}</span>
           <span className="creat-tick-l">Loading phase</span>
         </div>
-        <div className="creat-ring-wrap" aria-label={ringSat != null ? `${ringSat} percent saturated` : "No saturation data"}>
-          <Ring value={ringSat} />
-          <span className="creat-ring-l">Saturation %</span>
+        <div className="creat-ring-wrap" aria-label={ringPct != null ? `${ringPct} percent saturated` : "No saturation data"}>
+          <div className="creat-ring-txt">
+            <span className="creat-ring-l">Saturation</span>
+            <span className="creat-ring-sub">of full stores</span>
+          </div>
+          <Ring value={ringPct} />
         </div>
       </div>
 
@@ -122,30 +133,27 @@ export function CreatineSaturationCard({ data, addEntry, settings = DEFAULT_SETT
         <button className="creat-nav" aria-label="Previous week"
           onClick={() => setAnchor(a => shiftWeek(a, -1))}>‹</button>
 
-        <svg className="creat-bars" viewBox={`0 0 ${DAYS_IN_WEEK * 44} 150`} preserveAspectRatio="none"
-          role="img" aria-label={`Creatine dose per day for ${rangeLabel}. ${ringSat != null ? ringSat + " percent saturated." : ""}`}>
-          {cells.map((c, i) => {
-            const slot = 44, bw = 26, x = i * slot + (slot - bw) / 2;
-            const top = 26, bottom = 124, h = bottom - top;
-            const bh = c.doseGrams > 0 ? Math.max(4, (c.doseGrams / maxDose) * h) : h;
-            const y = bottom - bh;
+        <div className="creat-bars" role="img"
+          aria-label={`Creatine dose per day for ${rangeLabel}.${ringPct != null ? ` ${ringPct} percent saturated.` : ""}`}>
+          {cells.map(c => {
             const empty = c.doseGrams <= 0;
+            const pct = empty ? 0 : Math.max(8, Math.round((c.doseGrams / maxDose) * 100));
+            const tappable = canLog && !c.isFuture;
             return (
-              <g key={c.date} className="creat-bar-g"
-                onClick={() => { if (canLog && !c.isFuture) setEditing(c.date); }}
-                style={{ cursor: canLog && !c.isFuture ? "pointer" : "default" }}>
-                {c.isToday && <rect x={i * slot + 1} y={12} width={slot - 2} height={128} rx="8" className="creat-today" />}
-                {empty ? (
-                  <rect x={x} y={top} width={bw} height={h} rx="6" className="creat-slot" />
-                ) : (
-                  <rect x={x} y={y} width={bw} height={bh} rx="6" className="creat-bar" />
-                )}
-                {!empty && <text x={x + bw / 2} y={y - 5} className="creat-dose" textAnchor="middle">{Math.round(c.doseGrams)}g</text>}
-                <text x={x + bw / 2} y={140} className={`creat-wd ${c.isToday ? "on" : ""}`} textAnchor="middle">{c.weekday}</text>
-              </g>
+              <button key={c.date} type="button"
+                className={`creat-col ${c.isToday ? "today" : ""} ${c.isFuture ? "future" : ""}`}
+                onClick={() => { if (tappable) setEditing(c.date); }}
+                disabled={!tappable}
+                aria-label={`${c.weekday} ${empty ? "no dose" : Math.round(c.doseGrams) + " grams"}${tappable ? " — tap to log" : ""}`}>
+                <span className="creat-col-v">{empty ? "" : `${Math.round(c.doseGrams)}g`}</span>
+                <span className="creat-track">
+                  <span className={`creat-fill ${empty ? "empty" : ""}`} style={{ height: empty ? "6px" : `${pct}%` }} />
+                </span>
+                <span className="creat-wd">{c.weekday}</span>
+              </button>
             );
           })}
-        </svg>
+        </div>
 
         <button className="creat-nav" aria-label="Next week" disabled={!canGoNext}
           onClick={() => canGoNext && setAnchor(a => shiftWeek(a, 1))}>›</button>
