@@ -664,6 +664,35 @@ select option { background: var(--surface-2); }
 .ss-insight-t { font-size: .86rem; line-height: 1.5; color: var(--text-2); }
 .ss-recent-toggle { display: flex; align-items: center; justify-content: space-between; width: 100%; background: none; border: 0; color: inherit; font-family: inherit; font-size: .95rem; font-weight: 600; cursor: pointer; padding: 2px 0; -webkit-tap-highlight-color: transparent; }
 
+/* ── Creatine saturation card ── */
+.creat-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.creat-tick { display: inline-flex; align-items: center; gap: 8px; }
+.creat-tick-box { width: 20px; height: 20px; border-radius: 6px; border: 1.5px solid var(--border-strong); display: inline-flex; align-items: center; justify-content: center; font-size: .8rem; font-weight: 800; color: var(--bg); background: transparent; transition: background .2s, border-color .2s; }
+.creat-tick-box.on { background: var(--accent); border-color: var(--accent); }
+.creat-tick-l { font-size: .82rem; font-weight: 600; color: var(--text-2); }
+.creat-ring-wrap { display: inline-flex; align-items: center; gap: 8px; }
+.creat-ring-l { font-size: .82rem; font-weight: 600; color: var(--text-2); }
+.creat-ring { position: relative; display: inline-flex; align-items: center; justify-content: center; }
+.creat-ring-v { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 1rem; font-weight: 800; letter-spacing: -0.02em; color: var(--text); }
+.creat-chart-row { display: flex; align-items: stretch; gap: 6px; }
+.creat-nav { flex: 0 0 auto; width: 34px; background: transparent; border: 1px solid var(--border-strong); border-radius: 10px; color: var(--text); font-size: 1.2rem; line-height: 1; cursor: pointer; -webkit-tap-highlight-color: transparent; transition: background .2s, opacity .2s; }
+.creat-nav:hover:not(:disabled) { background: var(--surface-2); }
+.creat-nav:disabled { opacity: .3; cursor: default; }
+.creat-bars { flex: 1 1 auto; height: 150px; display: block; overflow: visible; }
+.creat-bar { fill: var(--warn); transition: height .4s var(--ease-out), y .4s var(--ease-out); }
+.creat-slot { fill: none; stroke: var(--border-strong); stroke-width: 1.2; stroke-dasharray: 3 3; }
+.creat-today { fill: var(--accent-dim); }
+.creat-dose { font-size: 11px; font-weight: 700; fill: var(--text-2); }
+.creat-wd { font-size: 11px; fill: var(--muted); }
+.creat-wd.on { fill: var(--accent); font-weight: 700; }
+.creat-range { margin-top: 8px; font-size: .72rem; color: var(--muted); text-align: center; }
+.creat-edit { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; }
+.creat-edit label { font-size: .8rem; font-weight: 600; color: var(--text-2); }
+.creat-edit input { width: 60px; padding: 6px 8px; text-align: center; border-radius: 8px; min-height: 0; }
+.creat-edit-u { font-size: .8rem; color: var(--muted); margin-left: -4px; }
+.creat-edit .btn-ghost { padding: 6px 12px; min-height: 0; font-size: .8rem; }
+@media (prefers-reduced-motion: reduce) { .creat-bar, .creat-ring circle { transition: none !important; } }
+
 /* Boot spinner */
 .boot { min-height: 100vh; min-height: 100dvh; display: flex; align-items: center; justify-content: center; color: var(--accent); }
 

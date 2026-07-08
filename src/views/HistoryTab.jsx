@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import { MacroDonut, MiniChart, Card, Empty, toast, useConfirm } from "../components/primitives";
 import { StatusPill } from "../components/StatusPill";
+import { CreatineSaturationCard } from "../components/CreatineSaturationCard";
 import { NIC_TYPES, TYPE_DOT } from "../config";
 import { computeCorrelations as computeCorrelationsV2 } from "../engines/correlations";
 import { getDayContext } from "../engines/dayContext";
@@ -127,6 +128,8 @@ function TrendsView({ data, goals }) {
           <button key={r} className={`seg-btn ${range === r ? "active" : ""}`} onClick={() => setRange(r)}>{r} days</button>
         ))}
       </div>
+
+      <CreatineSaturationCard data={data} />
 
       <EnergyBalanceCard data={data} goals={goals} />
 
