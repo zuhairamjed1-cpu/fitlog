@@ -1,10 +1,9 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { fileToResizedBase64, lookupBarcode, barcodeScanSupported, analyzeFoodAI, lookupSupplement } from "../api/client";
-import { buildBrain } from "../brain/brain";
 import { MacroDonut, Card, toast } from "../components/primitives";
 import { RecentList } from "../components/RecentList";
-import { mealTypes } from "../config";
+import { mealTypes, imageModelId } from "../config";
 import { getDayContext } from "../engines/dayContext";
 import { planFueling, reconcileFueling, sleepWindow, SESSION_TYPES } from "../engines/fueling";
 import { estimateGlycemicLoad, dayGlycemicLoad } from "../engines/glycemic";
@@ -516,9 +515,11 @@ export function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp 
         b64 = resized.base64;
         mt = resized.mediaType;
       }
-      const brain = data && goals ? buildBrain(data, goals) : null;
-      const r = await analyzeFoodAI(mode === "text" ? text : "", b64, mt, useWeb, brain);
-      if (r && typeof r.calories === "number") setResult(withItems(r));
+      // IMAGE path forces the strongest model (portion/vision accuracy); text
+      // logging keeps the cheap default. `brain` is no longer sent — the pipeline
+      // doesn't use it.
+      const r = await analyzeFoodAI(mode === "text" ? text : "", b64, mt, useWeb, null, mode === "image" ? imageModelId() : undefined);
+      if (r && r.calories >= 0 && r.items?.length) setResult(r);
       else setError(mode === "image" ? "Couldn't read that photo well. Try a clearer shot, or describe the meal in words." : "Couldn't analyze that. Try being more specific (portion size, cooking method).");
     } catch (e) { setError("Network issue. Try again."); }
     setAnalyzing(false);
@@ -558,9 +559,16 @@ export function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp 
   function save() {
     if (!result) return;
     // Drop blank rows (no name AND no calories); never persist non-finite totals.
+    // Preserve the pipeline's per-item grounding (grams/source/hidden) when present.
     const cleanItems = (result.items || [])
       .filter(it => (it.food && it.food.trim()) || coerceMacro(it.calories) > 0)
-      .map(it => ({ food: (it.food || "").trim(), calories: coerceMacro(it.calories), protein: coerceMacro(it.protein), carbs: coerceMacro(it.carbs), fat: coerceMacro(it.fat) }));
+      .map(it => ({
+        food: (it.food || "").trim(),
+        calories: coerceMacro(it.calories), protein: coerceMacro(it.protein), carbs: coerceMacro(it.carbs), fat: coerceMacro(it.fat),
+        ...(it.grams != null ? { grams: coerceMacro(it.grams) } : {}),
+        ...(it.source ? { source: it.source } : {}),
+        ...(it.hidden ? { hidden: true } : {}),
+      }));
     const totalsOk = ["calories", "protein", "carbs", "fat"].every(k => Number.isFinite(result[k]));
     if (!totalsOk) return; // belt-and-suspenders: never write NaN/Infinity to the store
     const r = whenToStore();
@@ -790,13 +798,23 @@ export function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp 
           <div className="item-list">
             <div className="item-head"><span>Item</span><span>kcal</span><span>P</span><span>C</span><span>F</span><span /></div>
             {(result.items || []).map((it, i) => (
-              <div className="item-row" key={i}>
-                <input className="it-food" value={it.food ?? ""} onChange={e => editItem(i, "food", e.target.value)} placeholder="Food" />
-                <input className="it-num" inputMode="numeric" value={it.calories ?? ""} onChange={e => editItem(i, "calories", e.target.value)} placeholder="0" />
-                <input className="it-num" inputMode="numeric" value={it.protein ?? ""} onChange={e => editItem(i, "protein", e.target.value)} placeholder="0" />
-                <input className="it-num" inputMode="numeric" value={it.carbs ?? ""} onChange={e => editItem(i, "carbs", e.target.value)} placeholder="0" />
-                <input className="it-num" inputMode="numeric" value={it.fat ?? ""} onChange={e => editItem(i, "fat", e.target.value)} placeholder="0" />
-                <button className="it-del" onClick={() => removeItem(i)} aria-label="Remove item">✕</button>
+              <div className="item-wrap" key={i}>
+                <div className="item-row">
+                  <input className="it-food" value={it.food ?? ""} onChange={e => editItem(i, "food", e.target.value)} placeholder="Food" />
+                  <input className="it-num" inputMode="numeric" value={it.calories ?? ""} onChange={e => editItem(i, "calories", e.target.value)} placeholder="0" />
+                  <input className="it-num" inputMode="numeric" value={it.protein ?? ""} onChange={e => editItem(i, "protein", e.target.value)} placeholder="0" />
+                  <input className="it-num" inputMode="numeric" value={it.carbs ?? ""} onChange={e => editItem(i, "carbs", e.target.value)} placeholder="0" />
+                  <input className="it-num" inputMode="numeric" value={it.fat ?? ""} onChange={e => editItem(i, "fat", e.target.value)} placeholder="0" />
+                  <button className="it-del" onClick={() => removeItem(i)} aria-label="Remove item">✕</button>
+                </div>
+                {(it.source || it.grams != null || it.hidden) && (
+                  <div className="it-meta">
+                    <span className={`it-src ${it.source === "usda" ? "db" : "est"}`}>{it.source === "usda" ? "DB" : "est"}</span>
+                    {it.grams != null && <span className="it-g">{Math.round(it.grams)} g</span>}
+                    {it.hidden && <span className="it-hidden">hidden fat</span>}
+                    {it.fdcMatch && <span className="it-match" title={it.fdcMatch}>{it.fdcMatch}</span>}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -810,6 +828,16 @@ export function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp 
               <div className="macro"><span className="macro-v" style={{ color: "#f47e6e" }}>{result.fat}g</span><span className="macro-l">fat</span></div>
             </div>
           </div>
+          {(Array.isArray(result.calorieRange) || result.fdcStats) && (
+            <div className="acc-strip">
+              {Array.isArray(result.calorieRange) && <span className="acc-chip acc-range">{result.calorieRange[0]}–{result.calorieRange[1]} kcal range</span>}
+              {result.fdcStats && <span className="acc-chip acc-fdc">grounded {result.fdcStats.resolved}/{result.fdcStats.total} in USDA</span>}
+              {result.verified && <span className="acc-chip acc-ver">re-verified</span>}
+            </div>
+          )}
+          {result.flags?.length > 0 && (
+            <p className="acc-flag">⚠ Double-check portions — {result.flags[0].msg}</p>
+          )}
           {result.notes && <p className="ai-card-note">{result.notes}</p>}
           {(() => { const r = estimateGlycemicLoad(result); return r.hasCarbs ? (
             <p className="ai-card-note" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}><GLPill meal={result} /> <span className="muted small">{r.blunted ? "softened by the protein/fat here" : r.band === "high" ? "carb-heavy — pair with protein/fat or fibre to flatten the spike" : "gentle on blood sugar"}</span></p>

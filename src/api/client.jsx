@@ -7,6 +7,7 @@ import { currentModelId } from "../config";
 import { supabase, hasSupabase } from "../supabase";
 import { buildBrain, formatBrainText } from "../brain/brain";
 import { daysAgo, WEEKDAYS } from "../lib/dates";
+import { analyzeFood } from "./foodAnalysis";
 
 export async function fileToResizedBase64(file, maxDim = 1280, quality = 0.85) {
   return new Promise((resolve, reject) => {
@@ -205,43 +206,18 @@ export function barcodeScanSupported() {
   return typeof window !== "undefined" && "BarcodeDetector" in window;
 }
 
-export async function analyzeFoodAI(description, imageBase64, imageMediaType, useWeb = false, brain = null) {
-  const isImage = !!imageBase64;
-  const brainText = brain ? formatBrainText(brain) : "";
-  const todayPart = brain ? `\n\nFor context, the user's current day so far (don't waste tokens repeating these unless commenting on fit):\n${brainText}` : "";
-  try {
-    const raw = await callClaude({
-      model: currentModelId(),
-      maxTokens: useWeb ? 1500 : 1100,
-      tools: useWeb ? WEB_SEARCH_TOOL : undefined,
-      system: `You are a meticulous nutritionist analyzing real meals. Estimate nutrition as ACCURATELY as possible.
-
-${isImage ? `STEP 1 — LOOK CAREFULLY AT THE PHOTO. Before estimating, identify:
-- Every food item you can see (don't miss sides, drinks, condiments, garnishes)
-- The cooking method (fried/grilled/baked/raw — affects calories a lot)
-- Portion size (compare to plate/utensils/hand in frame)
-- Visible ingredients like oil, butter, sauce, cheese, dressing
-STEP 2 — Combine everything into total numbers for the whole meal shown.` : ""}
-
-RULES:
-- ${useWeb ? "For branded/restaurant/packaged foods, search the web for the official published nutrition facts and use those exact numbers." : "Use precise USDA-style values from your knowledge of real foods."}
-- Account for cooking method, oil/butter, sauces, and realistic portion sizes.
-- Be realistic — restaurant and fried foods are calorie-dense.
-- If multiple items are visible, SUM them all.
-- Break the meal into its individual foods/drinks in an "items" array (one entry per distinct item). If there's only one food, return a single-element "items" array. The top-level calories/protein/carbs/fat MUST equal the exact sum of the items — these top-level totals are the authoritative numbers.
-- The "notes" field MUST comment on how this meal fits the user's remaining day using SPECIFIC numbers from the context (e.g. "puts you at 1850/2500 cal with 65g protein left", "uses most of today's fat budget — go lean at dinner"). Reference the CURRENT STRATEGY if it provides direction (cut → call out high-calorie hits; bulk → call out under-eating).
-- If the meal contains anything in the user's allergies/restrictions, mention it in notes — but still return the estimate.
-
-Reply with ONLY this JSON object (no prose before or after, no markdown fence):
-{"items":[{"food":"<single food/drink name>","calories":<integer>,"protein":<integer grams>,"carbs":<integer grams>,"fat":<integer grams>}],"food":"<concise overall meal name>","calories":<integer total = sum of items>,"protein":<integer grams total>,"carbs":<integer grams total>,"fat":<integer grams total>,"confidence":"high|medium|low","notes":"<fit-to-day comment with concrete numbers, 1-2 sentences>"}${todayPart}`,
-      userText: description
-        ? `Analyze the nutrition of: "${description}".${useWeb ? " Search for official data if this is a branded or restaurant item." : ""}`
-        : `Identify EVERY food item in this image and analyze the total nutrition for the whole meal shown.${useWeb ? " If you recognize a branded or restaurant dish, search for its official nutrition facts." : ""}`,
-      imageBase64, imageMediaType,
-    });
-    if (!raw || !raw.trim()) return null;
-    return extractJSON(raw);
-  } catch (e) { return null; }
+// Back-compat signature. Now a thin wrapper over the multi-pass, DB-grounded
+// pipeline (identify+portion → USDA resolve → reconcile → conditional verify).
+// Returns a reconciled meal (mealValidation shape: items[], DERIVED totals,
+// calorieRange, confidence, flags[], resolved, hasEstimated, fdcStats) or null.
+// `brain` is intentionally dropped — it only fed the old AI notes field and taxed
+// every call; notes are computed locally from totals + goals if wanted.
+// `model` lets the caller force a stronger model for the image path.
+export async function analyzeFoodAI(description, imageBase64, imageMediaType, useWeb = false, _brain = null, model = undefined) {
+  return analyzeFood(
+    { description, imageBase64, imageMediaType, useWeb, model },
+    { callClaude, extractJSON, WEB_SEARCH_TOOL, currentModelId }
+  );
 }
 
 export async function analyzeAllData(data, goals) {

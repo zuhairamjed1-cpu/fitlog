@@ -83,3 +83,7 @@ export function loadModelPref() {
 }
 export function saveModelPref(key) { localStorage.setItem(STORAGE_KEY + "_model", key); _currentModel = key; }
 export function currentModelId() { return MODELS[_currentModel]?.id || MODELS.haiku.id; }
+// Image meal analysis needs the strongest vision/portion model regardless of the
+// user's default; text logging stays on the cheap default. Threaded through
+// analyzeFoodAI for the IMAGE path only (see DietForm.analyze()).
+export function imageModelId() { return MODELS.sonnet.id; }

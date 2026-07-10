@@ -490,6 +490,24 @@ select option { background: var(--surface-2); }
 .meal-redesign .add-item { margin: 4px 0 2px; width: 100%; background: transparent; border: 1px dashed var(--line2); color: var(--acc); border-radius: 10px; padding: 9px; font-size: 12.5px; font-weight: 600; cursor: pointer; font-family: inherit; -webkit-tap-highlight-color: transparent; }
 .meal-redesign .add-item:active { transform: scale(.99); }
 
+/* Per-item grounding meta (DB vs estimate, grams, FDC match) */
+.meal-redesign .item-wrap { margin-bottom: 6px; }
+.meal-redesign .item-wrap .item-row { margin-bottom: 0; }
+.meal-redesign .it-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 3px 2px 2px; }
+.meal-redesign .it-src { font-size: 9px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 1px 6px; border-radius: 6px; }
+.meal-redesign .it-src.db { background: rgba(143,217,137,0.16); color: #8fd989; }
+.meal-redesign .it-src.est { background: rgba(249,201,126,0.16); color: #f9c97e; }
+.meal-redesign .it-g { font-size: 10px; color: var(--mut); font-weight: 600; }
+.meal-redesign .it-hidden { font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: #f47e6e; }
+.meal-redesign .it-match { font-size: 10px; color: var(--mut); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 55%; }
+
+/* Accuracy strip (calorie range, USDA grounding, verify) + flag hint */
+.meal-redesign .acc-strip { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.meal-redesign .acc-chip { font-size: 10.5px; font-weight: 600; padding: 3px 9px; border-radius: 8px; background: var(--surface2); border: 1px solid var(--line); color: var(--ink); }
+.meal-redesign .acc-fdc { color: #8fd989; }
+.meal-redesign .acc-ver { color: var(--acc); }
+.meal-redesign .acc-flag { margin-top: 8px; font-size: 12px; line-height: 1.45; color: #f9c97e; background: rgba(249,201,126,0.08); border: 1px solid rgba(249,201,126,0.25); border-radius: 10px; padding: 8px 10px; }
+
 /* Settings toggle row */
 .toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; cursor: pointer; }
 .toggle-text { flex: 1; min-width: 0; }
