@@ -2,6 +2,7 @@ import { useState, useMemo } from "react";
 import { MacroDonut, MiniChart, Card, Empty, toast, useConfirm } from "../components/primitives";
 import { StatusPill } from "../components/StatusPill";
 import { ProgressionCard } from "../components/ProgressionCard";
+import { WorkoutAnalysis } from "./WorkoutScreen";
 import { CreatineSaturationCard } from "../components/CreatineSaturationCard";
 import { NIC_TYPES, TYPE_DOT } from "../config";
 import { getDayContext } from "../engines/dayContext";
@@ -149,6 +150,8 @@ function TrainingTrends({ data, goals, range, setRange, workoutPts }) {
       <TrainingCard data={data} goals={goals} />
 
       <ProgressionCard data={data} goals={goals} />
+
+      <WorkoutAnalysis data={data} goals={goals} />
 
       <RangeSeg range={range} setRange={setRange} />
 

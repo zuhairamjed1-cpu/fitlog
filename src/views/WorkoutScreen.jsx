@@ -310,7 +310,6 @@ export function WorkoutScreen({ data, goals, addEntry, onSaveGoals }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
       <ExerciseForm onAdd={handleAdd} recent={data.exercise} hideRecent header={header} />
-      <WorkoutAnalysis data={data} goals={goals} onSaveGoals={onSaveGoals} />
       <ExerciseMappingCard data={data} goals={goals} onSaveGoals={onSaveGoals} />
       <RecentWorkoutsCard recent={data.exercise} />
       {newQueue.length > 0 && (
