@@ -177,96 +177,21 @@ function PrioMuscleCard({ t, goals, onSaveGoals }) {
 }
 
 export function WorkoutAnalysis({ data, goals, onSaveGoals }) {
-  const [weekOffset, setWeekOffset] = useState(0);
-  const [tab, setTab] = useState("summary");
+  const [weekOffset] = useState(0);
   const [view, setView] = useState("front");
   const [active, setActive] = useState(null);
   const [tip, setTip] = useState({ x: 0, y: 0 });
   const vol = useMemo(() => computeVolume(data, goals, getTodayStr(), weekOffset), [data, goals, weekOffset]);
-  const prio = useMemo(() => computeMusclePrio(data, goals, getTodayStr()), [data, goals]);
   const vmap = useMemo(() => { const o = {}; (vol.muscles || []).forEach(m => (o[m.key] = m)); return o; }, [vol]);
 
-  if (!vol.ready) return <Card title="Training Analysis"><Empty icon="◫" title="No workouts logged yet" hint="Log a workout above — your weekly training analysis and muscle map appear here." /></Card>;
+  if (!vol.ready) return <Card title="Muscle Map"><Empty icon="◫" title="No workouts logged yet" hint="Log a workout above — your muscle map appears here." /></Card>;
 
   const ar = active ? vol.regions[active] : null;
-  const s = vol.summary, b = vol.balance;
+  const s = vol.summary;
   const s$ = n => (n > 0 ? "+" : "") + n;
-  const intelGroups = useMemo(() => {
-    const g = {};
-    vol.muscles.forEach(m => { const rk = MUSCLES[m.key].region; (g[rk] = g[rk] || { region: rk, label: vol.regions[rk].label, total: vol.regions[rk].thisWeek, status: vol.regions[rk].status, items: [] }).items.push(m); });
-    Object.values(g).forEach(x => x.items.sort((a, c) => c.thisWeek - a.thisWeek));
-    return Object.values(g).sort((a, c) => c.total - a.total);
-  }, [vol]);
 
   return (
     <>
-      <Card title="Training Analysis" sub={vol.weekOffset === 0 ? `This week · from ${formatShortDate(vol.weekStart)}` : `Previous week · from ${formatShortDate(vol.weekStart)}`} action={<TierBadge tier="estimate" />}>
-        <div className="seg" style={{ marginBottom: 10 }}>
-          <button className={`seg-btn ${weekOffset === 0 ? "active" : ""}`} onClick={() => { setWeekOffset(0); setActive(null); }}>This Week</button>
-          <button className={`seg-btn ${weekOffset === 1 ? "active" : ""}`} onClick={() => { setWeekOffset(1); setActive(null); }}>Previous Week</button>
-        </div>
-        <div className="skin-tabs" style={{ marginBottom: 12 }}>
-          {[["summary", "Summary"], ["sets", "Sets"], ["intel", "Intelligence"], ["weak", "Weak Points"]].map(([k, l]) => (
-            <button key={k} className={`skin-tab ${tab === k ? "on" : ""}`} onClick={() => setTab(k)}>{l}</button>
-          ))}
-        </div>
-
-        {tab === "summary" && (
-          <>
-            <div className="gp-stat-row"><span className="muted small">Total hard sets</span><span>{s.totalSets}</span></div>
-            <div className="gp-stat-row"><span className="muted small">Total exercises</span><span>{s.totalExercises}</span></div>
-            <div className="gp-stat-row"><span className="muted small">Sessions</span><span>{s.totalSessions}</span></div>
-            <div className="gp-stat-row"><span className="muted small">Training days</span><span>{s.trainingDays} / 7</span></div>
-            <div className="gp-stat-row"><span className="muted small">Most trained</span><span>{s.highest ? `${s.highest.label} (${s.highest.sets})` : "—"}</span></div>
-            <div className="gp-stat-row"><span className="muted small">Least trained</span><span>{s.lowest ? `${s.lowest.label} (${s.lowest.sets})` : "—"}</span></div>
-            <div className="gp-stat-row"><span className="muted small">Volume vs previous week</span><span style={{ color: s.volumeTrendPct == null ? "var(--text-2)" : s.volumeTrendPct >= 0 ? "#8fd989" : "#f47e6e" }}>{s.volumeTrendPct == null ? "—" : `${s$(s.volumeTrendPct)}%`}</span></div>
-            <p className="muted small" style={{ marginTop: 8, lineHeight: 1.4 }}>Session duration isn't logged, so it isn't shown. Counts are hard working sets (warmups excluded).</p>
-          </>
-        )}
-
-        {tab === "sets" && <MuscleSetsSection prio={prio} goals={goals} onSaveGoals={onSaveGoals} />}
-
-        {tab === "intel" && (
-          <>
-            {intelGroups.map(g => (
-              <div key={g.region} style={{ marginBottom: 12 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 3 }}>
-                  <span style={{ fontWeight: 700, fontSize: 13 }}>{g.label}</span>
-                  <span className="small" style={{ color: g.status.color, fontWeight: 600 }}>{g.total} · {g.status.label}</span>
-                </div>
-                {g.items.map(m => (
-                  <div key={m.key} className="gp-stat-row" style={{ padding: "2px 0" }}>
-                    <span className="small" style={{ flex: 1, paddingLeft: 10, color: "var(--text-2)" }}>{m.label}</span>
-                    <span className="small" style={{ width: 48, textAlign: "right" }}>{m.thisWeek} set{m.thisWeek === 1 ? "" : "s"}</span>
-                    <span className="small" style={{ width: 56, textAlign: "right", color: "var(--text-2)" }}>{m.recommended}</span>
-                    <span className="small" style={{ width: 84, textAlign: "right", color: m.status.color, fontWeight: 600 }}>{m.status.label}</span>
-                  </div>
-                ))}
-              </div>
-            ))}
-            <div style={{ borderTop: "1px solid var(--line)", marginTop: 6, paddingTop: 10 }}>
-              <div className="small" style={{ fontWeight: 600, marginBottom: 6 }}>Volume balance <span className="muted" style={{ fontWeight: 400 }}>(hard sets)</span></div>
-              <div className="gp-stat-row"><span className="muted small">Push / Pull</span><span>{b.push} / {b.pull}</span></div>
-              <div className="gp-stat-row"><span className="muted small">Upper / Lower</span><span>{b.upper} / {b.lower}</span></div>
-              <div className="gp-stat-row"><span className="muted small">Anterior / Posterior</span><span>{b.anterior} / {b.posterior}</span></div>
-            </div>
-          </>
-        )}
-
-        {tab === "weak" && (
-          vol.weakPoints.length === 0
-            ? <Empty icon="✓" title="Nothing under-trained" hint="Every muscle hit its recommended weekly minimum this week." />
-            : vol.weakPoints.map((w, i) => (
-              <div key={w.key} style={{ padding: "8px 0", borderTop: i ? "1px solid var(--line)" : "none" }}>
-                <div style={{ fontWeight: 700, fontSize: 14 }}>Weak point #{i + 1} · {w.label}</div>
-                <p className="muted small" style={{ margin: "3px 0", lineHeight: 1.45 }}>{w.reason}</p>
-                <div className="gp-stat-row"><span className="muted small">Suggested target</span><span>{w.suggestedTarget} sets/wk</span></div>
-                {w.exercises.length > 0 && <div className="gp-stat-row"><span className="muted small">Try</span><span>{w.exercises.join(" · ")}</span></div>}
-              </div>
-            ))
-        )}
-      </Card>
-
       <Card title="Muscle Map" sub="weekly volume by muscle group" action={<span style={{ display: "flex", gap: 6 }}>
         <button className={`seg-btn ${view === "front" ? "active" : ""}`} style={{ padding: "3px 10px", fontSize: 12 }} onClick={() => { setView("front"); setActive(null); }}>Front</button>
         <button className={`seg-btn ${view === "back" ? "active" : ""}`} style={{ padding: "3px 10px", fontSize: 12 }} onClick={() => { setView("back"); setActive(null); }}>Back</button>
