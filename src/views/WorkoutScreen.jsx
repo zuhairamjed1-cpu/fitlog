@@ -4,6 +4,7 @@ import { ANTERIOR_POLY, POSTERIOR_POLY } from "../anatomyData";
 import { estimateSportsCalories } from "../api/client";
 import { Card, Empty, toast } from "../components/primitives";
 import { RecentList } from "../components/RecentList";
+import { SetTargetsModal } from "../components/SetTargetsCard";
 import { TierBadge } from "../components/TierBadge";
 import { sportsOptions, intensityLevels } from "../config";
 import { SESSION_TYPES } from "../engines/fueling";
@@ -309,7 +310,7 @@ export function WorkoutScreen({ data, goals, addEntry, onSaveGoals }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
-      <ExerciseForm onAdd={handleAdd} recent={data.exercise} hideRecent header={header} />
+      <ExerciseForm onAdd={handleAdd} recent={data.exercise} hideRecent header={header} goals={goals} onSaveGoals={onSaveGoals} />
       <ExerciseMappingCard data={data} goals={goals} onSaveGoals={onSaveGoals} />
       <RecentWorkoutsCard recent={data.exercise} />
       {newQueue.length > 0 && (
@@ -554,7 +555,7 @@ export function SportsForm({ onAdd, recent }) {
 const WL_SAMPLE = "Push Day A\n1h 12m\n\nBench Press (Barbell)\nSet 1: 60 kg x 10\nSet 2: 80 kg x 8\nSet 3: 80 kg x 7\n\nIncline Dumbbell Press\nSet 1: 30 kg x 10\nSet 2: 30 kg x 9\n\nOverhead Press (Barbell)\nSet 1: 45 kg x 6\nSet 2: 45 kg x 6\n\nCable Fly\nSet 1: 15 kg x 15\nSet 2: 15 kg x 14";
 const wlDur = txt => { const m = (txt || "").match(/(\d+)\s*h\s*(\d+)?\s*m|\b(\d+)\s*min/i); if (!m) return null; if (m[3]) return `${m[3]} min`; return `${m[1]}h${m[2] ? " " + m[2] + "m" : ""}`; };
 
-export function ExerciseForm({ onAdd, recent, hideRecent, header }) {
+export function ExerciseForm({ onAdd, recent, hideRecent, header, goals, onSaveGoals }) {
   const [date, setDate] = useState(getTodayStr());
   const [time, setTime] = useState(() => {
     const d = new Date();
@@ -562,6 +563,8 @@ export function ExerciseForm({ onAdd, recent, hideRecent, header }) {
   });
   const [label, setLabel] = useState("");
   const [text, setText] = useState("");
+  const [showTargets, setShowTargets] = useState(false);
+  const canTargets = !!(goals && onSaveGoals);
 
   const parsed = useMemo(() => parseWorkout(text), [text]);
 
@@ -611,9 +614,15 @@ export function ExerciseForm({ onAdd, recent, hideRecent, header }) {
           <div style={{ fontSize: 16, fontWeight: 700, color: "#eef2f6", letterSpacing: "-0.01em" }}>Log workout</div>
           <div style={{ fontSize: 12.5, color: "#6b7480", marginTop: 2 }}>Paste from Strong, or write your own — parses as you type</div>
         </div>
-        <span style={{ fontSize: 12, color: statusColor, fontWeight: 600, display: "flex", alignItems: "center", gap: 7, whiteSpace: "nowrap" }}>
-          <span style={{ width: 7, height: 7, borderRadius: 999, background: statusColor }} />{statusText}
-        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          {canTargets && (
+            <button onClick={() => setShowTargets(true)} title="Weekly set targets"
+              style={{ fontSize: 12, fontWeight: 600, color: "#9fb0b3", background: "rgba(79,179,189,0.1)", border: "1px solid rgba(79,179,189,0.22)", borderRadius: 999, padding: "5px 11px", cursor: "pointer", whiteSpace: "nowrap" }}>🎯 Targets</button>
+          )}
+          <span style={{ fontSize: 12, color: statusColor, fontWeight: 600, display: "flex", alignItems: "center", gap: 7, whiteSpace: "nowrap" }}>
+            <span style={{ width: 7, height: 7, borderRadius: 999, background: statusColor }} />{statusText}
+          </span>
+        </div>
       </div>
 
       {header && <div style={{ padding: "14px 22px 0" }}>{header}</div>}
@@ -719,6 +728,7 @@ export function ExerciseForm({ onAdd, recent, hideRecent, header }) {
       </div>
     </div>
     {!hideRecent && <RecentList entries={recent} render={w => <><span className="ra-main">{w.label}{w.prs?.length ? " 🏆" : ""}</span><span className="ra-date">{formatShortDate(w.date)}</span></>} />}
+    {showTargets && canTargets && <SetTargetsModal data={{ exercise: recent || [] }} goals={goals} onSaveGoals={onSaveGoals} onClose={() => setShowTargets(false)} />}
     </>
   );
 }

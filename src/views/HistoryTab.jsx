@@ -3,7 +3,6 @@ import { MacroDonut, MiniChart, Card, Empty, toast, useConfirm } from "../compon
 import { StatusPill } from "../components/StatusPill";
 import { ProgressionCard } from "../components/ProgressionCard";
 import { WorkoutAnalysis } from "./WorkoutScreen";
-import { SetTargetsCard } from "../components/SetTargetsCard";
 import { CreatineSaturationCard } from "../components/CreatineSaturationCard";
 import { NIC_TYPES, TYPE_DOT } from "../config";
 import { getDayContext } from "../engines/dayContext";
@@ -153,8 +152,6 @@ function TrainingTrends({ data, goals, range, setRange, workoutPts, onSaveGoals 
       <ProgressionCard data={data} goals={goals} />
 
       <WorkoutAnalysis data={data} goals={goals} />
-
-      <SetTargetsCard data={data} goals={goals} onSaveGoals={onSaveGoals} />
 
       <RangeSeg range={range} setRange={setRange} />
 
