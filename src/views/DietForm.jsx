@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { fileToResizedBase64, lookupBarcode, barcodeScanSupported, analyzeFoodAI, lookupSupplement } from "../api/client";
 import { MacroDonut, Card, toast } from "../components/primitives";
 import { RecentList } from "../components/RecentList";
-import { mealTypes, imageModelId } from "../config";
+import { mealTypes } from "../config";
 import { getDayContext } from "../engines/dayContext";
 import { planFueling, reconcileFueling, sleepWindow, SESSION_TYPES } from "../engines/fueling";
 import { estimateGlycemicLoad, dayGlycemicLoad } from "../engines/glycemic";
@@ -515,10 +515,9 @@ export function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp 
         b64 = resized.base64;
         mt = resized.mediaType;
       }
-      // IMAGE path forces the strongest model (portion/vision accuracy); text
-      // logging keeps the cheap default. `brain` is no longer sent — the pipeline
-      // doesn't use it.
-      const r = await analyzeFoodAI(mode === "text" ? text : "", b64, mt, useWeb, null, mode === "image" ? imageModelId() : undefined);
+      // Image path runs Haiku-first and escalates to Sonnet only on a flagged meal
+      // (handled inside the pipeline); text stays on Haiku. `brain` is unused now.
+      const r = await analyzeFoodAI(mode === "text" ? text : "", b64, mt, useWeb);
       if (r && r.calories >= 0 && r.items?.length) setResult(r);
       else setError(mode === "image" ? "Couldn't read that photo well. Try a clearer shot, or describe the meal in words." : "Couldn't analyze that. Try being more specific (portion size, cooking method).");
     } catch (e) { setError("Network issue. Try again."); }

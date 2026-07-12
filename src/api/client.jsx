@@ -3,7 +3,7 @@
 // extraction, barcode lookup, markdown rendering, image resizing). Extracted from
 // App.jsx so view modules — including lazily-loaded ones — can share one client
 // without importing App.jsx.
-import { currentModelId } from "../config";
+import { currentModelId, MODELS } from "../config";
 import { supabase, hasSupabase } from "../supabase";
 import { buildBrain, formatBrainText } from "../brain/brain";
 import { daysAgo, WEEKDAYS } from "../lib/dates";
@@ -213,10 +213,14 @@ export function barcodeScanSupported() {
 // `brain` is intentionally dropped — it only fed the old AI notes field and taxed
 // every call; notes are computed locally from totals + goals if wanted.
 // `model` lets the caller force a stronger model for the image path.
-export async function analyzeFoodAI(description, imageBase64, imageMediaType, useWeb = false, _brain = null, model = undefined) {
+export async function analyzeFoodAI(description, imageBase64, imageMediaType, useWeb = false, _brain = null) {
+  const isImage = !!imageBase64;
   return analyzeFood(
-    { description, imageBase64, imageMediaType, useWeb, model },
-    { callClaude, extractJSON, WEB_SEARCH_TOOL, currentModelId }
+    // Text logging is pinned to Haiku (cheap, no escalation). The image path runs
+    // Haiku first and escalates to Sonnet ONLY when the reconciler flags the meal —
+    // so prod no longer pays Sonnet on every photo.
+    { description, imageBase64, imageMediaType, useWeb, ...(isImage ? {} : { model: MODELS.haiku.id }) },
+    { callClaude, extractJSON, WEB_SEARCH_TOOL, currentModelId, cheapModel: MODELS.haiku.id, strongModel: MODELS.sonnet.id }
   );
 }
 

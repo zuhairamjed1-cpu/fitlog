@@ -13,8 +13,8 @@
 // The model that never gets to hand us a final calorie number is the point:
 // identification + portion is the AI's job; pricing is the database's job.
 
-import { resolveItems } from "./fdcResolver";
-import { reconcile, sanitizeAIResult } from "../engines/mealValidation";
+import { resolveItems } from "./fdcResolver.js";
+import { reconcile, sanitizeAIResult } from "../engines/mealValidation.js";
 
 // Reference objects the model can scale against, with real dimensions. This is
 // what turns "some rice" into "~150g" without a depth sensor.
@@ -83,61 +83,83 @@ function parseItems(raw, extractJSON) {
   return { items: r.items, food: r.food || "", confidence: r.confidence || null };
 }
 
-// Main entry. `deps` injects callClaude + extractJSON + WEB_SEARCH_TOOL from the
-// existing client so this module stays pure/testable and doesn't re-import them.
-export async function analyzeFood({
-  description, imageBase64, imageMediaType, useWeb = false, model,
-}, deps) {
-  const { callClaude, extractJSON, WEB_SEARCH_TOOL, currentModelId, resolveImpl = resolveItems } = deps;
-  const isImage = !!imageBase64;
-  const useModel = model || currentModelId();
-
-  // ── PASS 1: identify + portion ──────────────────────────────────────────
+// Run one identify pass on a given model, resolve against FDC, and reconcile.
+// Returns a reconciled meal (or null if the model gave us nothing usable).
+async function identifyPass({ model, system, userText, imageBase64, imageMediaType, useWeb }, deps) {
+  const { callClaude, extractJSON, WEB_SEARCH_TOOL, resolveImpl } = deps;
   let parsed;
   try {
     const raw = await callClaude({
-      model: useModel,
+      model,
       maxTokens: useWeb ? 1800 : 1400,
       tools: useWeb ? WEB_SEARCH_TOOL : undefined,
-      system: identifySystemPrompt({ isImage, useWeb }),
-      userText: description
-        ? `Identify and portion every food in: "${description}".${useWeb ? " Search for official data if branded/restaurant." : ""}`
-        : `Identify and portion EVERY food item in this image.${useWeb ? " Search official nutrition facts for any branded/restaurant dish." : ""}`,
-      imageBase64, imageMediaType,
+      system, userText, imageBase64, imageMediaType,
     });
     parsed = parseItems(raw, extractJSON);
   } catch { parsed = null; }
   if (!parsed || !parsed.items.length) return null;
 
-  // ── RESOLVE + RECONCILE ─────────────────────────────────────────────────
-  const resolved1 = await resolveImpl(parsed.items);
-  let rec = reconcile(resolved1.items, { food: parsed.food, confidence: parsed.confidence });
-  rec.fdcStats = resolved1.stats;
+  const resolved = await resolveImpl(parsed.items);
+  const rec = reconcile(resolved.items, { food: parsed.food, confidence: parsed.confidence });
+  rec.fdcStats = resolved.stats;
+  rec._parsedItems = parsed.items; // kept for a potential verify pass
+  return rec;
+}
 
-  // ── PASS 2: verify, only if the numbers are suspicious ──────────────────
-  if (needsVerify(rec)) {
-    const problem = rec.flags.map(f => f.msg).join(" ") || "Low confidence estimate.";
+// Main entry. TIERED MODEL STRATEGY (cost control): pass 1 runs on the CHEAP model
+// (Haiku by default). We only escalate to the STRONG model (Sonnet) when the cheap
+// pass produces numbers the reconciler doesn't trust — low confidence or physically
+// inconsistent macros. Most clean meals never touch Sonnet, so average photo cost
+// drops from "~5× every photo" to "~2-3× on average, full accuracy on the hard ones."
+//
+// `deps` may provide { cheapModel, strongModel }. Falls back to currentModelId()
+// for both (so callers that don't opt into tiering keep single-model behavior).
+export async function analyzeFood({
+  description, imageBase64, imageMediaType, useWeb = false, model,
+}, deps) {
+  const { currentModelId, resolveImpl = resolveItems } = deps;
+  const d = { ...deps, resolveImpl };
+  const isImage = !!imageBase64;
+
+  // If the caller pins a model explicitly, use it for both tiers (no escalation).
+  const cheapModel = model || deps.cheapModel || currentModelId();
+  const strongModel = model || deps.strongModel || cheapModel;
+
+  const identSystem = identifySystemPrompt({ isImage, useWeb });
+  const identUser = description
+    ? `Identify and portion every food in: "${description}".${useWeb ? " Search for official data if branded/restaurant." : ""}`
+    : `Identify and portion EVERY food item in this image.${useWeb ? " Search official nutrition facts for any branded/restaurant dish." : ""}`;
+
+  // ── TIER 1: identify + portion on the cheap model ───────────────────────
+  let rec = await identifyPass(
+    { model: cheapModel, system: identSystem, userText: identUser, imageBase64, imageMediaType, useWeb },
+    d
+  );
+  if (!rec) return null;
+  rec.tier = "cheap";
+
+  // ── TIER 2: escalate to the strong model ONLY when the cheap pass is shaky ──
+  const canEscalate = strongModel !== cheapModel;
+  if (canEscalate && needsVerify(rec)) {
+    const problem = rec.flags.map(f => f.msg).join(" ") || "Low-confidence estimate.";
+    // Fresh identification on the strong model — not a critique of the cheap pass.
+    // If Haiku misjudged the plate, we want Sonnet's own eyes, not Sonnet reasoning
+    // about Haiku's mistake. We hand over the flagged problem + prior items as a hint.
+    const verifyUser = `${identUser}\n\nA faster model already tried and its numbers were flagged: ${problem}\nIts items were: ${JSON.stringify(rec._parsedItems)}\nRe-identify and re-portion carefully; fix what's wrong so the macros are physically consistent.`;
     try {
-      const raw2 = await callClaude({
-        model: useModel,
-        maxTokens: useWeb ? 1800 : 1400,
-        tools: useWeb ? WEB_SEARCH_TOOL : undefined,
-        system: verifySystemPrompt(),
-        userText: `PROBLEM: ${problem}\n\nORIGINAL ITEMS:\n${JSON.stringify(parsed.items)}\n\n${description ? `The meal was described as: "${description}".` : "Re-examine the attached photo."} Fix the portions/items so the numbers are physically consistent.`,
-        imageBase64, imageMediaType,
-      });
-      const parsed2 = parseItems(raw2, extractJSON);
-      if (parsed2 && parsed2.items.length) {
-        const resolved2 = await resolveImpl(parsed2.items);
-        const rec2 = reconcile(resolved2.items, { food: parsed2.food || parsed.food, confidence: parsed2.confidence });
-        rec2.fdcStats = resolved2.stats;
+      const rec2 = await identifyPass(
+        { model: strongModel, system: verifySystemPrompt(), userText: verifyUser, imageBase64, imageMediaType, useWeb },
+        d
+      );
+      if (rec2) {
+        rec2.tier = "strong";
         rec2.verified = true;
-        // Keep the verified pass only if it actually reduced flags; else keep pass 1.
+        // Keep the strong pass only if it's at least as clean as the cheap one.
         if (rec2.flags.length <= rec.flags.length) rec = rec2;
       }
-    } catch { /* keep pass-1 result */ }
+    } catch { /* keep the cheap-tier result */ }
   }
 
-  // Final shape matches what DietForm expects, plus the new metadata.
+  delete rec._parsedItems;
   return sanitizeAIResult(rec) && rec;
 }

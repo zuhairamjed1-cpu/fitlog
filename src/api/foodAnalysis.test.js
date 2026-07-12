@@ -71,17 +71,19 @@ describe("resolveItems", () => {
 });
 
 // ─── analyzeFood pipeline ───────────────────────────────────────────────────
-function makeDeps({ pass1, pass2, resolve }) {
-  let call = 0;
+function makeDeps({ pass1, pass2, resolve, tiered = true }) {
+  const calls = []; // record which model each call used
   return {
-    currentModelId: () => "claude-sonnet-4-20250514",
+    currentModelId: () => "claude-haiku-4-5",
+    ...(tiered ? { cheapModel: "claude-haiku-4-5", strongModel: "claude-sonnet-4-20250514" } : {}),
     WEB_SEARCH_TOOL: [{ type: "web_search_20250305", name: "web_search" }],
     extractJSON: (s) => JSON.parse(s),
-    callClaude: vi.fn(async () => {
-      call += 1;
-      return call === 1 ? JSON.stringify(pass1) : JSON.stringify(pass2 || pass1);
+    callClaude: vi.fn(async ({ model }) => {
+      calls.push(model);
+      return calls.length === 1 ? JSON.stringify(pass1) : JSON.stringify(pass2 || pass1);
     }),
     resolveImpl: resolve,
+    _calls: calls,
   };
 }
 
@@ -108,10 +110,12 @@ describe("analyzeFood", () => {
     const rec = await analyzeFood({ description: "chicken and rice" }, deps);
     expect(rec.calories).toBe(525); // 330 + 195, DB-grounded
     expect(rec.resolved).toBe(true);
-    expect(deps.callClaude).toHaveBeenCalledTimes(1); // no verify pass needed
+    expect(deps.callClaude).toHaveBeenCalledTimes(1); // no escalation needed
+    expect(deps._calls[0]).toBe("claude-haiku-4-5"); // stayed on the cheap model
+    expect(rec.tier).toBe("cheap");
   });
 
-  it("triggers a verify pass when the first result is flagged", async () => {
+  it("escalates to the STRONG model only when the cheap pass is flagged", async () => {
     // Pass 1: an item whose macros can't explain its calories (atwater fail).
     const pass1 = {
       food: "mystery plate", confidence: "low",
@@ -128,9 +132,24 @@ describe("analyzeFood", () => {
     });
     const deps = makeDeps({ pass1, pass2, resolve });
     const rec = await analyzeFood({ description: "a plate of pasta" }, deps);
-    expect(deps.callClaude).toHaveBeenCalledTimes(2); // verify pass ran
+    expect(deps.callClaude).toHaveBeenCalledTimes(2); // escalation ran
+    expect(deps._calls[0]).toBe("claude-haiku-4-5");        // cheap first
+    expect(deps._calls[1]).toBe("claude-sonnet-4-20250514"); // strong on escalation
     expect(rec.verified).toBe(true);
+    expect(rec.tier).toBe("strong");
     expect(rec.calories).toBe(360); // took the corrected pass
+  });
+
+  it("does NOT escalate when cheap and strong models are the same", async () => {
+    const pass1 = { // flagged (atwater fail) but no stronger model to escalate to
+      food: "x", confidence: "low",
+      items: [{ food: "x", fdcQuery: "x", grams: 100, calories: 1200, protein: 5, carbs: 5, fat: 5, confidence: "low" }],
+    };
+    const resolve = async (items) => ({ items: items.map(it => ({ ...it, source: "ai" })), stats: { resolved: 0, missed: 1, total: 1 } });
+    const deps = makeDeps({ pass1, resolve, tiered: false }); // cheap === strong
+    const rec = await analyzeFood({ description: "x" }, deps);
+    expect(deps.callClaude).toHaveBeenCalledTimes(1); // no second call
+    expect(rec.tier).toBe("cheap");
   });
 
   it("returns null when identification yields nothing", async () => {
