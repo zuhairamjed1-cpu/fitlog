@@ -11,9 +11,11 @@ const ok = (name, cond, got) => { if (cond) pass++; else { fail++; console.log("
 
 // entry helper: mk(n_days_ago, "Exercise\n80kg x 8 @8\n...")
 const mk = (n, text) => ({ id: `x${n}`, date: daysAgo(n), text });
+const D = (exercise) => ({ exercise });          // data wrapper
+const G = (exerciseMap) => ({ exerciseMap: exerciseMap || {} });
 // two-session run for one exercise
 function run(name, prevText, currText, prevN = 7, currN = 0, map) {
-  return computeProgression([mk(prevN, `${name}\n${prevText}`), mk(currN, `${name}\n${currText}`)], map || {});
+  return computeProgression(D([mk(prevN, `${name}\n${prevText}`), mk(currN, `${name}\n${currText}`)]), G(map));
 }
 const rowOf = rows => rows[0];
 
@@ -88,7 +90,7 @@ const rowOf = rows => rows[0];
 
 // 10. Stale: only one session ⇒ stale, no lit, not red
 {
-  const r = rowOf(computeProgression([mk(14, "Ohp\n40kg x 8 @9")], {}));
+  const r = rowOf(computeProgression(D([mk(14, "Ohp\n40kg x 8 @9")]), G()));
   ok("10 stale verdict", r.verdict === "stale", r.verdict);
   ok("10 stale no lit", !r.axes.wt.lit && !r.axes.reps.lit && !r.axes.rir.lit, r.axes);
   ok("10 stale note days", /14d/.test(r.note || ""), r.note);
@@ -102,7 +104,7 @@ const rowOf = rows => rows[0];
 
 // 12. Warm-ups present: 40×10, 60×5, 80×8,8 ⇒ top 80, reps 16
 {
-  const r = rowOf(computeProgression([mk(3, "Squat\n40kg x 10\n60kg x 5\n80kg x 8\n80kg x 8")], {}));
+  const r = rowOf(computeProgression(D([mk(3, "Squat\n40kg x 10\n60kg x 5\n80kg x 8\n80kg x 8")]), G()));
   ok("12 top weight 80", r.curr.weightKg === 80, r.curr.weightKg);
   ok("12 reps 16 (warmups excluded)", r.curr.reps === 16, r.curr.reps);
 }
@@ -111,20 +113,20 @@ const rowOf = rows => rows[0];
 {
   ok("13a canon strips parens punctuation", canonKey("Bench Press (Barbell)") === "bench press barbell", canonKey("Bench Press (Barbell)"));
   ok("13b canon dash == parens", canonKey("Bench Press - Barbell") === canonKey("Bench Press (Barbell)"), canonKey("Bench Press - Barbell"));
-  const rows = computeProgression([
+  const rows = computeProgression(D([
     mk(7, "Bench Press (Barbell)\n80kg x 8 @9"),
     mk(0, "Bench Press - Barbell\n82kg x 8 @9"),
-  ], {});
+  ]), G());
   ok("13c same key merges history (1 row)", rows.length === 1, rows.map(x => x.key));
 }
 
 // 14. Rest days: bench 4d ago, legs yesterday, bench today ⇒ bench compares to 4d ago
 {
-  const rows = computeProgression([
+  const rows = computeProgression(D([
     mk(4, "Bench Press\n80kg x 8 @9"),
     mk(1, "Squat\n140kg x 5 @9"),
     mk(0, "Bench Press\n82kg x 8 @9"),
-  ], {});
+  ]), G());
   const bench = rows.find(r => r.key === "bench press");
   ok("14 bench baseline is 4d-ago", bench && bench.prev && bench.prev.date === daysAgo(4), bench && bench.prev && bench.prev.date);
   ok("14 bench verdict up", bench && bench.verdict === "up", bench && bench.verdict);

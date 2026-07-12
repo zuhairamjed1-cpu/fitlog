@@ -134,12 +134,14 @@ function primaryMuscle(name, exerciseMap) {
   return resolveMuscle(name, exerciseMap);
 }
 
-// computeProgression(entries, exerciseMap, today?) → one verdict row per exercise.
-export function computeProgression(entries, exerciseMap, today) {
+// computeProgression(data, goals, today?) → one verdict row per exercise.
+// Reads data.exercise[] and goals.exerciseMap. Writes nothing back.
+export function computeProgression(data, goals, today) {
+  const exerciseMap = (goals && goals.exerciseMap) || {};
   const now = today || localDateStr(new Date());
   // Gather per-exercise ordered instances (oldest → newest).
   const byKey = new Map();
-  const dated = (entries || []).filter(e => e && e.date);
+  const dated = ((data && data.exercise) || []).filter(e => e && e.date);
   // sort ascending by date so streak math walks forward
   dated.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 

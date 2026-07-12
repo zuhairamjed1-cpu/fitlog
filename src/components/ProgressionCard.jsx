@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { Card, Empty } from "./primitives";
+import { StatusPill } from "./StatusPill";
 import { computeProgression, groupProgression } from "../engines/progression";
 
 // Read-only overload verdict card. One row per exercise, grouped by primary
@@ -80,9 +81,18 @@ function Group({ g, collapsed, onToggle }) {
 export function ProgressionCard({ data, goals }) {
   const [collapsed, setCollapsed] = useState(loadCollapsed);
   const groups = useMemo(
-    () => groupProgression(computeProgression(data.exercise || [], (goals && goals.exerciseMap) || {})),
-    [data.exercise, goals && goals.exerciseMap]
+    () => groupProgression(computeProgression(data, goals)),
+    [data, goals]
   );
+
+  // Header pill: net movement across all scored lifts this session.
+  const scored = groups.flatMap(g => g.items).filter(r => r.verdict !== "stale");
+  const ups = scored.filter(r => r.verdict === "up").length;
+  const downs = scored.filter(r => r.verdict === "down").length;
+  const pill = scored.length === 0 ? null
+    : downs > ups ? { status: "bad", label: `${downs} down` }
+    : ups > 0 ? { status: "good", label: `${ups} up` }
+    : { status: "warn", label: "holding" };
 
   function toggle(muscle) {
     setCollapsed(prev => {
@@ -93,9 +103,9 @@ export function ProgressionCard({ data, goals }) {
   }
 
   return (
-    <Card title="Progression" sub="Did you overload vs last time?">
+    <Card title="Progression" sub="vs. last time you trained each lift" action={pill ? <StatusPill status={pill.status} label={pill.label} /> : null}>
       {groups.length === 0 ? (
-        <Empty title="No lifts to compare yet" hint="Log a lift twice and its overload verdict shows up here" />
+        <Empty title="No lifts to compare yet" hint="Log a lift twice and you'll see whether you beat it" />
       ) : (
         <div className="prog-list">
           {groups.map(g => <Group key={g.muscle} g={g} collapsed={!!collapsed[g.muscle]} onToggle={() => toggle(g.muscle)} />)}
