@@ -207,6 +207,9 @@ body::after {
 .wl-scroll::-webkit-scrollbar { width: 8px; }
 .wl-scroll::-webkit-scrollbar-thumb { background: #262d38; border-radius: 999px; }
 
+/* Streak card flame flicker */
+@keyframes flame-flick { 0%,100% { transform: translateY(0) scale(1); } 50% { transform: translateY(-1.5px) scale(1.06); } }
+
 /* Progression card sheet animations */
 @keyframes pc-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes pc-rise { from { transform: translateY(18px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }

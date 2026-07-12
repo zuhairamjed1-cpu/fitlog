@@ -2,79 +2,16 @@ import { useState, useMemo } from "react";
 import { MacroDonut, MiniChart, Card, Empty, toast, useConfirm } from "../components/primitives";
 import { StatusPill } from "../components/StatusPill";
 import { ProgressionCard } from "../components/ProgressionCard";
+import { StreakCard } from "../components/StreakCard";
 import { WorkoutAnalysis } from "./WorkoutScreen";
 import { CreatineSaturationCard } from "../components/CreatineSaturationCard";
 import { NIC_TYPES, TYPE_DOT } from "../config";
 import { getDayContext } from "../engines/dayContext";
 import { computeEnergyBalance } from "../engines/energy";
 import { estimateSleepNeed } from "../engines/sleep";
-import { computeTraining } from "../engines/training";
 import { parseWorkout, bestSet, e1rm } from "../engines/workout";
 import { formatShortDate, daysAgo } from "../lib/dates";
 
-// ===== extracted body =====
-function TrainingCard({ data, goals }) {
-  const tr = useMemo(() => computeTraining(data, goals), [data, goals]);
-  if (!tr) return null;
-
-  const statusMeta = {
-    progressing: { s: "good", label: "Progressing" },
-    stalled: { s: "warn", label: "Stalled" },
-    regressing: { s: "bad", label: "Slipping" },
-  };
-  const bandColor = { low: "var(--muted)", maint: "var(--accent)", growth: "var(--good)", high: "#f9c97e" };
-  const conf = tr.confidence;
-
-  return (
-    <Card title="Training intelligence" sub="Progression + weekly volume" action={<StatusPill status={conf === "High" ? "good" : conf === "Moderate" ? "warn" : null} label={conf} />}>
-      {/* PROGRESSION */}
-      <div className="train-sub">Lift progression <span className="muted">· last 8 weeks</span></div>
-      {tr.progression.lifts.length ? (
-        <div className="train-lifts">
-          {tr.progression.lifts.map((l, i) => {
-            const m = statusMeta[l.status] || { s: null, label: l.status };
-            return (
-              <div key={i} className="train-lift-row">
-                <span className="train-lift-name">{l.name}</span>
-                <span className="train-lift-e1rm">{l.e1rmNow}<span className="muted" style={{ fontSize: 11 }}>kg</span></span>
-                <StatusPill status={m.s} label={l.status === "progressing" ? `+${l.slopePct}%/wk` : m.label} />
-              </div>
-            );
-          })}
-        </div>
-      ) : (
-        <p className="muted small" style={{ lineHeight: 1.5 }}>Log a lift 3+ times over a couple of weeks and its estimated-1RM trend shows up here.</p>
-      )}
-
-      {/* VOLUME */}
-      <div className="train-sub" style={{ marginTop: 16 }}>This week's volume <span className="muted">· {tr.week.workingSets} working sets · {tr.week.sessions} sessions</span></div>
-      {tr.week.trained.length ? (
-        <div className="train-vol">
-          {tr.week.sortedVol.map((m, i) => (
-            <div key={i} className="train-vol-row">
-              <span className="train-vol-label">{m.label}</span>
-              <div className="train-vol-track"><div className="train-vol-fill" style={{ width: `${Math.min(100, (m.sets / 20) * 100)}%`, background: bandColor[m.band] }} /></div>
-              <span className="train-vol-sets">{m.sets}</span>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <p className="muted small">No working sets mapped this week yet.</p>
-      )}
-
-      {tr.week.neglected.length > 0 && (
-        <div className="eb-flag" style={{ borderColor: "#f9c97e", color: "#f9c97e" }}>Under-trained this week: {tr.week.neglected.join(", ")} (under ~6 hard sets). For balanced growth, aim ~10+ each.</div>
-      )}
-      {tr.week.imbalances.length > 0 && (
-        <div className="eb-flag" style={{ borderColor: "var(--border-strong)", color: "var(--text-2)", marginTop: 8 }}>{tr.week.imbalances[0]}.</div>
-      )}
-
-      <p className="muted small" style={{ marginTop: 10, lineHeight: 1.45 }}>
-        Volume ranges are rough guidance (~10–20 sets/muscle/week for growth), not rules. Warm-ups are filtered approximately, and lifts are mapped to muscles by name{tr.week.unmapped.length ? ` — couldn't place: ${tr.week.unmapped.slice(0, 3).join(", ")}` : ""}.
-      </p>
-    </Card>
-  );
-}
 
 // Shared per-day series builders. Nutrition series bucket by the ACTIVE day
 // (bio keys share the calendar-date format, so the x-axis stays aligned with the
@@ -147,7 +84,7 @@ function TrainingTrends({ data, goals, range, setRange, workoutPts, onSaveGoals 
 
   return (
     <>
-      <TrainingCard data={data} goals={goals} />
+      <StreakCard data={data} goals={goals} />
 
       <ProgressionCard data={data} goals={goals} />
 
