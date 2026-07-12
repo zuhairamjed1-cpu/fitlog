@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import { createPortal } from "react-dom";
 import { ANTERIOR_POLY, POSTERIOR_POLY } from "../anatomyData";
 import { estimateSportsCalories } from "../api/client";
 import { Card, Empty, toast } from "../components/primitives";
@@ -7,7 +8,8 @@ import { TierBadge } from "../components/TierBadge";
 import { sportsOptions, intensityLevels } from "../config";
 import { SESSION_TYPES } from "../engines/fueling";
 import { PRIO_TARGETS, computeMusclePrio, PRIO_DEFAULT_SETS, PRIO_MIN, PRIO_MAX_COUNT, RIR_TARGET } from "../engines/musclePrio";
-import { computeVolume, STATUS_LEGEND, MUSCLES, MUSCLE_KEYS, resolveMuscle, listExerciseMappings } from "../engines/volume";
+import { computeVolume, STATUS_LEGEND, MUSCLES, MUSCLE_KEYS, resolveMuscle, listExerciseMappings, normExercise } from "../engines/volume";
+import { MUSCLE_GROUPS, GROUP_BY_ID, SUBGROUP_BY_ID, categoryForExercise, guessSubForExercise, assignSubgroup, clearSubgroup } from "../engines/muscleGroups";
 import { parseWorkout, bestSet, detectPRs } from "../engines/workout";
 import { getTodayStr, formatShortDate } from "../lib/dates";
 import { haptic, SFX } from "../lib/fx";
@@ -349,58 +351,189 @@ export function WorkoutScreen({ data, goals, addEntry, onSaveGoals }) {
     </div>
   );
 
+  // Queue of never-before-logged exercises to categorize after a save.
+  const [newQueue, setNewQueue] = useState([]);
+
+  function handleAdd(entry) {
+    // Snapshot the exercises we already know BEFORE adding this entry.
+    const known = new Set();
+    (data.exercise || []).forEach(e => {
+      const p = e._parsed || parseWorkout(e.text || "");
+      (p.exercises || []).forEach(ex => { const n = normExercise(ex.name); if (n) known.add(n); });
+    });
+    Object.keys(goals.exerciseMap || {}).forEach(n => known.add(n));
+    Object.keys(goals.exerciseSubgroup || {}).forEach(n => known.add(n));
+
+    addEntry("exercise")(entry);
+
+    const p = entry._parsed || parseWorkout(entry.text || "");
+    const fresh = [];
+    (p.exercises || []).forEach(ex => {
+      const n = normExercise(ex.name);
+      if (!n || known.has(n) || fresh.some(f => f.norm === n)) return;
+      fresh.push({ norm: n, name: ex.name });
+    });
+    if (fresh.length) setNewQueue(fresh);
+  }
+
+  function categorizeNext(subId) {
+    const cur = newQueue[0];
+    if (cur && subId) onSaveGoals(assignSubgroup(goals, cur.name, subId));
+    setNewQueue(q => q.slice(1));
+  }
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
-      <ExerciseForm onAdd={addEntry("exercise")} recent={data.exercise} hideRecent header={header} />
+      <ExerciseForm onAdd={handleAdd} recent={data.exercise} hideRecent header={header} />
       <WorkoutAnalysis data={data} goals={goals} onSaveGoals={onSaveGoals} />
       <ExerciseMappingCard data={data} goals={goals} onSaveGoals={onSaveGoals} />
       <RecentWorkoutsCard recent={data.exercise} />
+      {newQueue.length > 0 && (
+        <NewExerciseModal
+          entry={newQueue[0]}
+          remaining={newQueue.length}
+          onSave={categorizeNext}
+          onSkip={() => categorizeNext(null)}
+        />
+      )}
     </div>
   );
 }
 
-// ─── CARD 4 — Exercise Mapping (one exercise → one primary muscle, editable) ──
+// ─── New-exercise categorization popup (group → subgroup) ────────────────────
+function NewExerciseModal({ entry, remaining, onSave, onSkip }) {
+  const guess = guessSubForExercise(entry.name);
+  const guessGroup = guess ? SUBGROUP_BY_ID[guess].groupId : MUSCLE_GROUPS[0].id;
+  const [groupId, setGroupId] = useState(guessGroup);
+  const [subId, setSubId] = useState(guess || GROUP_BY_ID[guessGroup].subs[0].id);
+  const group = GROUP_BY_ID[groupId];
+
+  function pickGroup(gid) {
+    setGroupId(gid);
+    setSubId(GROUP_BY_ID[gid].subs[0].id); // reset subgroup to first of the new group
+  }
+
+  return createPortal(
+    <div className="nex-overlay" onClick={onSkip}>
+      <div className="nex-modal" onClick={e => e.stopPropagation()}>
+        <div className="nex-kicker">New exercise{remaining > 1 ? ` · ${remaining} to sort` : ""}</div>
+        <div className="nex-q">What does this train?</div>
+        <div className="nex-name">{entry.name}</div>
+
+        <label className="nex-lbl">Muscle group
+          <select value={groupId} onChange={e => pickGroup(e.target.value)}>
+            {MUSCLE_GROUPS.map(g => <option key={g.id} value={g.id}>{g.label}</option>)}
+          </select>
+        </label>
+
+        <label className="nex-lbl">Subgroup
+          <select value={subId} onChange={e => setSubId(e.target.value)}>
+            {group.subs.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+          </select>
+        </label>
+
+        <div className="nex-actions">
+          <button className="btn full" onClick={() => onSave(subId)}>Save</button>
+          <button className="btn-ghost btn-sm" onClick={onSkip}>Skip</button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+// ─── CARD 4 — Exercise Mapping (grouped by muscle group → subgroup, editable) ──
 function ExerciseMappingCard({ data, goals, onSaveGoals }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
-  const [edit, setEdit] = useState(null); // { norm, sel }
-  const list = useMemo(() => listExerciseMappings(data, goals), [data, goals]);
+  const [collapsed, setCollapsed] = useState({}); // groupId → bool
+  const [edit, setEdit] = useState(null); // { norm, name, groupId, subId }
+
+  // Every distinct logged exercise with its resolved category.
+  const list = useMemo(() => {
+    const raw = listExerciseMappings(data, goals); // [{ name, norm, ... }]
+    return raw.map(x => ({ name: x.name, norm: x.norm, cat: categoryForExercise(x.name, goals), overridden: !!(goals.exerciseSubgroup || {})[x.norm] }));
+  }, [data, goals]);
+
   const filtered = q.trim() ? list.filter(x => x.name.toLowerCase().includes(q.toLowerCase())) : list;
-  const save = () => { const em = { ...(goals.exerciseMap || {}) }; em[edit.norm] = edit.sel; onSaveGoals({ ...goals, exerciseMap: em }); setEdit(null); haptic(8); };
-  const reset = norm => { const em = { ...(goals.exerciseMap || {}) }; delete em[norm]; onSaveGoals({ ...goals, exerciseMap: em }); setEdit(null); haptic(6); };
+
+  // Bucket into group → subgroup, in taxonomy order. Plus an Uncategorized tail.
+  const groups = MUSCLE_GROUPS.map(g => {
+    const subs = g.subs.map(s => ({ s, items: filtered.filter(x => x.cat && x.cat.subId === s.id) })).filter(sub => sub.items.length);
+    const count = subs.reduce((a, sub) => a + sub.items.length, 0);
+    return { g, subs, count };
+  }).filter(gr => gr.count);
+  const uncategorized = filtered.filter(x => !x.cat);
+
+  const startEdit = (x) => setEdit({ norm: x.norm, name: x.name, groupId: x.cat ? x.cat.groupId : MUSCLE_GROUPS[0].id, subId: x.cat ? x.cat.subId : GROUP_BY_ID[MUSCLE_GROUPS[0].id].subs[0].id });
+  const pickGroup = (gid) => setEdit(e => ({ ...e, groupId: gid, subId: GROUP_BY_ID[gid].subs[0].id }));
+  const save = () => { onSaveGoals(assignSubgroup(goals, edit.name, edit.subId)); setEdit(null); haptic(8); };
+  const reset = () => { onSaveGoals(clearSubgroup(goals, edit.name)); setEdit(null); haptic(6); };
+
+  const editor = (x) => (
+    <div key={x.norm} style={{ padding: "10px 8px", borderRadius: 10, background: "var(--bg-2)", margin: "4px 0" }}>
+      <div style={{ fontWeight: 700, marginBottom: 8 }}>{x.name}</div>
+      <div className="muted small" style={{ marginBottom: 4 }}>Muscle group</div>
+      <select value={edit.groupId} onChange={e => pickGroup(e.target.value)}
+        style={{ width: "100%", background: "var(--bg)", color: "var(--text)", border: "1px solid var(--line)", borderRadius: 8, padding: "9px 10px", fontSize: 14, marginBottom: 8 }}>
+        {MUSCLE_GROUPS.map(g => <option key={g.id} value={g.id}>{g.label}</option>)}
+      </select>
+      <div className="muted small" style={{ marginBottom: 4 }}>Subgroup</div>
+      <select value={edit.subId} onChange={e => setEdit({ ...edit, subId: e.target.value })}
+        style={{ width: "100%", background: "var(--bg)", color: "var(--text)", border: "1px solid var(--line)", borderRadius: 8, padding: "9px 10px", fontSize: 14 }}>
+        {GROUP_BY_ID[edit.groupId].subs.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+      </select>
+      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+        <button className="btn-primary btn-sm" style={{ flex: 1 }} onClick={save}>Save changes</button>
+        {x.overridden && <button className="btn-ghost btn-sm" onClick={reset}>Reset</button>}
+        <button className="btn-ghost btn-sm" onClick={() => setEdit(null)}>Cancel</button>
+      </div>
+    </div>
+  );
+
+  const row = (x, label, amber) => (
+    <button key={x.norm} onClick={() => startEdit(x)}
+      style={{ display: "flex", width: "100%", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "9px 8px", borderRadius: 8, background: "transparent", border: "none", borderBottom: "1px solid var(--line)", cursor: "pointer", textAlign: "left" }}>
+      <span className="small" style={{ color: "var(--text)" }}>{x.name}{x.overridden ? " ✎" : ""}</span>
+      <span className="small" style={{ color: amber ? "#f9c97e" : "var(--text-2)", whiteSpace: "nowrap" }}>{label} ›</span>
+    </button>
+  );
 
   return (
-    <Card title="Exercise Mapping" sub="Your logged exercises — categorized" action={list.length > 0 && <button className="btn-ghost btn-sm" onClick={() => setOpen(o => !o)}>{open ? "Hide ▾" : "Show ▸"}</button>}>
+    <Card title="Exercise Mapping" sub="Your logged exercises — grouped by muscle" action={list.length > 0 && <button className="btn-ghost btn-sm" onClick={() => setOpen(o => !o)}>{open ? "Hide ▾" : "Show ▸"}</button>}>
       {list.length === 0 ? (
         <Empty icon="◌" title="No exercises logged yet" hint="Log workouts and FitLog automatically builds your exercise mapping database — only the exercises you actually use." />
       ) : open ? <>
       <input type="text" value={q} onChange={e => setQ(e.target.value)} placeholder="Search exercises…"
         style={{ width: "100%", background: "var(--bg-2)", color: "var(--text)", border: "1px solid var(--line)", borderRadius: 10, padding: "9px 12px", fontSize: 14, margin: "10px 0" }} />
-      <div style={{ maxHeight: 360, overflowY: "auto", margin: "0 -4px" }}>
-        {filtered.length === 0 && <p className="muted small" style={{ padding: "8px 4px" }}>No exercises match “{q}”.</p>}
-        {filtered.map(x => edit && edit.norm === x.norm ? (
-          <div key={x.norm} style={{ padding: "10px 8px", borderRadius: 10, background: "var(--bg-2)", margin: "4px 0" }}>
-            <div style={{ fontWeight: 700, marginBottom: 8 }}>{x.name}</div>
-            <div className="muted small" style={{ marginBottom: 6 }}>Primary muscle</div>
-            <select value={edit.sel} onChange={e => setEdit({ ...edit, sel: e.target.value })}
-              style={{ width: "100%", background: "var(--bg)", color: "var(--text)", border: "1px solid var(--line)", borderRadius: 8, padding: "9px 10px", fontSize: 14 }}>
-              {MUSCLE_KEYS.map(k => <option key={k} value={k}>{MUSCLES[k].label}</option>)}
-            </select>
-            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-              <button className="btn-primary btn-sm" style={{ flex: 1 }} onClick={save}>Save changes</button>
-              {x.overridden && <button className="btn-ghost btn-sm" onClick={() => reset(x.norm)}>Reset</button>}
-              <button className="btn-ghost btn-sm" onClick={() => setEdit(null)}>Cancel</button>
+      <div style={{ maxHeight: 420, overflowY: "auto", margin: "0 -4px" }}>
+        {groups.length === 0 && uncategorized.length === 0 && <p className="muted small" style={{ padding: "8px 4px" }}>No exercises match “{q}”.</p>}
+        {groups.map(({ g, subs, count }) => {
+          const isCollapsed = !!collapsed[g.id];
+          return (
+            <div key={g.id} style={{ marginBottom: 4 }}>
+              <button onClick={() => setCollapsed(c => ({ ...c, [g.id]: !c[g.id] }))}
+                style={{ display: "flex", width: "100%", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "8px 8px", background: "var(--bg-2)", border: "none", borderRadius: 8, cursor: "pointer", color: "var(--text)" }}>
+                <span style={{ fontWeight: 700, fontSize: 13, letterSpacing: ".02em" }}>{g.label}</span>
+                <span className="muted small">{count} <span style={{ opacity: .7 }}>{isCollapsed ? "▸" : "▾"}</span></span>
+              </button>
+              {!isCollapsed && subs.map(({ s, items }) => (
+                <div key={s.id} style={{ paddingLeft: 4 }}>
+                  <div className="muted" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em", padding: "8px 4px 2px" }}>{s.label}</div>
+                  {items.map(x => edit && edit.norm === x.norm ? editor(x) : row(x, s.label, false))}
+                </div>
+              ))}
             </div>
+          );
+        })}
+        {uncategorized.length > 0 && (
+          <div style={{ marginBottom: 4 }}>
+            <div className="muted" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em", padding: "10px 4px 2px", color: "#f9c97e" }}>Uncategorized</div>
+            {uncategorized.map(x => edit && edit.norm === x.norm ? editor(x) : row(x, "Set muscle", true))}
           </div>
-        ) : (
-          <button key={x.norm} onClick={() => setEdit({ norm: x.norm, sel: x.muscle || MUSCLE_KEYS[0] })}
-            style={{ display: "flex", width: "100%", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "9px 8px", borderRadius: 8, background: "transparent", border: "none", borderBottom: "1px solid var(--line)", cursor: "pointer", textAlign: "left" }}>
-            <span className="small" style={{ color: "var(--text)" }}>{x.name}{x.overridden ? " ✎" : ""}</span>
-            <span className="small" style={{ color: x.muscle ? "var(--text-2)" : "#f9c97e", whiteSpace: "nowrap" }}>{x.muscle ? MUSCLES[x.muscle].label : "Set muscle"} ›</span>
-          </button>
-        ))}
+        )}
       </div>
-      <p className="muted small" style={{ marginTop: 10, lineHeight: 1.45 }}>This list grows as you log new exercises — each gets an auto-suggested muscle you can change. Every workout metric (Training Analysis, Weak Points, the Muscle Map, Goal-Plan volume) reads from it.</p>
+      <p className="muted small" style={{ marginTop: 10, lineHeight: 1.45 }}>Grouped by muscle group → subgroup. New exercises prompt you to categorize on log; each subgroup feeds the existing muscle model, so Training Analysis, Weak Points, the Muscle Map and Goal-Plan volume all read from it.</p>
       </> : null}
     </Card>
   );

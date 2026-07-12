@@ -227,6 +227,15 @@ body::after {
 .subtabs-nested { padding: 3px; border-radius: 11px; border-bottom: 1px solid var(--border); }
 .subtabs-nested .subtab { padding: 6px 10px; font-size: .78rem; min-width: 48px; }
 
+/* New-exercise categorization popup */
+.nex-overlay { position: fixed; inset: 0; z-index: 1000; background: rgba(6,8,12,0.66); backdrop-filter: blur(3px); display: flex; align-items: center; justify-content: center; padding: 20px; }
+.nex-modal { width: 100%; max-width: 380px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 18px; padding: 20px; box-shadow: 0 24px 60px rgba(0,0,0,0.5); }
+.nex-kicker { font-size: .7rem; text-transform: uppercase; letter-spacing: .06em; color: var(--accent); font-weight: 700; }
+.nex-q { font-size: 1.05rem; font-weight: 700; margin-top: 4px; }
+.nex-name { font-size: .92rem; color: var(--text-2); margin: 6px 0 16px; padding: 8px 12px; background: var(--surface-2); border-radius: 10px; border: 1px solid var(--border); }
+.nex-lbl { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; font-size: .72rem; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.nex-actions { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+
 /* Progression card — read-only overload verdicts */
 .prog-list { display: flex; flex-direction: column; gap: 10px; }
 .prog-group { border: 1px solid var(--border); border-radius: 11px; overflow: hidden; }
