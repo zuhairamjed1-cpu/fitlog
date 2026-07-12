@@ -51,7 +51,7 @@ function Cells({ cells }) {
   );
 }
 
-const STALE_IN_FLAGS = true;
+const STALE_IN_FLAGS = false;
 const SHOW_EVIDENCE = true;
 
 export function ProgressionCard({ data, goals }) {
