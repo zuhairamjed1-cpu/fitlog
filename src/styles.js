@@ -223,6 +223,31 @@ body::after {
 .subtab:hover:not(.active) { color: var(--text-2); }
 .subtab-icon { font-size: .9rem; }
 
+/* Second-level sub-tabs — subordinate to the parent tab row */
+.subtabs-nested { padding: 3px; border-radius: 11px; border-bottom: 1px solid var(--border); }
+.subtabs-nested .subtab { padding: 6px 10px; font-size: .78rem; min-width: 48px; }
+
+/* Progression card — read-only overload verdicts */
+.prog-list { display: flex; flex-direction: column; gap: 10px; }
+.prog-group { border: 1px solid var(--border); border-radius: 11px; overflow: hidden; }
+.prog-group-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 12px; background: var(--surface-2); border: none; color: var(--text); font-family: inherit; font-size: .84rem; font-weight: 600; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.prog-group-name { flex: 1; text-align: left; }
+.prog-group-sum { display: flex; align-items: center; gap: 6px; font-size: .78rem; }
+.prog-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--bad); display: inline-block; }
+.prog-chev { font-size: .7rem; }
+.prog-colhead, .prog-row-head { display: flex; align-items: center; gap: 8px; padding: 4px 12px; }
+.prog-colhead { font-size: .66rem; text-transform: uppercase; letter-spacing: .05em; padding-top: 8px; }
+.prog-row { padding-top: 4px; padding-bottom: 6px; border-top: 1px solid var(--border); }
+.prog-row:first-of-type { border-top: none; }
+.prog-name { flex: 1; font-size: .84rem; font-weight: 600; min-width: 0; }
+.prog-streak { font-size: .72rem; color: var(--text-2); font-weight: 700; }
+.prog-cells { display: flex; gap: 5px; }
+.prog-cell { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .74rem; min-width: 34px; text-align: center; padding: 2px 4px; border-radius: 6px; color: var(--muted); }
+.prog-cell.lit { font-weight: 700; }
+.prog-cell-d { font-size: .64rem; margin-left: 1px; opacity: .85; }
+.prog-evidence { font-size: .72rem; padding: 0 12px 2px; font-family: ui-monospace, "SF Mono", Menlo, monospace; line-height: 1.45; }
+.prog-note { opacity: .8; font-family: inherit; }
+
 /* Forms */
 .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
 .field-grid.three { grid-template-columns: 1fr 1fr 1fr; }

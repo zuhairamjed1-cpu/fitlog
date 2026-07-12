@@ -3,13 +3,12 @@ import { MacroDonut, MiniChart, Card, Empty, toast, useConfirm } from "../compon
 import { StatusPill } from "../components/StatusPill";
 import { CreatineSaturationCard } from "../components/CreatineSaturationCard";
 import { NIC_TYPES, TYPE_DOT } from "../config";
-import { computeCorrelations as computeCorrelationsV2 } from "../engines/correlations";
 import { getDayContext } from "../engines/dayContext";
 import { computeEnergyBalance } from "../engines/energy";
 import { estimateSleepNeed } from "../engines/sleep";
 import { computeTraining } from "../engines/training";
 import { parseWorkout, bestSet, e1rm } from "../engines/workout";
-import { localDateStr, formatShortDate, daysAgo } from "../lib/dates";
+import { formatShortDate, daysAgo } from "../lib/dates";
 
 // ===== extracted body =====
 function TrainingCard({ data, goals }) {
@@ -75,36 +74,106 @@ function TrainingCard({ data, goals }) {
   );
 }
 
-function TrendsView({ data, goals, addEntry }) {
-  const [range, setRange] = useState(14);
-  const series = useMemo(() => Array.from({ length: range }, (_, i) => daysAgo(range - 1 - i)), [range]);
+// Shared per-day series builders. Nutrition series bucket by the ACTIVE day
+// (bio keys share the calendar-date format, so the x-axis stays aligned with the
+// calendar-day sleep/workout/water series).
+function useSeries(data, goals, range) {
+  return useMemo(() => {
+    const series = Array.from({ length: range }, (_, i) => daysAgo(range - 1 - i));
+    const dietBucket = getDayContext(data, goals).bucket();
+    const sleepPts = series.map(d => { const s = data.sleep.find(x => x.date === d); return { value: s ? s.duration : null, label: d }; });
+    const calPts = series.map(d => { const day = dietBucket[d] || []; return { value: day.length ? day.reduce((a, m) => a + (m.calories || 0), 0) : null, label: d }; });
+    const proteinPts = series.map(d => { const day = dietBucket[d] || []; return { value: day.length ? day.reduce((a, m) => a + (m.protein || 0), 0) : null, label: d }; });
+    const workoutPts = series.map(d => ({ value: data.exercise.filter(x => x.date === d).length + data.sports.filter(x => x.date === d).length, label: d }));
+    const waterPts = series.map(d => { const ml = data.water.filter(x => x.date === d).reduce((a, w) => a + w.ml, 0); return { value: ml || null, label: d }; });
+    const ejacPts = series.map(d => ({ value: (data.ejac || []).filter(x => x.date === d).length, label: d }));
+    return { series, sleepPts, calPts, proteinPts, workoutPts, waterPts, ejacPts };
+  }, [data, goals, range]);
+}
 
-  // Nutrition series bucket by the ACTIVE day (bio keys share the calendar-date format,
-  // so the x-axis stays aligned with the calendar-day sleep/workout/water series).
-  const dietBucket = useMemo(() => getDayContext(data, goals).bucket(), [data, goals]);
-  const sleepPts = series.map(d => { const s = data.sleep.find(x => x.date === d); return { value: s ? s.duration : null, label: d }; });
-  const calPts = series.map(d => { const day = dietBucket[d] || []; return { value: day.length ? day.reduce((a, m) => a + (m.calories || 0), 0) : null, label: d }; });
-  const proteinPts = series.map(d => { const day = dietBucket[d] || []; return { value: day.length ? day.reduce((a, m) => a + (m.protein || 0), 0) : null, label: d }; });
-  const workoutPts = series.map(d => ({ value: data.exercise.filter(x => x.date === d).length + data.sports.filter(x => x.date === d).length, label: d }));
-  const waterPts = series.map(d => { const ml = data.water.filter(x => x.date === d).reduce((a, w) => a + w.ml, 0); return { value: ml || null, label: d }; });
+function RangeSeg({ range, setRange }) {
+  return (
+    <div className="seg">
+      {[7, 14, 30].map(r => (
+        <button key={r} className={`seg-btn ${range === r ? "active" : ""}`} onClick={() => setRange(r)}>{r} days</button>
+      ))}
+    </div>
+  );
+}
 
+function NutritionTrends({ data, goals, addEntry, range, setRange, calPts, proteinPts, waterPts }) {
+  const calVals = calPts.map(p => p.value).filter(v => v != null);
+  const avgCal = calVals.length ? Math.round(calVals.reduce((a, b) => a + b, 0) / calVals.length) : null;
+  const proteinHits = proteinPts.filter(p => p.value != null && p.value >= goals.protein).length;
+  const proteinLogged = proteinPts.filter(p => p.value != null).length;
+
+  return (
+    <>
+      <EnergyBalanceCard data={data} goals={goals} />
+
+      <RangeSeg range={range} setRange={setRange} />
+
+      <Card title="🍎 Calories">
+        <div className="trend-stats">
+          <div className="ts"><span className="ts-l">Average</span><span className="ts-v">{avgCal ?? "—"}</span></div>
+          <div className="ts"><span className="ts-l">Target</span><span className="ts-v muted">{goals.calories}</span></div>
+        </div>
+        <MiniChart points={calPts} showGoal={goals.calories} rollingAvg />
+      </Card>
+
+      <Card title="🥩 Protein">
+        <div className="trend-stats">
+          <div className="ts"><span className="ts-l">Target hit</span><span className={`ts-v ${proteinLogged && proteinHits >= proteinLogged * 0.7 ? "good" : "neutral"}`}>{proteinLogged ? `${proteinHits}/${proteinLogged} days` : "—"}</span></div>
+        </div>
+        <MiniChart points={proteinPts} showGoal={goals.protein} unit="g" />
+      </Card>
+
+      <Card title="💧 Water">
+        <div className="trend-stats">
+          <div className="ts"><span className="ts-l">Daily target</span><span className="ts-v">{goals.waterGoalMl}ml</span></div>
+        </div>
+        <MiniChart points={waterPts} showGoal={goals.waterGoalMl} unit="ml" />
+      </Card>
+
+      <CreatineSaturationCard data={data} addEntry={addEntry} />
+    </>
+  );
+}
+
+function TrainingTrends({ data, goals, range, setRange, workoutPts }) {
+  const totalWorkouts = workoutPts.reduce((a, p) => a + p.value, 0);
+
+  return (
+    <>
+      <TrainingCard data={data} goals={goals} />
+
+      <RangeSeg range={range} setRange={setRange} />
+
+      <Card title="💪 Workouts">
+        <div className="trend-stats">
+          <div className="ts"><span className="ts-l">Total</span><span className="ts-v">{totalWorkouts}</span></div>
+        </div>
+        <div className="bars-row">
+          {workoutPts.map((p, i) => (
+            <div key={i} className="bar-col" title={`${p.value} workout${p.value === 1 ? "" : "s"}`}>
+              <div className="bar-fill" style={{ height: `${Math.min(100, p.value * 33)}%`, opacity: p.value === 0 ? 0.15 : 1 }} />
+            </div>
+          ))}
+        </div>
+      </Card>
+    </>
+  );
+}
+
+function SleepTrends({ data, goals, range, setRange, sleepPts }) {
   const sleepVals = sleepPts.map(p => p.value).filter(v => v != null);
   const avgSleep = sleepVals.length ? +(sleepVals.reduce((a, b) => a + b, 0) / sleepVals.length).toFixed(1) : null;
   const sleepNeed = estimateSleepNeed(data, goals).hours;
   const sleepDebt = sleepVals.length ? sleepVals.reduce((debt, v) => debt + (sleepNeed - v), 0) : null;
 
-  const calVals = calPts.map(p => p.value).filter(v => v != null);
-  const avgCal = calVals.length ? Math.round(calVals.reduce((a, b) => a + b, 0) / calVals.length) : null;
-
-  const proteinHits = proteinPts.filter(p => p.value != null && p.value >= goals.protein).length;
-  const proteinLogged = proteinPts.filter(p => p.value != null).length;
-
-  const totalWorkouts = workoutPts.reduce((a, p) => a + p.value, 0);
-
-  const patterns = useMemo(() => computeCorrelationsV2(data), [data]);
-
-  // Sleep × workout correlation
+  // Sleep × workout correlation (kept local for now).
   const corr = (() => {
+    const series = Array.from({ length: range }, (_, i) => daysAgo(range - 1 - i));
     const days = series.map(d => {
       const s = data.sleep.find(x => x.date === d);
       const w = data.exercise.filter(x => x.date === d).length + data.sports.filter(x => x.date === d).length;
@@ -123,19 +192,7 @@ function TrendsView({ data, goals, addEntry }) {
 
   return (
     <>
-      <div className="seg">
-        {[7, 14, 30].map(r => (
-          <button key={r} className={`seg-btn ${range === r ? "active" : ""}`} onClick={() => setRange(r)}>{r} days</button>
-        ))}
-      </div>
-
-      <CreatineSaturationCard data={data} addEntry={addEntry} />
-
-      <EnergyBalanceCard data={data} goals={goals} />
-
-      <TrainingCard data={data} goals={goals} />
-
-      <ConsistencyHeatmap data={data} />
+      <RangeSeg range={range} setRange={setRange} />
 
       <Card title="😴 Sleep">
         <div className="trend-stats">
@@ -143,41 +200,6 @@ function TrendsView({ data, goals, addEntry }) {
           <div className="ts"><span className="ts-l">Sleep debt</span><span className={`ts-v ${sleepDebt == null ? "" : sleepDebt > 5 ? "warn" : sleepDebt > 0 ? "neutral" : "good"}`}>{sleepDebt == null ? "—" : `${sleepDebt > 0 ? "+" : ""}${Math.round(sleepDebt*10)/10}h`}</span></div>
         </div>
         <MiniChart points={sleepPts} showGoal={sleepNeed} rollingAvg unit="h" />
-      </Card>
-
-      <Card title="🍎 Calories">
-        <div className="trend-stats">
-          <div className="ts"><span className="ts-l">Average</span><span className="ts-v">{avgCal ?? "—"}</span></div>
-          <div className="ts"><span className="ts-l">Target</span><span className="ts-v muted">{goals.calories}</span></div>
-        </div>
-        <MiniChart points={calPts} showGoal={goals.calories} rollingAvg />
-      </Card>
-
-      <Card title="🥩 Protein">
-        <div className="trend-stats">
-          <div className="ts"><span className="ts-l">Target hit</span><span className={`ts-v ${proteinLogged && proteinHits >= proteinLogged * 0.7 ? "good" : "neutral"}`}>{proteinLogged ? `${proteinHits}/${proteinLogged} days` : "—"}</span></div>
-        </div>
-        <MiniChart points={proteinPts} showGoal={goals.protein} unit="g" />
-      </Card>
-
-      <Card title="💪 Workouts">
-        <div className="trend-stats">
-          <div className="ts"><span className="ts-l">Total</span><span className="ts-v">{totalWorkouts}</span></div>
-        </div>
-        <div className="bars-row">
-          {workoutPts.map((p, i) => (
-            <div key={i} className="bar-col" title={`${p.value} workout${p.value === 1 ? "" : "s"}`}>
-              <div className="bar-fill" style={{ height: `${Math.min(100, p.value * 33)}%`, opacity: p.value === 0 ? 0.15 : 1 }} />
-            </div>
-          ))}
-        </div>
-      </Card>
-
-      <Card title="💧 Water">
-        <div className="trend-stats">
-          <div className="ts"><span className="ts-l">Daily target</span><span className="ts-v">{goals.waterGoalMl}ml</span></div>
-        </div>
-        <MiniChart points={waterPts} showGoal={goals.waterGoalMl} unit="ml" />
       </Card>
 
       {corr && (
@@ -191,28 +213,44 @@ function TrendsView({ data, goals, addEntry }) {
           </p>
         </Card>
       )}
+    </>
+  );
+}
 
-      <Card title="🔗 Patterns in your logs" className="insight-card">
-        {!patterns.ready ? (
-          <p className="muted small">{patterns.reason}</p>
-        ) : patterns.links.length === 0 ? (
-          <p className="muted small">No strong cross-metric links yet — keep logging and they'll surface here.</p>
-        ) : (
-          <div className="corr-list">
-            {patterns.links.map((l, i) => (
-              <div key={i} className="corr-row">
-                <div className="corr-head">
-                  <span className={`corr-tag ${l.dir > 0 ? "pos" : "neg"}`}>{l.dir > 0 ? "↑" : "↓"} {l.strength}</span>
-                  <span className="corr-meta muted small">r {l.r > 0 ? "+" : ""}{l.r} · {l.n}d</span>
-                </div>
-                <p className="md-p" style={{ margin: "2px 0 0" }}>{l.text}</p>
-                {l.tip && <p className="muted small" style={{ marginTop: 2 }}>→ {l.tip}</p>}
-              </div>
-            ))}
-          </div>
-        )}
-        <p className="muted small" style={{ marginTop: 8, opacity: 0.7 }}>Correlation, not proof — these are tendencies in your own data, not guarantees.</p>
-      </Card>
+function EjacTrends() {
+  // TODO: useSeries already returns ejacPts (per-day counts from data.ejac) —
+  // wire real stats here later.
+  return (
+    <Card title="💧 Ejac">
+      <Empty title="Nothing here yet" hint="Coming soon" />
+    </Card>
+  );
+}
+
+const TREND_CATS = [
+  { key: "nutrition", label: "🍎 Nutrition" },
+  { key: "training", label: "💪 Training" },
+  { key: "sleep", label: "😴 Sleep" },
+  { key: "ejac", label: "💧 Ejac" },
+];
+
+function TrendsView({ data, goals, addEntry }) {
+  const [cat, setCat] = useState("nutrition");
+  const [range, setRange] = useState(14); // lifted so it persists across sub-tab switches
+  const { sleepPts, calPts, proteinPts, workoutPts, waterPts } = useSeries(data, goals, range);
+
+  return (
+    <>
+      <div className="subtabs subtabs-nested">
+        {TREND_CATS.map(c => (
+          <button key={c.key} className={`subtab ${cat === c.key ? "active" : ""}`} onClick={() => setCat(c.key)}>{c.label}</button>
+        ))}
+      </div>
+
+      {cat === "nutrition" && <NutritionTrends data={data} goals={goals} addEntry={addEntry} range={range} setRange={setRange} calPts={calPts} proteinPts={proteinPts} waterPts={waterPts} />}
+      {cat === "training" && <TrainingTrends data={data} goals={goals} range={range} setRange={setRange} workoutPts={workoutPts} />}
+      {cat === "sleep" && <SleepTrends data={data} goals={goals} range={range} setRange={setRange} sleepPts={sleepPts} />}
+      {cat === "ejac" && <EjacTrends />}
     </>
   );
 }
@@ -369,54 +407,6 @@ export function HistoryTab({ data, goals, addEntry, deleteEntry }) {
       {view === "trends" && <TrendsView data={data} goals={goals} addEntry={addEntry} />}
       {view === "lists" && <ListsView data={data} deleteEntry={deleteEntry} />}
     </div>
-  );
-}
-
-function ConsistencyHeatmap({ data }) {
-  // Count log entries per day over the last 12 weeks (84 days), GitHub-style.
-  const WEEKS = 12;
-  const today = new Date();
-  const counts = {};
-  const all = [...data.diet, ...data.sleep, ...data.exercise, ...data.sports, ...data.water, ...data.supplements];
-  all.forEach(e => { if (e.date) counts[e.date] = (counts[e.date] || 0) + 1; });
-
-  // Build grid: columns = weeks, rows = Mon..Sun
-  const totalDays = WEEKS * 7;
-  // Find the Monday that starts the window
-  const start = new Date(today);
-  const offsetToMon = (today.getDay() + 6) % 7;
-  start.setDate(today.getDate() - offsetToMon - (WEEKS - 1) * 7);
-
-  const cols = [];
-  let loggedDays = 0;
-  for (let w = 0; w < WEEKS; w++) {
-    const col = [];
-    for (let r = 0; r < 7; r++) {
-      const d = new Date(start);
-      d.setDate(start.getDate() + w * 7 + r);
-      const ds = localDateStr(d);
-      const c = counts[ds] || 0;
-      const future = d > today;
-      if (c > 0) loggedDays++;
-      const level = future ? -1 : c === 0 ? 0 : c <= 2 ? 1 : c <= 4 ? 2 : c <= 6 ? 3 : 4;
-      col.push({ ds, c, level, future });
-    }
-    cols.push(col);
-  }
-
-  return (
-    <Card title="Consistency" sub={`${loggedDays} active days in the last ${WEEKS} weeks`}>
-      <div className="heatmap">
-        {cols.map((col, ci) => (
-          <div key={ci} className="hm-col">
-            {col.map((cell, ri) => (
-              <div key={ri} className={`hm-cell hm-${cell.level}`} title={cell.future ? "" : `${formatShortDate(cell.ds)}: ${cell.c} log${cell.c === 1 ? "" : "s"}`} />
-            ))}
-          </div>
-        ))}
-      </div>
-      <div className="hm-legend"><span>Less</span><span className="hm-cell hm-0" /><span className="hm-cell hm-1" /><span className="hm-cell hm-2" /><span className="hm-cell hm-3" /><span className="hm-cell hm-4" /><span>More</span></div>
-    </Card>
   );
 }
 
