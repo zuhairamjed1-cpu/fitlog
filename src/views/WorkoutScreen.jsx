@@ -205,11 +205,11 @@ export function WorkoutAnalysis({ data, goals, onSaveGoals }) {
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-2)", gap: 16 }}><span>This week</span><b style={{ color: "var(--text)" }}>{ar.thisWeek} sets</b></div>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-2)", gap: 16 }}><span>Previous</span><span>{ar.lastWeek}</span></div>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-2)", gap: 16 }}><span>Change</span><span style={{ color: (ar.changePct ?? ar.change) > 0 ? "#8fd989" : (ar.changePct ?? ar.change) < 0 ? "#f47e6e" : "var(--text-2)" }}>{ar.changePct != null ? `${s$(ar.changePct)}%` : `${s$(ar.change)} sets`}</span></div>
-              <div style={{ marginTop: 4, fontSize: 11, fontWeight: 700, color: ar.status.color }}>{ar.status.label} · rec {ar.recommended}</div>
+              <div style={{ marginTop: 4, fontSize: 11, fontWeight: 700, color: ar.status.color }}>{ar.status.label} · {ar.target ? `target ${ar.target}` : `rec ${ar.recommended}`}</div>
               {ar.muscles.length > 1 && (
                 <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px solid var(--line)" }}>
                   {ar.muscles.map(m => (
-                    <div key={m.key} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--text-2)", gap: 14 }}><span style={{ color: m.thisWeek ? m.status.color : "var(--text-2)" }}>{m.label}</span><span>{m.thisWeek}</span></div>
+                    <div key={m.key} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--text-2)", gap: 14 }}><span style={{ color: m.thisWeek ? m.status.color : "var(--text-2)" }}>{m.label}{m.target ? " 🎯" : ""}</span><span>{m.thisWeek}{m.target ? `/${m.target}` : ""}</span></div>
                   ))}
                 </div>
               )}

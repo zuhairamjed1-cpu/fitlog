@@ -243,13 +243,16 @@ export function computeVolume(data, goals, today, weekOffset = 0) {
   const lastWk = volumeForEntries(ex.filter(e => mondayOf(e.date) === prevMon), overrides);
 
   const targets = (goals && goals.goalPlan && goals.goalPlan.volumeTargets) || {};
+  // When a user set-target exists for a muscle, it overrides the default MEV→MRV
+  // band: hitting the target = optimal, a bit over = still fine, then high.
+  const effRange = k => { const t = targets[k]; return t > 0 ? [t, Math.max(t + 2, Math.ceil(t * 1.25))] : (MUSCLE_RANGE[k] || [8, 16]); };
   const round = x => Math.round(x);
   const weeklyVolume = {};
   const muscles = MUSCLE_KEYS.map(key => {
     const now = round(thisWk.vol[key]);
     const prev = round(lastWk.vol[key]);
     weeklyVolume[key] = now;
-    const range = MUSCLE_RANGE[key] || [8, 16];
+    const range = effRange(key);
     const target = targets[key] != null ? targets[key] : null;
     return {
       key, label: MUSCLES[key].label, role: MUSCLES[key].role, side: MUSCLES[key].side,
@@ -304,13 +307,15 @@ export function computeVolume(data, goals, today, weekOffset = 0) {
     const subs = MUSCLE_KEYS.filter(k => MUSCLES[k].region === rk);
     const sets = subs.reduce((s, k) => s + weeklyVolume[k], 0);
     const last = subs.reduce((s, k) => s + round(lastWk.vol[k]), 0);
-    const rmin = subs.reduce((s, k) => s + MUSCLE_RANGE[k][0], 0);
-    const rmax = subs.reduce((s, k) => s + MUSCLE_RANGE[k][1], 0);
+    const rmin = subs.reduce((s, k) => s + effRange(k)[0], 0);
+    const rmax = subs.reduce((s, k) => s + effRange(k)[1], 0);
+    const rtarget = subs.reduce((s, k) => s + (targets[k] > 0 ? targets[k] : 0), 0);
     regions[rk] = {
       region: rk, label: REGION_LABEL[rk] || rk, thisWeek: sets, lastWeek: last, change: sets - last,
       changePct: last > 0 ? Math.round(((sets - last) / last) * 100) : null,
       range: [rmin, rmax], recommended: `${rmin}-${rmax}`, status: statusFor(sets, [rmin, rmax]),
-      muscles: subs.map(k => ({ key: k, label: MUSCLES[k].label, thisWeek: weeklyVolume[k], status: statusFor(weeklyVolume[k], MUSCLE_RANGE[k]) })),
+      target: rtarget > 0 ? rtarget : null,
+      muscles: subs.map(k => ({ key: k, label: MUSCLES[k].label, thisWeek: weeklyVolume[k], target: targets[k] > 0 ? targets[k] : null, status: statusFor(weeklyVolume[k], effRange(k)) })),
     };
   });
 
