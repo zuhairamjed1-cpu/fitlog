@@ -40,7 +40,7 @@ export function SetTargetsModal({ data, goals, onSaveGoals, onClose }) {
   const totalSet = Object.values(subTargets).filter(v => v > 0).length;
 
   return createPortal(
-    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(6,9,13,0.7)", backdropFilter: "blur(3px)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 60, animation: "pc-fade 0.18s ease" }}>
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(6,9,13,0.7)", backdropFilter: "blur(3px)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 2000, animation: "pc-fade 0.18s ease" }}>
       <div onClick={e => e.stopPropagation()} style={{ width: "100%", maxWidth: 480, maxHeight: "86vh", overflowY: "auto", background: "var(--surface, #161b22)", border: "1px solid var(--line, #262d38)", borderBottom: "none", borderRadius: "22px 22px 0 0", padding: "8px 20px 26px", animation: "pc-rise 0.24s cubic-bezier(0.22,1,0.36,1)" }}>
         <div style={{ display: "flex", justifyContent: "center", padding: "6px 0 12px" }}><span style={{ width: 38, height: 4, borderRadius: 999, background: "#333c47" }} /></div>
         <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 16 }}>
