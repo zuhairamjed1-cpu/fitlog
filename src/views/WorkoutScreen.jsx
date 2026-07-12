@@ -2,7 +2,6 @@ import { useState, useMemo } from "react";
 import { ANTERIOR_POLY, POSTERIOR_POLY } from "../anatomyData";
 import { estimateSportsCalories } from "../api/client";
 import { Card, Empty, toast } from "../components/primitives";
-import { ProgressionCard } from "../components/ProgressionCard";
 import { RecentList } from "../components/RecentList";
 import { TierBadge } from "../components/TierBadge";
 import { sportsOptions, intensityLevels } from "../config";
@@ -352,7 +351,6 @@ export function WorkoutScreen({ data, goals, addEntry, onSaveGoals }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
-      <ProgressionCard data={data} goals={goals} />
       <ExerciseForm onAdd={addEntry("exercise")} recent={data.exercise} hideRecent header={header} />
       <WorkoutAnalysis data={data} goals={goals} onSaveGoals={onSaveGoals} />
       <ExerciseMappingCard data={data} goals={goals} onSaveGoals={onSaveGoals} />
