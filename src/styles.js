@@ -203,6 +203,10 @@ body::after {
 /* Insight */
 .insight { font-size: .9rem; line-height: 1.6; color: var(--text); }
 
+/* Workout logger parsed-preview scrollbar */
+.wl-scroll::-webkit-scrollbar { width: 8px; }
+.wl-scroll::-webkit-scrollbar-thumb { background: #262d38; border-radius: 999px; }
+
 /* Progression card sheet animations */
 @keyframes pc-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes pc-rise { from { transform: translateY(18px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }

@@ -627,6 +627,9 @@ export function SportsForm({ onAdd, recent }) {
 
 // ─── HISTORY TAB ──────────────────────────────────────────────────────────────
 
+const WL_SAMPLE = "Push Day A\n1h 12m\n\nBench Press (Barbell)\nSet 1: 60 kg x 10\nSet 2: 80 kg x 8\nSet 3: 80 kg x 7\n\nIncline Dumbbell Press\nSet 1: 30 kg x 10\nSet 2: 30 kg x 9\n\nOverhead Press (Barbell)\nSet 1: 45 kg x 6\nSet 2: 45 kg x 6\n\nCable Fly\nSet 1: 15 kg x 15\nSet 2: 15 kg x 14";
+const wlDur = txt => { const m = (txt || "").match(/(\d+)\s*h\s*(\d+)?\s*m|\b(\d+)\s*min/i); if (!m) return null; if (m[3]) return `${m[3]} min`; return `${m[1]}h${m[2] ? " " + m[2] + "m" : ""}`; };
+
 export function ExerciseForm({ onAdd, recent, hideRecent, header }) {
   const [date, setDate] = useState(getTodayStr());
   const [time, setTime] = useState(() => {
@@ -653,43 +656,144 @@ export function ExerciseForm({ onAdd, recent, hideRecent, header }) {
     setText(""); setLabel("");
   }
 
+  const C = { teal: "#4fb3bd", good: "#5fcf80", text: "#eef2f6", muted: "#5a636e" };
+  const isEmpty = text.trim().length === 0;
+  const hasParse = parsed.exercises.length > 0;
+  const totalReps = parsed.exercises.reduce((a, ex) => a + ex.sets.reduce((b, s) => b + (s.reps || 0), 0), 0);
+  const totalVol = parsed.totalVolume || 0;
+  const fmtVol = totalVol >= 1000 ? (totalVol / 1000).toFixed(1) + "k" : String(Math.round(totalVol));
+  const stats = [
+    { label: "Exercises", value: String(parsed.exercises.length), unit: "", color: hasParse ? C.text : C.muted },
+    { label: "Sets", value: String(parsed.totalSets || 0), unit: "", color: hasParse ? C.text : C.muted },
+    { label: "Reps", value: String(totalReps), unit: "", color: hasParse ? C.text : C.muted },
+    { label: "Volume", value: fmtVol, unit: "kg", color: hasParse ? C.teal : C.muted },
+  ];
+  const dur = wlDur(text);
+  const metaChips = [label.trim() || null, dur].filter(Boolean);
+  const statusText = isEmpty ? "nothing logged yet" : hasParse ? "parsed live" : "waiting for sets";
+  const statusColor = isEmpty ? C.muted : hasParse ? C.good : "#b98a4a";
+  const iuStyle = { width: "100%", padding: "10px 12px", background: "#0d1116", border: "1px solid #262d38", borderRadius: 10, color: "#dbe1e8", fontSize: 14 };
+  const capLabel = { fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.09em", color: "#5a636e", fontWeight: 600 };
+
   return (
     <>
-    <Card title="Log workout" sub="Paste from Strong, or write your own">
-      {header}
-      <div className="field-grid three">
-        <label>Date<input type="date" value={date} onChange={e => setDate(e.target.value)} /></label>
-        <label>Time<input type="time" value={time} onChange={e => setTime(e.target.value)} /></label>
-        <label>Label<input type="text" value={label} onChange={e => setLabel(e.target.value)} placeholder="e.g. Push Day A" /></label>
-      </div>
-      <label>Workout details
-        <textarea value={text} onChange={e => setText(e.target.value)} rows={9}
-          placeholder={"Push Day A\n1h 12m\n\nBench Press (Barbell)\nSet 1: 60 kg × 10\nSet 2: 80 kg × 8"}
-          style={{ fontFamily: "ui-monospace, monospace", fontSize: "0.84rem" }} />
-      </label>
-
-      {parsed.exercises.length > 0 && (
-        <div className="parse-preview">
-          <div className="parse-head">
-            <span>Detected {parsed.exercises.length} exercise{parsed.exercises.length === 1 ? "" : "s"}</span>
-            <span className="parse-vol">{parsed.totalSets} sets · {parsed.totalVolume.toLocaleString()} kg volume</span>
-          </div>
-          <div className="parse-list">
-            {parsed.exercises.map((ex, i) => {
-              const bs = bestSet(ex.sets);
-              return (
-                <div key={i} className="parse-ex">
-                  <span className="parse-ex-name">{ex.name}</span>
-                  <span className="parse-ex-detail">{ex.sets.length} sets{bs ? ` · top ${bs.weight}${bs.unit}×${bs.reps}` : ""}</span>
-                </div>
-              );
-            })}
-          </div>
+    <div style={{ width: "100%", background: "#12161d", border: "1px solid #232a33", borderRadius: 22, overflow: "hidden" }}>
+      {/* header */}
+      <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "18px 22px", borderBottom: "1px solid #1e242c" }}>
+        <div style={{ width: 38, height: 38, borderRadius: 11, background: "linear-gradient(150deg, #4fb3bd, #2f7d84)", display: "flex", alignItems: "center", justifyContent: "center", flex: "none" }}>
+          <span style={{ fontSize: 19 }}>🏋️</span>
         </div>
-      )}
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: "#eef2f6", letterSpacing: "-0.01em" }}>Log workout</div>
+          <div style={{ fontSize: 12.5, color: "#6b7480", marginTop: 2 }}>Paste from Strong, or write your own — parses as you type</div>
+        </div>
+        <span style={{ fontSize: 12, color: statusColor, fontWeight: 600, display: "flex", alignItems: "center", gap: 7, whiteSpace: "nowrap" }}>
+          <span style={{ width: 7, height: 7, borderRadius: 999, background: statusColor }} />{statusText}
+        </span>
+      </div>
 
-      <button className="btn full" onClick={save} disabled={!text.trim()}>Save workout</button>
-    </Card>
+      {header && <div style={{ padding: "14px 22px 0" }}>{header}</div>}
+
+      {/* stat strip */}
+      <div style={{ display: "flex", borderBottom: "1px solid #1e242c" }}>
+        {stats.map((s, i) => (
+          <div key={i} style={{ flex: 1, padding: "14px 20px", borderRight: i < stats.length - 1 ? "1px solid #1e242c" : "none" }}>
+            <div style={capLabel}>{s.label}</div>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 5, marginTop: 6 }}>
+              <span style={{ fontSize: 25, fontWeight: 800, color: s.color, letterSpacing: "-0.03em", lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{s.value}</span>
+              {s.unit && <span style={{ fontSize: 12, color: "#6b7480", fontWeight: 600 }}>{s.unit}</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* meta row */}
+      <div style={{ display: "flex", gap: 14, padding: "18px 22px 4px", flexWrap: "wrap" }}>
+        <label style={{ flex: "1 1 120px" }}>
+          <div style={{ ...capLabel, marginBottom: 7 }}>Date</div>
+          <input type="date" value={date} onChange={e => setDate(e.target.value)} style={iuStyle} />
+        </label>
+        <label style={{ flex: "1 1 120px" }}>
+          <div style={{ ...capLabel, marginBottom: 7 }}>Time</div>
+          <input type="time" value={time} onChange={e => setTime(e.target.value)} style={iuStyle} />
+        </label>
+        <label style={{ flex: "1.4 1 160px" }}>
+          <div style={{ ...capLabel, marginBottom: 7 }}>Label</div>
+          <input type="text" value={label} onChange={e => setLabel(e.target.value)} placeholder="e.g. Push Day A" style={iuStyle} />
+        </label>
+      </div>
+
+      {/* split: editor | preview */}
+      <div style={{ display: "flex", gap: 0, padding: "14px 22px 0", alignItems: "stretch", flexWrap: "wrap" }}>
+        <div style={{ flex: "1 1 280px", display: "flex", flexDirection: "column" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+            <span style={capLabel}>Paste log</span>
+            <span style={{ flex: 1 }} />
+            <button onClick={() => setText(WL_SAMPLE)} style={{ fontSize: 11, color: "#6b7480", background: "transparent", border: "none", cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 2 }}>try sample</button>
+            <button onClick={() => setText("")} style={{ fontSize: 11, color: "#6b7480", background: "transparent", border: "none", cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 2 }}>clear</button>
+          </div>
+          <textarea value={text} onChange={e => setText(e.target.value)} spellCheck={false}
+            placeholder={"Bench Press (Barbell)\nSet 1: 60 kg x 10\nSet 2: 80 kg x 8\n…"}
+            style={{ flex: 1, minHeight: 260, resize: "none", padding: 14, background: "#0d1116", border: "1px solid #262d38", borderRadius: "12px 0 0 12px", color: "#c8d0da", fontFamily: "ui-monospace, 'SF Mono', Menlo, monospace", fontSize: 13, lineHeight: 1.65 }} />
+        </div>
+
+        <div className="wl-scroll" style={{ flex: "1 1 280px", minHeight: 260, maxHeight: 380, overflowY: "auto", background: "#10141b", border: "1px solid #262d38", borderRadius: "0 12px 12px 0", padding: "14px 16px" }}>
+          <div style={{ ...capLabel, marginBottom: 12 }}>Parsed preview</div>
+
+          {isEmpty ? (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: 200, textAlign: "center", gap: 8 }}>
+              <span style={{ fontSize: 26, opacity: 0.5 }}>📋</span>
+              <div style={{ fontSize: 13, color: "#4a535f", maxWidth: 190, lineHeight: 1.5 }}>Your sets will appear here, grouped by exercise, as you paste.</div>
+            </div>
+          ) : hasParse ? (
+            <>
+              {metaChips.length > 0 && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
+                  {metaChips.map((m, i) => (
+                    <span key={i} style={{ fontSize: 11.5, color: "#9fb0b3", background: "rgba(79,179,189,0.1)", border: "1px solid rgba(79,179,189,0.22)", borderRadius: 999, padding: "3px 10px", whiteSpace: "nowrap" }}>{m}</span>
+                  ))}
+                </div>
+              )}
+              {parsed.exercises.map((ex, i) => (
+                <div key={i} style={{ marginBottom: 12, border: "1px solid #232a33", borderRadius: 12, overflow: "hidden", background: "#131820" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", background: "#171d26" }}>
+                    <span style={{ flex: 1, fontSize: 13.5, fontWeight: 600, color: "#e6ebf1", letterSpacing: "-0.01em" }}>{ex.name}</span>
+                    <span style={{ fontSize: 11, color: "#6b7480", fontVariantNumeric: "tabular-nums" }}>{ex.sets.length} × sets</span>
+                  </div>
+                  {ex.sets.map((st, j) => {
+                    const vol = (st.weight || 0) * (st.reps || 0);
+                    const w = st.weight % 1 === 0 ? String(st.weight) : Number(st.weight).toFixed(1);
+                    return (
+                      <div key={j} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 12px", borderTop: "1px solid #1c222b", fontVariantNumeric: "tabular-nums", opacity: st.warmup ? 0.6 : 1 }}>
+                        <span style={{ width: 20, fontSize: 11, color: "#545d68", fontWeight: 700, fontFamily: "ui-monospace, Menlo, monospace" }}>{st.warmup ? "W" : j + 1}</span>
+                        <span style={{ fontSize: 13, color: "#dbe1e8", fontWeight: 600 }}>{w}<span style={{ fontSize: 11, color: "#6b7480", fontWeight: 500 }}> {st.unit}</span></span>
+                        <span style={{ fontSize: 12, color: "#545d68" }}>×</span>
+                        <span style={{ fontSize: 13, color: "#dbe1e8", fontWeight: 600 }}>{st.reps}<span style={{ fontSize: 11, color: "#6b7480", fontWeight: 500 }}> reps</span></span>
+                        <span style={{ flex: 1 }} />
+                        <span style={{ fontSize: 11, color: "#4fb3bd", fontVariantNumeric: "tabular-nums" }}>{vol > 0 ? Math.round(vol) + " " + st.unit : "—"}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+            </>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: 200, textAlign: "center", gap: 8 }}>
+              <span style={{ fontSize: 22, color: "#b98a4a" }}>⚠</span>
+              <div style={{ fontSize: 13, color: "#8a7550", maxWidth: 200, lineHeight: 1.5 }}>No sets read yet — check the formatting (e.g. <span style={{ fontFamily: "ui-monospace, monospace" }}>80 kg x 8</span>).</div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* save */}
+      <div style={{ padding: "16px 22px 20px" }}>
+        <button onClick={save} disabled={!hasParse}
+          style={{ width: "100%", padding: 15, borderRadius: 13, border: "none", fontSize: 15, fontWeight: 700, letterSpacing: "-0.01em", cursor: hasParse ? "pointer" : "not-allowed", color: hasParse ? "#04191b" : "#4a535f", background: hasParse ? "linear-gradient(150deg, #4fb3bd, #2f7d84)" : "#1a2029", transition: "background 0.15s" }}>
+          {hasParse ? `Save workout · ${parsed.totalSets} sets` : "Add some sets to save"}
+        </button>
+      </div>
+    </div>
     {!hideRecent && <RecentList entries={recent} render={w => <><span className="ra-main">{w.label}{w.prs?.length ? " 🏆" : ""}</span><span className="ra-date">{formatShortDate(w.date)}</span></>} />}
     </>
   );
