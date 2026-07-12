@@ -95,7 +95,7 @@ export function ProgressionCard({ data, goals }) {
 
   if (rows.length === 0) {
     return (
-      <div style={{ maxWidth: 440, margin: "0 auto", padding: 20, background: "#161b22", border: "1px solid #262d38", borderRadius: 20 }}>
+      <div style={{ width: "100%", padding: 20, background: "#161b22", border: "1px solid #262d38", borderRadius: 20 }}>
         <div style={{ fontSize: 17, fontWeight: 700, color: "#e9edf2", marginBottom: 4 }}>Progression</div>
         <Empty title="No lifts to compare yet" hint="Log a lift twice and you'll see whether you beat it" />
       </div>
@@ -106,7 +106,7 @@ export function ProgressionCard({ data, goals }) {
 
   return (
     <>
-      <div style={{ maxWidth: 440, margin: "0 auto", padding: "20px 20px 8px", background: "#161b22", border: "1px solid #262d38", borderRadius: 20 }}>
+      <div style={{ width: "100%", padding: "20px 20px 8px", background: "#161b22", border: "1px solid #262d38", borderRadius: 20 }}>
         {/* header */}
         <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 15 }}>
           <div style={{ flex: 1 }}>
