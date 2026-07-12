@@ -3,6 +3,7 @@ import { MacroDonut, MiniChart, Card, Empty, toast, useConfirm } from "../compon
 import { StatusPill } from "../components/StatusPill";
 import { ProgressionCard } from "../components/ProgressionCard";
 import { WorkoutAnalysis } from "./WorkoutScreen";
+import { SetTargetsCard } from "../components/SetTargetsCard";
 import { CreatineSaturationCard } from "../components/CreatineSaturationCard";
 import { NIC_TYPES, TYPE_DOT } from "../config";
 import { getDayContext } from "../engines/dayContext";
@@ -142,7 +143,7 @@ function NutritionTrends({ data, goals, addEntry, range, setRange, calPts, prote
   );
 }
 
-function TrainingTrends({ data, goals, range, setRange, workoutPts }) {
+function TrainingTrends({ data, goals, range, setRange, workoutPts, onSaveGoals }) {
   const totalWorkouts = workoutPts.reduce((a, p) => a + p.value, 0);
 
   return (
@@ -152,6 +153,8 @@ function TrainingTrends({ data, goals, range, setRange, workoutPts }) {
       <ProgressionCard data={data} goals={goals} />
 
       <WorkoutAnalysis data={data} goals={goals} />
+
+      <SetTargetsCard data={data} goals={goals} onSaveGoals={onSaveGoals} />
 
       <RangeSeg range={range} setRange={setRange} />
 
@@ -240,7 +243,7 @@ const TREND_CATS = [
   { key: "ejac", label: "💧 Ejac" },
 ];
 
-function TrendsView({ data, goals, addEntry }) {
+function TrendsView({ data, goals, addEntry, onSaveGoals }) {
   const [cat, setCat] = useState("nutrition");
   const [range, setRange] = useState(14); // lifted so it persists across sub-tab switches
   const { sleepPts, calPts, proteinPts, workoutPts, waterPts } = useSeries(data, goals, range);
@@ -254,7 +257,7 @@ function TrendsView({ data, goals, addEntry }) {
       </div>
 
       {cat === "nutrition" && <NutritionTrends data={data} goals={goals} addEntry={addEntry} range={range} setRange={setRange} calPts={calPts} proteinPts={proteinPts} waterPts={waterPts} />}
-      {cat === "training" && <TrainingTrends data={data} goals={goals} range={range} setRange={setRange} workoutPts={workoutPts} />}
+      {cat === "training" && <TrainingTrends data={data} goals={goals} range={range} setRange={setRange} workoutPts={workoutPts} onSaveGoals={onSaveGoals} />}
       {cat === "sleep" && <SleepTrends data={data} goals={goals} range={range} setRange={setRange} sleepPts={sleepPts} />}
       {cat === "ejac" && <EjacTrends />}
     </>
@@ -402,7 +405,7 @@ function HistItem({ item, type, onDelete }) {
   );
 }
 
-export function HistoryTab({ data, goals, addEntry, deleteEntry }) {
+export function HistoryTab({ data, goals, addEntry, deleteEntry, onSaveGoals }) {
   const [view, setView] = useState("trends"); // trends | lists
   return (
     <div className="stack">
@@ -410,7 +413,7 @@ export function HistoryTab({ data, goals, addEntry, deleteEntry }) {
         <button className={`subtab ${view === "trends" ? "active" : ""}`} onClick={() => setView("trends")}>📊 Trends</button>
         <button className={`subtab ${view === "lists" ? "active" : ""}`} onClick={() => setView("lists")}>≡ Lists</button>
       </div>
-      {view === "trends" && <TrendsView data={data} goals={goals} addEntry={addEntry} />}
+      {view === "trends" && <TrendsView data={data} goals={goals} addEntry={addEntry} onSaveGoals={onSaveGoals} />}
       {view === "lists" && <ListsView data={data} deleteEntry={deleteEntry} />}
     </div>
   );
