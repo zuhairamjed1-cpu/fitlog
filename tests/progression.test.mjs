@@ -3,7 +3,7 @@
 // parser reads `@N` as RPE, so RIR = 10 - RPE. To express "2 RIR" as parser input
 // we write RPE 8 (@8), "1 RIR" → @9, "0 RIR" → @10, "4 RIR" → @6.
 
-import { computeProgression, canonKey } from "../src/engines/progression";
+import { computeProgression, canonKey } from "../src/engines/progression.js";
 import { daysAgo } from "../src/lib/dates";
 
 let pass = 0, fail = 0;

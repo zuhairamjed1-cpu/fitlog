@@ -203,6 +203,10 @@ body::after {
 /* Insight */
 .insight { font-size: .9rem; line-height: 1.6; color: var(--text); }
 
+/* Progression card sheet animations */
+@keyframes pc-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes pc-rise { from { transform: translateY(18px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
 /* Sub-tabs */
 .subtabs {
   display: flex; gap: 4px; background: var(--surface); padding: 5px;
