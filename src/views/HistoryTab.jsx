@@ -84,7 +84,7 @@ function TrainingTrends({ data, goals, range, setRange, workoutPts, onSaveGoals 
 
   return (
     <>
-      <StreakCard data={data} goals={goals} />
+      <StreakCard data={data} goals={goals} onSaveGoals={onSaveGoals} />
 
       <ProgressionCard data={data} goals={goals} />
 
