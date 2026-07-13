@@ -3,6 +3,7 @@ import { getTodayStr } from "../lib/dates";
 import { haptic, SFX } from "../lib/fx";
 import { DietForm } from "../views/DietForm";
 import { EjacTab } from "../views/EjacTab";
+import { UrgeTracker } from "../components/UrgeTracker";
 import { GoalPlanV3 } from "../views/goal/GoalPlan";
 import { WaterForm, WeightForm } from "../views/IntakeTab";
 import { JournalTab } from "../views/JournalTab";
@@ -11,6 +12,21 @@ import { PlanTab } from "../views/PlanTab";
 import { SkinSection } from "../views/skin/SkinSection";
 import { SleepSection } from "../views/SleepSection";
 import { WorkoutScreen, SportsForm } from "../views/WorkoutScreen";
+
+// Private section: new ACT urge tracker on top, classic counter tucked in a
+// collapsible drawer at the bottom.
+function PrivateSection({ data, addEntry, deleteEntry }) {
+  const [showClassic, setShowClassic] = useState(false);
+  return (
+    <div className="stack">
+      <UrgeTracker data={data} addEntry={addEntry} deleteEntry={deleteEntry} />
+      <button className="btn-ghost full" style={{ marginTop: 18 }} onClick={() => setShowClassic(s => !s)}>
+        {showClassic ? "Hide classic tracker ▾" : "Classic tracker ▸"}
+      </button>
+      {showClassic && <EjacTab data={data} addEntry={addEntry} deleteEntry={deleteEntry} />}
+    </div>
+  );
+}
 
 // ===== extracted body =====
 // Full-screen sheet launched by the raised ＋. Shows logging options grouped by
@@ -56,7 +72,7 @@ export function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, se
       case "journal": return <JournalTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} setData={setData} />;
       case "skin": return <SkinSection data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} updateEntry={updateEntry} onSaveGoals={onSaveGoals} />;
       case "goalplan": return <GoalPlanV3 data={data} goals={goals} onSaveGoals={onSaveGoals} addEntry={addEntry} deleteEntry={deleteEntry} />;
-      case "ejac": return <EjacTab data={data} addEntry={addEntry} deleteEntry={deleteEntry} />;
+      case "ejac": return <PrivateSection data={data} addEntry={addEntry} deleteEntry={deleteEntry} />;
       default: return null;
     }
   };
