@@ -9,7 +9,7 @@ export const TABS = ["Home", "Log", "History", "Coach", "Journal", "Settings", "
 // learned or set. Imported by sleep.js, sleepScore.js, and GoalPlan.jsx.
 export const DEFAULT_SLEEP_NEED_H = 8;
 
-export const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], supplementLib: [], nicotine: [], nicotinePlans: [], journal: [], weight: [], ejac: [], skin: [], skinResearch: [], skinProcedures: [], plannedSessions: [], skinRoutineLogs: [], skinProductIntros: [], skinRoutineChanges: [], skinCoachPlans: [], goalSnapshots: [], goalReports: [], completedPhases: [], decisionLog: [], constraintSnapshots: [] };
+export const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], supplementLib: [], nicotine: [], nicotinePlans: [], journal: [], weight: [], ejac: [], tasks: [], skin: [], skinResearch: [], skinProcedures: [], plannedSessions: [], skinRoutineLogs: [], skinProductIntros: [], skinRoutineChanges: [], skinCoachPlans: [], goalSnapshots: [], goalReports: [], completedPhases: [], decisionLog: [], constraintSnapshots: [] };
 
 export const defaultProfile = {
   // Body
@@ -75,7 +75,7 @@ export const TYPE_ICON = { sleep: "◐", diet: "◉", exercise: "◆", sports: "
 // ─── AI MODEL PREFERENCE ──────────────────────────────────────────────────────
 export const MODELS = {
   haiku: { id: "claude-haiku-4-5", label: "Haiku", desc: "Fast & cheap — great for everyday logging" },
-  sonnet: { id: "claude-sonnet-4-20250514", label: "Sonnet", desc: "Smartest — best accuracy, costs ~12x more" },
+  sonnet: { id: "claude-sonnet-5", label: "Sonnet", desc: "Smartest — best accuracy, costs ~12x more" },
 };
 let _currentModel = (() => { try { return localStorage.getItem(STORAGE_KEY + "_model") === "sonnet" ? "sonnet" : "haiku"; } catch { return "haiku"; } })();
 export function loadModelPref() {

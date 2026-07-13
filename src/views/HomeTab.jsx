@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { callClaude } from "../api/client";
 import { buildBrain } from "../brain/brain";
 import { Ring, MacroDonut, MiniChart, Card, Empty, toast, ToastHost, ConfirmModal, useConfirm } from "../components/primitives";
@@ -123,7 +123,7 @@ function computeAchievements(data, goals, streak) {
 // ./components/primitives.jsx (imported above).
 
 // ─── HOME TAB ─────────────────────────────────────────────────────────────────
-export function HomeTab({ data, goals, onAddWater, onAddNicotine, onNav }) {
+export function HomeTab({ data, goals, onAddWater, onAddNicotine, onNav, addEntry, deleteEntry, setData }) {
   const today = getTodayStr();
   const now = new Date();
   const hr = now.getHours();
@@ -265,6 +265,8 @@ export function HomeTab({ data, goals, onAddWater, onAddNicotine, onNav }) {
         <span className="qa-icon">✦</span><span>Ask coach</span>
       </button>
 
+      <TaskCard data={data} addEntry={addEntry} deleteEntry={deleteEntry} setData={setData} />
+
       {/* TODAY LOGGED */}
       <Card title="Today">
         {nothingToday ? (
@@ -306,5 +308,48 @@ export function HomeTab({ data, goals, onAddWater, onAddNicotine, onNav }) {
         );
       })()}
     </div>
+  );
+}
+
+// ─── Tasks / improvements (simple checklist) ────────────────────────────────
+function TaskCard({ data, addEntry, deleteEntry, setData }) {
+  const [text, setText] = useState("");
+  const tasks = data.tasks || [];
+  const open = tasks.filter(t => !t.done).length;
+
+  const add = () => {
+    const v = text.trim();
+    if (!v) return;
+    addEntry("tasks")({ id: Date.now(), text: v, done: false, ts: Date.now() });
+    setText("");
+    haptic(6);
+  };
+  const toggle = id => setData(d => ({ ...d, tasks: (d.tasks || []).map(t => t.id === id ? { ...t, done: !t.done } : t) }));
+
+  return (
+    <Card title="Tasks & improvements" sub={tasks.length ? `${open} open · ${tasks.length - open} done` : "Small things to get better at"}>
+      <div style={{ display: "flex", gap: 8, marginBottom: tasks.length ? 12 : 0 }}>
+        <input value={text} onChange={e => setText(e.target.value)} onKeyDown={e => { if (e.key === "Enter") add(); }}
+          placeholder="Add a task or improvement…"
+          style={{ flex: 1, background: "var(--bg-2)", color: "var(--text)", border: "1px solid var(--line)", borderRadius: 10, padding: "10px 12px", fontSize: 14 }} />
+        <button className="btn" onClick={add} disabled={!text.trim()} style={{ padding: "0 16px" }}>Add</button>
+      </div>
+      {tasks.length === 0 ? null : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {tasks.slice().sort((a, b) => (a.done - b.done) || (b.ts || 0) - (a.ts || 0)).map(t => (
+            <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 11, padding: "9px 2px", borderTop: "1px solid var(--line)" }}>
+              <button onClick={() => toggle(t.id)} aria-label="toggle"
+                style={{ width: 20, height: 20, flexShrink: 0, borderRadius: 6, cursor: "pointer",
+                  border: `1.5px solid ${t.done ? "var(--good)" : "var(--border-strong)"}`,
+                  background: t.done ? "var(--good)" : "transparent", color: "#04191b", fontSize: 13, fontWeight: 700, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                {t.done ? "✓" : ""}
+              </button>
+              <span style={{ flex: 1, fontSize: 14, color: t.done ? "var(--muted)" : "var(--text)", textDecoration: t.done ? "line-through" : "none" }}>{t.text}</span>
+              <button onClick={() => deleteEntry("tasks")(t.id)} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", fontSize: 17, lineHeight: 1 }}>×</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }

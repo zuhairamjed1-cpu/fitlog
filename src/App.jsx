@@ -236,7 +236,7 @@ function AppShell({ session, syncing }) {
         </header>
 
         <main className="main">
-          {activeTab === "Home" && <ErrorBoundary compact label="Home"><HomeTab data={data} goals={goals} onAddWater={addEntry("water")} onAddNicotine={addEntry("nicotine")} onNav={navTo} /></ErrorBoundary>}
+          {activeTab === "Home" && <ErrorBoundary compact label="Home"><HomeTab data={data} goals={goals} onAddWater={addEntry("water")} onAddNicotine={addEntry("nicotine")} onNav={navTo} addEntry={addEntry} deleteEntry={deleteEntry} setData={setData} /></ErrorBoundary>}
           {activeTab === "Insights" && <ErrorBoundary compact label="Insights"><Suspense fallback={<div className="muted-center" style={{ padding: 40 }}><span className="spinner" /></div>}><HistoryTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} onSaveGoals={setGoals} initialCat={insightsCat} /></Suspense></ErrorBoundary>}
           {activeTab === "Coach" && <ErrorBoundary compact label="Coach"><Suspense fallback={<div className="muted-center" style={{ padding: 40 }}><span className="spinner" /></div>}><CoachTab data={data} goals={goals} /></Suspense></ErrorBoundary>}
           {activeTab === "Me" && <ErrorBoundary compact label="Me"><MeTab data={data} goals={goals} onSaveGoals={setGoals} onClearAll={clearAll} onImport={importData} session={session} onSignOut={signOut} addEntry={addEntry} deleteEntry={deleteEntry} /></ErrorBoundary>}
