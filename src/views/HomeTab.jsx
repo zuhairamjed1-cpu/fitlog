@@ -257,6 +257,9 @@ export function HomeTab({ data, goals, onAddWater, onAddNicotine, onNav }) {
         <button className="qa" onClick={quickNicotine} onContextMenu={e => { e.preventDefault(); onNav("Log", "nicotine"); }}>
           <span className="qa-icon">🚬</span><span>Log {NIC_QUICK[0].label}</span>
         </button>
+        <button className="qa" onClick={() => onNav("Insights", "ejac")}>
+          <span className="qa-icon">🌊</span><span>Act tracker</span>
+        </button>
       </div>
       <button className="qa-wide" onClick={() => onNav("Coach")}>
         <span className="qa-icon">✦</span><span>Ask coach</span>

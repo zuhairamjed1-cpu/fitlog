@@ -1,8 +1,9 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { MacroDonut, MiniChart, Card, Empty, toast, useConfirm } from "../components/primitives";
 import { StatusPill } from "../components/StatusPill";
 import { ProgressionCard } from "../components/ProgressionCard";
 import { StreakCard } from "../components/StreakCard";
+import { UrgeTracker } from "../components/UrgeTracker";
 import { WorkoutAnalysis } from "./WorkoutScreen";
 import { CreatineSaturationCard } from "../components/CreatineSaturationCard";
 import { NIC_TYPES, TYPE_DOT } from "../config";
@@ -160,14 +161,8 @@ function SleepTrends({ data, goals, range, setRange, sleepPts }) {
   );
 }
 
-function EjacTrends() {
-  // TODO: useSeries already returns ejacPts (per-day counts from data.ejac) —
-  // wire real stats here later.
-  return (
-    <Card title="💧 Ejac">
-      <Empty title="Nothing here yet" hint="Coming soon" />
-    </Card>
-  );
+function EjacTrends({ data, addEntry, deleteEntry }) {
+  return <UrgeTracker data={data} addEntry={addEntry} deleteEntry={deleteEntry} />;
 }
 
 const TREND_CATS = [
@@ -177,8 +172,9 @@ const TREND_CATS = [
   { key: "ejac", label: "💧 Ejac" },
 ];
 
-function TrendsView({ data, goals, addEntry, onSaveGoals }) {
-  const [cat, setCat] = useState("nutrition");
+function TrendsView({ data, goals, addEntry, deleteEntry, onSaveGoals, initialCat }) {
+  const [cat, setCat] = useState(initialCat || "nutrition");
+  useEffect(() => { if (initialCat) setCat(initialCat); }, [initialCat]);
   const [range, setRange] = useState(14); // lifted so it persists across sub-tab switches
   const { sleepPts, calPts, proteinPts, workoutPts, waterPts } = useSeries(data, goals, range);
 
@@ -193,7 +189,7 @@ function TrendsView({ data, goals, addEntry, onSaveGoals }) {
       {cat === "nutrition" && <NutritionTrends data={data} goals={goals} addEntry={addEntry} range={range} setRange={setRange} calPts={calPts} proteinPts={proteinPts} waterPts={waterPts} />}
       {cat === "training" && <TrainingTrends data={data} goals={goals} range={range} setRange={setRange} workoutPts={workoutPts} onSaveGoals={onSaveGoals} />}
       {cat === "sleep" && <SleepTrends data={data} goals={goals} range={range} setRange={setRange} sleepPts={sleepPts} />}
-      {cat === "ejac" && <EjacTrends />}
+      {cat === "ejac" && <EjacTrends data={data} addEntry={addEntry} deleteEntry={deleteEntry} />}
     </>
   );
 }
@@ -339,15 +335,16 @@ function HistItem({ item, type, onDelete }) {
   );
 }
 
-export function HistoryTab({ data, goals, addEntry, deleteEntry, onSaveGoals }) {
+export function HistoryTab({ data, goals, addEntry, deleteEntry, onSaveGoals, initialCat }) {
   const [view, setView] = useState("trends"); // trends | lists
+  useEffect(() => { if (initialCat) setView("trends"); }, [initialCat]);
   return (
     <div className="stack">
       <div className="subtabs">
         <button className={`subtab ${view === "trends" ? "active" : ""}`} onClick={() => setView("trends")}>📊 Trends</button>
         <button className={`subtab ${view === "lists" ? "active" : ""}`} onClick={() => setView("lists")}>≡ Lists</button>
       </div>
-      {view === "trends" && <TrendsView data={data} goals={goals} addEntry={addEntry} onSaveGoals={onSaveGoals} />}
+      {view === "trends" && <TrendsView data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} onSaveGoals={onSaveGoals} initialCat={initialCat} />}
       {view === "lists" && <ListsView data={data} deleteEntry={deleteEntry} />}
     </div>
   );

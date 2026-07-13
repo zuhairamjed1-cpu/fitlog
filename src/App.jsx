@@ -150,6 +150,7 @@ function AppShell({ session, syncing }) {
   const [activeTab, setActiveTab] = useState("Home");
   const [logOpen, setLogOpen] = useState(false);
   const [logInitial, setLogInitial] = useState(null);
+  const [insightsCat, setInsightsCat] = useState(null);
   const [showWelcome, setShowWelcome] = useState(true);
   const [data, setData] = useState(loadData);
   const [goals, setGoals] = useState(loadGoals);
@@ -203,7 +204,9 @@ function AppShell({ session, syncing }) {
 
   function navTo(tab, sub) {
     if (tab === "Log") { setLogInitial(sub || null); setLogOpen(true); SFX.tap(); return; }
-    setActiveTab(tab === "History" ? "Insights" : tab);
+    const t = tab === "History" ? "Insights" : tab;
+    if (t === "Insights") setInsightsCat(sub || null);
+    setActiveTab(t);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
   function openLog(view) { setLogInitial(view || null); setLogOpen(true); SFX.tap(); }
@@ -234,7 +237,7 @@ function AppShell({ session, syncing }) {
 
         <main className="main">
           {activeTab === "Home" && <ErrorBoundary compact label="Home"><HomeTab data={data} goals={goals} onAddWater={addEntry("water")} onAddNicotine={addEntry("nicotine")} onNav={navTo} /></ErrorBoundary>}
-          {activeTab === "Insights" && <ErrorBoundary compact label="Insights"><Suspense fallback={<div className="muted-center" style={{ padding: 40 }}><span className="spinner" /></div>}><HistoryTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} onSaveGoals={setGoals} /></Suspense></ErrorBoundary>}
+          {activeTab === "Insights" && <ErrorBoundary compact label="Insights"><Suspense fallback={<div className="muted-center" style={{ padding: 40 }}><span className="spinner" /></div>}><HistoryTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} onSaveGoals={setGoals} initialCat={insightsCat} /></Suspense></ErrorBoundary>}
           {activeTab === "Coach" && <ErrorBoundary compact label="Coach"><Suspense fallback={<div className="muted-center" style={{ padding: 40 }}><span className="spinner" /></div>}><CoachTab data={data} goals={goals} /></Suspense></ErrorBoundary>}
           {activeTab === "Me" && <ErrorBoundary compact label="Me"><MeTab data={data} goals={goals} onSaveGoals={setGoals} onClearAll={clearAll} onImport={importData} session={session} onSignOut={signOut} addEntry={addEntry} deleteEntry={deleteEntry} /></ErrorBoundary>}
         </main>
