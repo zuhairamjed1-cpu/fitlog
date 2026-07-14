@@ -8,6 +8,7 @@ const AC = "#4fb3bd", GOOD = "#5fcf80", BAD = "#f4776a", MUT = "#6b7480", T2 = "
 const dayDiff = (a, b) => Math.round((new Date(b + "T00:00:00") - new Date(a + "T00:00:00")) / 86400000);
 
 const STAT_BY_SOURCE = {
+  exercise: ["volume", "sets", "count"],
   sleep: ["score", "debt"],
   weight: ["avg"],
   water: ["total", "count"],
@@ -155,7 +156,7 @@ function NewExperimentSheet({ data, goals, setData, onClose }) {
   const [stat, setStat] = useState("score");
   const [hypothesis, setHypothesis] = useState("");
 
-  const metric = { source, stat, direction: DEFAULT_DIR[stat] || "up" };
+  const metric = { source, stat, direction: source === "exercise" ? "up" : (DEFAULT_DIR[stat] || "up") };
   const dummyExp = { id: "_new", startDate: start, endDate: end };
   const overlap = hasOverlap(dummyExp, data.experiments || []);
   const valid = title.trim() && start <= end;

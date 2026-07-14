@@ -43,18 +43,20 @@ export function metricSeries(data, metric, range) {
   const src = metric.source;
 
   if (src === "exercise") {
-    const key = normExercise(metric.key || "");
+    // key optional. With a key → that lift; without → the whole workout aggregated.
+    const key = metric.key ? normExercise(metric.key) : null;
     const rows = [];
     (data.exercise || []).forEach(e => {
       if (!e.date || !within(e.date)) return;
       const p = e._parsed || parseWorkout(e.text || "");
-      const ex = (p.exercises || []).find(x => normExercise(x.name) === key);
-      if (!ex) return;
-      const sets = ex.sets || [];
+      const exs = key ? (p.exercises || []).filter(x => normExercise(x.name) === key) : (p.exercises || []);
+      if (!exs.length) return;
+      const allSets = exs.flatMap(ex => ex.sets || []);
       let value;
-      if (metric.stat === "sets") value = sets.length;
-      else if (metric.stat === "volume") value = sets.reduce((s, st) => s + (st.weight || 0) * (st.reps || 0), 0);
-      else value = Math.max(0, ...sets.map(st => e1rm(st))); // est1RM
+      if (metric.stat === "count") value = 1;                                   // one session
+      else if (metric.stat === "sets") value = allSets.length;
+      else if (metric.stat === "volume") value = allSets.reduce((s, st) => s + (st.weight || 0) * (st.reps || 0), 0);
+      else value = Math.max(0, ...allSets.map(st => e1rm(st)));                  // est1RM (needs a key)
       rows.push({ date: e.date, value });
     });
     return rows.sort((a, b) => a.date.localeCompare(b.date));
