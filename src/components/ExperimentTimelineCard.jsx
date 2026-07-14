@@ -286,4 +286,38 @@ function ExperimentDetailSheet({ data, exp, onClose }) {
     </>, onClose);
 }
 
+// ── Phase 7: inline full list for Insights → Training ──
+export function ExperimentsInline({ data }) {
+  const today = getTodayStr();
+  const [detail, setDetail] = useState(null);
+  const exps = data.experiments || [];
+  if (!exps.length) return null;
+  const rows = [...exps].sort((a, b) => b.startDate.localeCompare(a.startDate));
+  const byYear = {};
+  rows.forEach(e => { const y = (e.startDate || "").slice(0, 4); (byYear[y] = byYear[y] || []).push(e); });
+  return (
+    <Card title="🧪 All experiments" sub={`${exps.length} total`}>
+      {Object.keys(byYear).sort((a, b) => b.localeCompare(a)).map(y => (
+        <div key={y} style={{ marginBottom: 12 }}>
+          <div style={{ ...capLabel, marginBottom: 4 }}>{y}</div>
+          {byYear[y].map(e => {
+            const st = deriveStatus(e, today);
+            const ev = st === "done" && e.verdict ? evaluate(data, e, exps) : null;
+            return (
+              <div key={e.id} onClick={() => setDetail(e.id)} style={{ padding: "10px 2px", borderTop: `1px solid ${LINE}`, cursor: "pointer" }}>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: TX }}>{e.title}</span>
+                  <span style={{ fontSize: 11, fontWeight: 700, textTransform: "capitalize", color: e.verdict === "kept" ? GOOD : e.verdict === "dropped" ? BAD : e.verdict ? MUT : st === "active" ? AC : MUT }}>{e.verdict || st}</span>
+                </div>
+                <div style={{ fontSize: 12, color: T2, marginTop: 3 }}>{formatShortDate(e.startDate)}–{formatShortDate(e.endDate)} · {metricLabel(e.metric)}{ev ? ` · ${ev.delta >= 0 ? "+" : ""}${Math.round(ev.delta)}` : ""}</div>
+              </div>
+            );
+          })}
+        </div>
+      ))}
+      {detail && <ExperimentDetailSheet data={data} exp={exps.find(x => x.id === detail)} onClose={() => setDetail(null)} />}
+    </Card>
+  );
+}
+
 export default ExperimentTimelineCard;

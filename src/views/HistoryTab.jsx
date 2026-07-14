@@ -5,6 +5,8 @@ import { ProgressionCard } from "../components/ProgressionCard";
 import { StreakCard } from "../components/StreakCard";
 import { NoteRow } from "./NotesScreen";
 import { searchNotes } from "../lib/notes";
+import { ExperimentBands } from "../components/ExperimentBands";
+import { ExperimentsInline } from "../components/ExperimentTimelineCard";
 import { WorkoutAnalysis } from "./WorkoutScreen";
 import { CreatineSaturationCard } from "../components/CreatineSaturationCard";
 import { NIC_TYPES, TYPE_DOT } from "../config";
@@ -42,7 +44,7 @@ function RangeSeg({ range, setRange }) {
   );
 }
 
-function NutritionTrends({ data, goals, addEntry, range, setRange, calPts, proteinPts, waterPts }) {
+function NutritionTrends({ data, goals, addEntry, range, setRange, calPts, proteinPts, waterPts, series }) {
   const calVals = calPts.map(p => p.value).filter(v => v != null);
   const avgCal = calVals.length ? Math.round(calVals.reduce((a, b) => a + b, 0) / calVals.length) : null;
   const proteinHits = proteinPts.filter(p => p.value != null && p.value >= goals.protein).length;
@@ -59,21 +61,21 @@ function NutritionTrends({ data, goals, addEntry, range, setRange, calPts, prote
           <div className="ts"><span className="ts-l">Average</span><span className="ts-v">{avgCal ?? "—"}</span></div>
           <div className="ts"><span className="ts-l">Target</span><span className="ts-v muted">{goals.calories}</span></div>
         </div>
-        <MiniChart points={calPts} showGoal={goals.calories} rollingAvg />
+        <div style={{ position: "relative" }}><MiniChart points={calPts} showGoal={goals.calories} rollingAvg /><ExperimentBands dates={series} source="nutrition" experiments={data.experiments} /></div>
       </Card>
 
       <Card title="🥩 Protein">
         <div className="trend-stats">
           <div className="ts"><span className="ts-l">Target hit</span><span className={`ts-v ${proteinLogged && proteinHits >= proteinLogged * 0.7 ? "good" : "neutral"}`}>{proteinLogged ? `${proteinHits}/${proteinLogged} days` : "—"}</span></div>
         </div>
-        <MiniChart points={proteinPts} showGoal={goals.protein} unit="g" />
+        <div style={{ position: "relative" }}><MiniChart points={proteinPts} showGoal={goals.protein} unit="g" /><ExperimentBands dates={series} source="nutrition" experiments={data.experiments} /></div>
       </Card>
 
       <Card title="💧 Water">
         <div className="trend-stats">
           <div className="ts"><span className="ts-l">Daily target</span><span className="ts-v">{goals.waterGoalMl}ml</span></div>
         </div>
-        <MiniChart points={waterPts} showGoal={goals.waterGoalMl} unit="ml" />
+        <div style={{ position: "relative" }}><MiniChart points={waterPts} showGoal={goals.waterGoalMl} unit="ml" /><ExperimentBands dates={series} source="water" experiments={data.experiments} /></div>
       </Card>
 
       <CreatineSaturationCard data={data} addEntry={addEntry} />
@@ -81,7 +83,7 @@ function NutritionTrends({ data, goals, addEntry, range, setRange, calPts, prote
   );
 }
 
-function TrainingTrends({ data, goals, range, setRange, workoutPts, onSaveGoals }) {
+function TrainingTrends({ data, goals, range, setRange, workoutPts, onSaveGoals, series }) {
   const totalWorkouts = workoutPts.reduce((a, p) => a + p.value, 0);
 
   return (
@@ -98,7 +100,8 @@ function TrainingTrends({ data, goals, range, setRange, workoutPts, onSaveGoals 
         <div className="trend-stats">
           <div className="ts"><span className="ts-l">Total</span><span className="ts-v">{totalWorkouts}</span></div>
         </div>
-        <div className="bars-row">
+        <div className="bars-row" style={{ position: "relative" }}>
+          <ExperimentBands dates={series} source="exercise" experiments={data.experiments} />
           {workoutPts.map((p, i) => (
             <div key={i} className="bar-col" title={`${p.value} workout${p.value === 1 ? "" : "s"}`}>
               <div className="bar-fill" style={{ height: `${Math.min(100, p.value * 33)}%`, opacity: p.value === 0 ? 0.15 : 1 }} />
@@ -106,11 +109,13 @@ function TrainingTrends({ data, goals, range, setRange, workoutPts, onSaveGoals 
           ))}
         </div>
       </Card>
+
+      <ExperimentsInline data={data} />
     </>
   );
 }
 
-function SleepTrends({ data, goals, range, setRange, sleepPts }) {
+function SleepTrends({ data, goals, range, setRange, sleepPts, series }) {
   const sleepVals = sleepPts.map(p => p.value).filter(v => v != null);
   const avgSleep = sleepVals.length ? +(sleepVals.reduce((a, b) => a + b, 0) / sleepVals.length).toFixed(1) : null;
   const sleepNeed = estimateSleepNeed(data, goals).hours;
@@ -144,7 +149,7 @@ function SleepTrends({ data, goals, range, setRange, sleepPts }) {
           <div className="ts"><span className="ts-l">Average</span><span className="ts-v">{avgSleep ?? "—"}h</span></div>
           <div className="ts"><span className="ts-l">Sleep debt</span><span className={`ts-v ${sleepDebt == null ? "" : sleepDebt > 5 ? "warn" : sleepDebt > 0 ? "neutral" : "good"}`}>{sleepDebt == null ? "—" : `${sleepDebt > 0 ? "+" : ""}${Math.round(sleepDebt*10)/10}h`}</span></div>
         </div>
-        <MiniChart points={sleepPts} showGoal={sleepNeed} rollingAvg unit="h" />
+        <div style={{ position: "relative" }}><MiniChart points={sleepPts} showGoal={sleepNeed} rollingAvg unit="h" /><ExperimentBands dates={series} source="sleep" experiments={data.experiments} /></div>
       </Card>
 
       {corr && (
@@ -172,7 +177,7 @@ function TrendsView({ data, goals, addEntry, deleteEntry, onSaveGoals, initialCa
   const [cat, setCat] = useState(initialCat || "nutrition");
   useEffect(() => { if (initialCat) setCat(initialCat); }, [initialCat]);
   const [range, setRange] = useState(14); // lifted so it persists across sub-tab switches
-  const { sleepPts, calPts, proteinPts, workoutPts, waterPts } = useSeries(data, goals, range);
+  const { series, sleepPts, calPts, proteinPts, workoutPts, waterPts } = useSeries(data, goals, range);
 
   return (
     <>
@@ -182,9 +187,9 @@ function TrendsView({ data, goals, addEntry, deleteEntry, onSaveGoals, initialCa
         ))}
       </div>
 
-      {cat === "nutrition" && <NutritionTrends data={data} goals={goals} addEntry={addEntry} range={range} setRange={setRange} calPts={calPts} proteinPts={proteinPts} waterPts={waterPts} />}
-      {cat === "training" && <TrainingTrends data={data} goals={goals} range={range} setRange={setRange} workoutPts={workoutPts} onSaveGoals={onSaveGoals} />}
-      {cat === "sleep" && <SleepTrends data={data} goals={goals} range={range} setRange={setRange} sleepPts={sleepPts} />}
+      {cat === "nutrition" && <NutritionTrends data={data} goals={goals} addEntry={addEntry} range={range} setRange={setRange} calPts={calPts} proteinPts={proteinPts} waterPts={waterPts} series={series} />}
+      {cat === "training" && <TrainingTrends data={data} goals={goals} range={range} setRange={setRange} workoutPts={workoutPts} onSaveGoals={onSaveGoals} series={series} />}
+      {cat === "sleep" && <SleepTrends data={data} goals={goals} range={range} setRange={setRange} sleepPts={sleepPts} series={series} />}
     </>
   );
 }
