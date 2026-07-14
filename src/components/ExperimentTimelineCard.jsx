@@ -189,11 +189,8 @@ function NewExperimentSheet({ data, goals, setData, onClose }) {
       <div style={{ marginTop: 14 }}>
         <label style={capLabel}>Metric (required)</label>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <select value={source} onChange={e => { const s = e.target.value; setSource(s); setStat(STAT_BY_SOURCE[s][0]); }} style={{ ...fieldStyle, flex: "1 1 130px" }}>
+          <select value={source} onChange={e => { const s = e.target.value; setSource(s); setStat(STAT_BY_SOURCE[s][0]); }} style={{ ...fieldStyle, flex: 1 }}>
             {Object.keys(STAT_BY_SOURCE).map(s => <option key={s} value={s}>{s}</option>)}
-          </select>
-          <select value={stat} onChange={e => setStat(e.target.value)} style={{ ...fieldStyle, flex: "1 1 110px" }}>
-            {STAT_BY_SOURCE[source].map(s => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
         {source === "exercise" && (
