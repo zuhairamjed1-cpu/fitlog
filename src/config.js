@@ -9,7 +9,7 @@ export const TABS = ["Home", "Log", "History", "Coach", "Journal", "Settings", "
 // learned or set. Imported by sleep.js, sleepScore.js, and GoalPlan.jsx.
 export const DEFAULT_SLEEP_NEED_H = 8;
 
-export const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], supplementLib: [], nicotine: [], nicotinePlans: [], journal: [], weight: [], ejac: [], tasks: [], skin: [], skinResearch: [], skinProcedures: [], plannedSessions: [], skinRoutineLogs: [], skinProductIntros: [], skinRoutineChanges: [], skinCoachPlans: [], goalSnapshots: [], goalReports: [], completedPhases: [], decisionLog: [], constraintSnapshots: [] };
+export const defaultData = { sleep: [], diet: [], exercise: [], sports: [], water: [], supplements: [], supplementLib: [], nicotine: [], nicotinePlans: [], journal: [], weight: [], ejac: [], tasks: [], notes: [], experiments: [], skin: [], skinResearch: [], skinProcedures: [], plannedSessions: [], skinRoutineLogs: [], skinProductIntros: [], skinRoutineChanges: [], skinCoachPlans: [], goalSnapshots: [], goalReports: [], completedPhases: [], decisionLog: [], constraintSnapshots: [] };
 
 export const defaultProfile = {
   // Body

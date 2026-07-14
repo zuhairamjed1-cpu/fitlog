@@ -4,6 +4,7 @@ import { haptic, SFX } from "../lib/fx";
 import { DietForm } from "../views/DietForm";
 import { EjacTab } from "../views/EjacTab";
 import { UrgeTracker } from "../components/UrgeTracker";
+import { NotesScreen } from "../views/NotesScreen";
 import { GoalPlanV3 } from "../views/goal/GoalPlan";
 import { WaterForm, WeightForm } from "../views/IntakeTab";
 import { JournalTab } from "../views/JournalTab";
@@ -56,6 +57,9 @@ export function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, se
       { key: "journal", label: "Journal", icon: "✎", color: "#9aa8e8" },
       { key: "ejac", label: "Private", icon: "◯", color: "#c9a2e8" },
     ] },
+    { title: "Knowledge", items: [
+      { key: "notes", label: "Notes", icon: "✐", color: "#8fd0c8" },
+    ] },
   ];
   const labelFor = k => { for (const g of groups) for (const it of g.items) if (it.key === k) return it.label; return "Log"; };
 
@@ -73,6 +77,7 @@ export function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, se
       case "skin": return <SkinSection data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} updateEntry={updateEntry} onSaveGoals={onSaveGoals} />;
       case "goalplan": return <GoalPlanV3 data={data} goals={goals} onSaveGoals={onSaveGoals} addEntry={addEntry} deleteEntry={deleteEntry} />;
       case "ejac": return <PrivateSection data={data} addEntry={addEntry} deleteEntry={deleteEntry} />;
+      case "notes": return <NotesScreen data={data} goals={goals} setData={setData} />;
       default: return null;
     }
   };

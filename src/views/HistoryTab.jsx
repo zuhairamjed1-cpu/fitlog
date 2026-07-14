@@ -3,6 +3,8 @@ import { MacroDonut, MiniChart, Card, Empty, toast, useConfirm } from "../compon
 import { StatusPill } from "../components/StatusPill";
 import { ProgressionCard } from "../components/ProgressionCard";
 import { StreakCard } from "../components/StreakCard";
+import { NoteRow } from "./NotesScreen";
+import { searchNotes } from "../lib/notes";
 import { WorkoutAnalysis } from "./WorkoutScreen";
 import { CreatineSaturationCard } from "../components/CreatineSaturationCard";
 import { NIC_TYPES, TYPE_DOT } from "../config";
@@ -201,6 +203,7 @@ function ListsView({ data, deleteEntry }) {
     { key: "nicotine", label: "Nicotine", icon: "🚬" },
     { key: "weight", label: "Weight", icon: "⚖" },
     { key: "ejac", label: "Ejac", icon: "💧" },
+    { key: "notes", label: "Notes", icon: "✐" },
   ];
   const entries = data[cat] || [];
   const shown = entries.slice(0, limit);
@@ -221,6 +224,9 @@ function ListsView({ data, deleteEntry }) {
           </button>
         ))}
       </div>
+      {cat === "notes" ? (
+        <NotesList data={data} onDelete={id => { deleteEntry("notes")(id); toast("Note deleted"); }} />
+      ) : (
       <Card title={label} sub={`${entries.length} ${entries.length === 1 ? "entry" : "entries"}`}>
         {entries.length === 0 ? (
           <Empty title={`No ${label.toLowerCase()} logged yet`} hint="Tap the ＋ button to add some" />
@@ -235,7 +241,39 @@ function ListsView({ data, deleteEntry }) {
           </>
         )}
       </Card>
+      )}
     </>
+  );
+}
+
+function NotesList({ data, onDelete }) {
+  const [query, setQuery] = useState("");
+  const [tag, setTag] = useState(null);
+  const notes = data.notes || [];
+  const filtered = useMemo(() => searchNotes(notes, query, { tag }), [notes, query, tag]);
+  const allTags = useMemo(() => [...new Set(notes.flatMap(n => n.tags || []))].sort(), [notes]);
+  const chip = (active, label, onClick) => <button key={label} onClick={onClick} style={{ fontSize: 12, padding: "4px 10px", borderRadius: 999, cursor: "pointer", border: `1px solid ${active ? "var(--accent)" : "var(--line)"}`, background: active ? "rgba(120,180,200,0.14)" : "var(--bg-2)", color: active ? "var(--text)" : "var(--text-2)" }}>{label}</button>;
+  return (
+    <Card title="Notes" sub={`${notes.length} note${notes.length === 1 ? "" : "s"}`}>
+      {notes.length === 0 ? (
+        <Empty title="No notes yet" hint="Add notes from the ＋ → Notes tile." />
+      ) : (
+        <>
+          <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search notes…"
+            style={{ width: "100%", background: "var(--bg-2)", color: "var(--text)", border: "1px solid var(--line)", borderRadius: 10, padding: "9px 12px", fontSize: 14, marginBottom: 10 }} />
+          {allTags.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
+              {tag ? chip(true, `#${tag} ✕`, () => setTag(null)) : allTags.slice(0, 12).map(t => chip(false, `#${t}`, () => setTag(t)))}
+            </div>
+          )}
+          {filtered.length === 0 ? <p className="muted small">No notes match.</p> : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {filtered.map(n => <NoteRow key={n.id} n={n} onDelete={onDelete} onTag={setTag} />)}
+            </div>
+          )}
+        </>
+      )}
+    </Card>
   );
 }
 

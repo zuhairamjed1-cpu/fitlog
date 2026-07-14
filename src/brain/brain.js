@@ -489,6 +489,18 @@ export function buildBrain(data, goals) {
       topNeg: recovery.reasons.filter(r => r.dir === "neg").slice(0, 4).map(r => r.text),
     },
     ejac: ejacSummary,
+    notes: (() => {
+      const all = data.notes || [];
+      if (!all.length) return null;
+      const cut = daysAgo(13);
+      const picked = all.filter(n => n.pinned || (n.date && n.date >= cut));
+      if (!picked.length) return null;
+      const fmt = n => `- ${n.pinned ? "📌 " : ""}${n.tags && n.tags.length ? `[${n.tags.join(",")}] ` : ""}${(n.text || "").replace(/\s+/g, " ").trim()}`;
+      const out = [];
+      let budget = 2000;
+      for (const n of picked) { const line = fmt(n); if (budget - line.length < 0) break; out.push(line); budget -= line.length + 1; }
+      return out.length ? out : null;
+    })(),
     profile: goals.profile || {},
     strategy: goals.strategy || {},
     nicotine: (() => {
@@ -778,6 +790,13 @@ export function formatBrainText(brain) {
     lines.push("== PERSONAL METRIC (EJAC) — private behavioral tracker ==");
     lines.push(`Last 7d: ${e.last7} sessions | last 30d: ${e.last30} (avg ${e.avgPerDay30}/day) | porn ${e.pornPct30}% | gooning ${e.goonPct30}%`);
     lines.push(`GUARDRAILS: This is a neutral self-tracked metric. Only discuss it if the user explicitly raises it. Do NOT moralize, pathologize, judge, congratulate, shame, or give unsolicited health/behavioral advice about it. If the user asks, report the numbers factually and matter-of-factly.`);
+  }
+
+  // ─── NOTES (user's own knowledge base) ────────────────────────────────────
+  if (brain.notes && brain.notes.length) {
+    lines.push("");
+    lines.push("== NOTES (pinned + last 14 days — the user's own observations) ==");
+    brain.notes.forEach(l => lines.push(l));
   }
 
   // ─── NICOTINE ─────────────────────────────────────────────────────────────

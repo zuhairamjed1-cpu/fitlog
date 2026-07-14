@@ -5,6 +5,7 @@ import { estimateSportsCalories } from "../api/client";
 import { Card, Empty, toast } from "../components/primitives";
 import { RecentList } from "../components/RecentList";
 import { SetTargetsModal } from "../components/SetTargetsCard";
+import { NoteStrip } from "../components/NoteStrip";
 import { TierBadge } from "../components/TierBadge";
 import { sportsOptions, intensityLevels } from "../config";
 import { SESSION_TYPES } from "../engines/fueling";
@@ -310,7 +311,7 @@ export function WorkoutScreen({ data, goals, addEntry, onSaveGoals }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
-      <ExerciseForm onAdd={handleAdd} recent={data.exercise} hideRecent header={header} goals={goals} onSaveGoals={onSaveGoals} />
+      <ExerciseForm onAdd={handleAdd} recent={data.exercise} hideRecent header={header} goals={goals} onSaveGoals={onSaveGoals} notes={data.notes} />
       <ExerciseMappingCard data={data} goals={goals} onSaveGoals={onSaveGoals} />
       <RecentWorkoutsCard recent={data.exercise} />
       {newQueue.length > 0 && (
@@ -555,7 +556,7 @@ export function SportsForm({ onAdd, recent }) {
 const WL_SAMPLE = "Push Day A\n1h 12m\n\nBench Press (Barbell)\nSet 1: 60 kg x 10\nSet 2: 80 kg x 8\nSet 3: 80 kg x 7\n\nIncline Dumbbell Press\nSet 1: 30 kg x 10\nSet 2: 30 kg x 9\n\nOverhead Press (Barbell)\nSet 1: 45 kg x 6\nSet 2: 45 kg x 6\n\nCable Fly\nSet 1: 15 kg x 15\nSet 2: 15 kg x 14";
 const wlDur = txt => { const m = (txt || "").match(/(\d+)\s*h\s*(\d+)?\s*m|\b(\d+)\s*min/i); if (!m) return null; if (m[3]) return `${m[3]} min`; return `${m[1]}h${m[2] ? " " + m[2] + "m" : ""}`; };
 
-export function ExerciseForm({ onAdd, recent, hideRecent, header, goals, onSaveGoals }) {
+export function ExerciseForm({ onAdd, recent, hideRecent, header, goals, onSaveGoals, notes }) {
   const [date, setDate] = useState(getTodayStr());
   const [time, setTime] = useState(() => {
     const d = new Date();
@@ -707,6 +708,7 @@ export function ExerciseForm({ onAdd, recent, hideRecent, header, goals, onSaveG
                       </div>
                     );
                   })}
+                  <NoteStrip exercise={ex.name} notes={notes} />
                 </div>
               ))}
             </>

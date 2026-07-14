@@ -229,6 +229,40 @@ export interface Goals {
   sleepNeedH?: number;
 }
 
+// ─── NOTES + EXPERIMENTS ────────────────────────────────────────────────────
+export interface Note {
+  id: string;
+  date: string;                 // ISO creation date
+  text: string;                 // raw body, source of truth (hashes kept inline)
+  tags: string[];               // parsed from #hashtags at save time
+  pinned: boolean;
+  pinnedAt?: number | null;     // ts of pin, for max-5 eviction (oldest first)
+  linkedExercise?: string;      // canonical exercise name via Exercise Mapping
+  linkedExperimentId?: string;
+  source?: "manual" | "experiment-verdict";
+}
+
+export interface ExperimentMetric {
+  source: "exercise" | "sleep" | "weight" | "water" | "nutrition" | "nicotine";
+  key?: string;                 // e.g. "Incline Bench Press" when source==="exercise"
+  stat: "est1RM" | "volume" | "sets" | "score" | "debt" | "avg" | "total" | "count";
+  direction: "up" | "down";     // which way is "better"
+}
+
+export interface Experiment {
+  id: string;
+  title: string;
+  hypothesis?: string;
+  startDate: string;            // ISO day
+  endDate: string;              // ISO day, inclusive
+  metric: ExperimentMetric;
+  status: "planned" | "active" | "done";  // derived; only persisted as 'done' w/ verdict
+  verdict?: "kept" | "dropped" | "inconclusive";
+  verdictNote?: string;
+  noteId?: string;
+  createdAt: string;
+}
+
 // ─── TOP-LEVEL STORE SHAPE ──────────────────────────────────────────────────
 /** Everything under the `fitlog_v5` localStorage key (see config.defaultData). */
 export interface AppData {
@@ -258,6 +292,8 @@ export interface AppData {
   completedPhases: unknown[];
   decisionLog: unknown[];
   constraintSnapshots: unknown[];
+  notes: Note[];
+  experiments: Experiment[];
 }
 
 /** A key of AppData whose value is an array of log rows. */
