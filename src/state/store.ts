@@ -61,7 +61,17 @@ export async function cloudPull(userId: string): Promise<boolean> {
   const cloudData = row.data || {};
   const hasAny = Object.values(cloudData).some(arr => Array.isArray(arr) && arr.length > 0);
   if (!hasAny && (!row.chat || row.chat.length <= 1)) return false; // cloud effectively empty
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...defaultData, ...cloudData }));
+  // Data-loss guard: never let an EMPTY cloud array clobber a populated local one.
+  // The blob is last-write-wins, so a client that pushed before an array existed
+  // (or before it loaded) could otherwise wipe it. Keep local when cloud is empty.
+  let localData: any = {};
+  try { localData = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") || {}; } catch { localData = {}; }
+  const merged: any = { ...defaultData, ...cloudData };
+  for (const k of Object.keys(merged)) {
+    const c = merged[k], l = localData[k];
+    if (Array.isArray(c) && c.length === 0 && Array.isArray(l) && l.length > 0) merged[k] = l;
+  }
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
   localStorage.setItem(STORAGE_KEY + "_goals", JSON.stringify({ ...defaultGoals, ...(row.goals || {}) }));
   if (row.chat) localStorage.setItem(STORAGE_KEY + "_chat", JSON.stringify(row.chat));
   return true;
