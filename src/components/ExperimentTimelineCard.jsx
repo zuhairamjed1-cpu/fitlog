@@ -3,13 +3,11 @@ import { createPortal } from "react-dom";
 import { Card, Empty } from "./primitives";
 import { getTodayStr, formatShortDate, daysAgoFrom, localDateStr } from "../lib/dates";
 import { deriveStatus, daysElapsed, evaluate, metricSeries, metricLabel, makeExperiment, applyVerdict, hasOverlap } from "../lib/experiments";
-import { knownExercises } from "../lib/notes";
 
 const AC = "#4fb3bd", GOOD = "#5fcf80", BAD = "#f4776a", MUT = "#6b7480", T2 = "#9aa4b2", TX = "#eef2f6", LINE = "#262d38";
 const dayDiff = (a, b) => Math.round((new Date(b + "T00:00:00") - new Date(a + "T00:00:00")) / 86400000);
 
 const STAT_BY_SOURCE = {
-  exercise: ["est1RM", "volume", "sets"],
   sleep: ["score", "debt"],
   weight: ["avg"],
   water: ["total", "count"],
@@ -153,17 +151,14 @@ function NewExperimentSheet({ data, goals, setData, onClose }) {
   const [title, setTitle] = useState("");
   const [start, setStart] = useState(today);
   const [end, setEnd] = useState(daysAgoFrom(today, -6)); // 7-day default
-  const [source, setSource] = useState("exercise");
-  const [key, setKey] = useState("");
-  const [stat, setStat] = useState("est1RM");
+  const [source, setSource] = useState("sleep");
+  const [stat, setStat] = useState("score");
   const [hypothesis, setHypothesis] = useState("");
 
-  const exNames = useMemo(() => knownExercises(data, goals), [data, goals]);
-  const metric = { source, key: source === "exercise" ? key : undefined, stat, direction: DEFAULT_DIR[stat] || "up" };
-  const metricOk = source !== "exercise" || !!key.trim();
+  const metric = { source, stat, direction: DEFAULT_DIR[stat] || "up" };
   const dummyExp = { id: "_new", startDate: start, endDate: end };
   const overlap = hasOverlap(dummyExp, data.experiments || []);
-  const valid = title.trim() && start <= end && metricOk;
+  const valid = title.trim() && start <= end;
 
   const create = () => {
     if (!valid) return;
@@ -193,12 +188,6 @@ function NewExperimentSheet({ data, goals, setData, onClose }) {
             {Object.keys(STAT_BY_SOURCE).map(s => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
-        {source === "exercise" && (
-          <>
-            <input list="exlist" value={key} onChange={e => setKey(e.target.value)} placeholder="Exercise name (e.g. Incline Bench Press)" style={{ ...fieldStyle, marginTop: 8 }} />
-            <datalist id="exlist">{exNames.map(n => <option key={n} value={n} />)}</datalist>
-          </>
-        )}
       </div>
 
       <div style={{ marginTop: 14 }}>
@@ -207,7 +196,6 @@ function NewExperimentSheet({ data, goals, setData, onClose }) {
       </div>
 
       {overlap && <div style={{ marginTop: 14, fontSize: 12.5, color: "#f9c97e", background: "rgba(249,201,126,0.08)", border: "1px solid rgba(249,201,126,0.25)", borderRadius: 10, padding: "10px 12px" }}>You already have an experiment in this window. Overlapping runs make both results low-confidence.</div>}
-      {!metricOk && <div style={{ marginTop: 12, fontSize: 12.5, color: T2 }}>Name a metric — without one, you're planning, not experimenting. Use the <b>Plan</b> tile for that.</div>}
 
       <button className="btn full" style={{ marginTop: 18 }} onClick={create} disabled={!valid}>Start experiment</button>
     </>, onClose);
