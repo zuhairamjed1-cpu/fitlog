@@ -5,6 +5,7 @@ import { Ring, MacroDonut, MiniChart, Card, Empty, toast, ToastHost, ConfirmModa
 import { NIC_QUICK, TYPE_DOT } from "../config";
 import { getDayContext } from "../engines/dayContext";
 import { localDateStr, getTodayStr } from "../lib/dates";
+import { ExperimentTimelineCard } from "../components/ExperimentTimelineCard";
 import { haptic, SFX } from "../lib/fx";
 
 // ===== extracted body =====
@@ -266,6 +267,8 @@ export function HomeTab({ data, goals, onAddWater, onAddNicotine, onNav, addEntr
       </button>
 
       <TaskCard data={data} addEntry={addEntry} deleteEntry={deleteEntry} setData={setData} />
+
+      <ExperimentTimelineCard data={data} goals={goals} setData={setData} onNav={onNav} />
 
       {/* TODAY LOGGED */}
       <Card title="Today">
