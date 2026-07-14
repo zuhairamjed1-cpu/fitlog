@@ -3,6 +3,9 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
+  // Bind IPv4 loopback explicitly. Default Vite host resolves to IPv6 ::1 only on
+  // this setup, which the in-app browser pane (dials 127.0.0.1) can't reach.
+  server: { host: "127.0.0.1", port: 5173, strictPort: true },
   build: {
     rollupOptions: {
       output: {
