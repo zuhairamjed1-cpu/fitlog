@@ -11,13 +11,16 @@ export const MAX_ACTIVITIES_PER_DAY = null;      // no cap yet. TODO: decide if 
 const MERGE_GAP_MINUTES = 75;                    // adjacent flexible slots closer than this merge visually. TODO: confirm against spec
 const LOG_MATCH_MINUTES = 90;                    // a logged meal within this of a slot marks it logged. TODO: confirm against spec
 const NEUTRAL_WINDOW_MINUTES = 180;              // required ≥1 activity-free span. TODO: confirm against spec
-// Floor sizing (md §3): fraction of the DAY's carbs/protein/fat per floor, then
-// scaled by intensity × duration. Fat mostly kept out of the peri-workout window.
-const FLOOR_FRAC = { preCarb: 0.12, preProt: 0.04, postCarb: 0.12, postProt: 0.12, fat: 0.02 }; // TODO: confirm against spec
-const FLOOR_CARB_CAP = 0.50;  // floors may claim at most this share of daily carbs. TODO: confirm against spec
-const FLOOR_PROT_CAP = 0.45;
-const INTENSITY_FACTOR = { light: 0.8, moderate: 1.0, hard: 1.3 };
+const INTENSITY_FACTOR = { light: 0.8, moderate: 1.0, hard: 1.2 };
 const FLEX_WEIGHTS = { Breakfast: 0.30, Lunch: 0.35, Dinner: 0.30, Snack: 0.05 };
+// Pre-workout fast-carb ceiling range (§5.1) — never above 40g.
+const PRE_CARB_MIN = 20, PRE_CARB_MAX = 40;
+// Post-workout recovery targets (§5.1). These ARE the floor's header macros, so
+// the card header matches the target chips. carbs = glucose(30–40)+fructose(15–20).
+const POST_TARGET = { carbsG: 48, proteinG: 50, fatG: 5 }; // TODO: confirm against spec
+// A flexible slot is never generated in a gap smaller than this next to another
+// slot — stops a "snack" being crammed 10 min before training. TODO: confirm.
+const MIN_VIABLE_GAP_MINUTES = 90;
 // Meal anchors as minutes AFTER wake — the plan runs off when you actually got
 // up (from the logged sleep), not a fixed clock. TODO: confirm / make user-set.
 const MEAL_OFFSET = { Breakfast: 45, Lunch: 5 * 60, Snack: 8 * 60, Dinner: 11 * 60 };
@@ -38,13 +41,15 @@ function splitInt(total, weights) {
 }
 
 function floorMacros(totals, session) {
-  const typeLoad = (SESSION_TYPES[session.type] || {}).load || 1;
   const dur = session.durationMin || (SESSION_TYPES[session.type] || {}).defMin || 60;
-  const scale = (INTENSITY_FACTOR[session.intensity] || 1) * typeLoad * clamp(dur / 60, 0.5, 2);
+  const intf = INTENSITY_FACTOR[session.intensity] || 1;
+  // Pre: fast carbs within the 20–40g ceiling, light protein, no fat.
+  const preCarb = clamp(Math.round(30 * intf), PRE_CARB_MIN, PRE_CARB_MAX);
+  // Post: the §5.1 recovery targets (fixed — these show in the header + chips).
   return {
-    dur, scale,
-    pre: { carbsG: Math.round(totals.carbsG * FLOOR_FRAC.preCarb * scale), proteinG: Math.round(totals.proteinG * FLOOR_FRAC.preProt * scale), fatG: 0 },
-    post: { carbsG: Math.round(totals.carbsG * FLOOR_FRAC.postCarb * scale), proteinG: Math.round(totals.proteinG * FLOOR_FRAC.postProt * scale), fatG: Math.round(totals.fatG * FLOOR_FRAC.fat * scale) },
+    dur,
+    pre: { carbsG: preCarb, proteinG: 8, fatG: 0 },
+    post: { carbsG: POST_TARGET.carbsG, proteinG: POST_TARGET.proteinG, fatG: POST_TARGET.fatG },
   };
 }
 
@@ -66,13 +71,8 @@ export function buildTimeline({ dayKey, totals, sessions = [], wakeMin = 420, sl
     floors.push({ id: `pre-${s.id}`, type: "floor", mealName: "Pre-workout", status: "planned", plannedMin: start - 45, loggedMin: null, macros: fm.pre, activityId: s.id, note: "Fuel before training — quick carbs, light protein." });
     floors.push({ id: `post-${s.id}`, type: "floor", mealName: "Post-workout", status: "planned", plannedMin: start + fm.dur + 15, loggedMin: null, macros: fm.post, activityId: s.id, note: "Refuel + repair — carbs and protein after training." });
   });
-  // cap floor claims so flexibles never go negative
-  const capMacro = (key, cap) => {
-    const used = floors.reduce((s, f) => s + f.macros[key], 0);
-    const max = Math.floor(T[key] * cap);
-    if (used > max && used > 0) { const k = max / used; floors.forEach(f => f.macros[key] = Math.round(f.macros[key] * k)); }
-  };
-  capMacro("carbsG", FLOOR_CARB_CAP); capMacro("proteinG", FLOOR_PROT_CAP); capMacro("fatG", 0.20);
+  // Floors are fixed physiological targets (§5.1); we don't scale them down. If
+  // they exceed the daily total (tiny cut), the flexible budget just floors at 0.
   const floorSum = key => floors.reduce((s, f) => s + f.macros[key], 0);
 
   // ── 2. flexible anchors ──
@@ -82,12 +82,15 @@ export function buildTimeline({ dayKey, totals, sessions = [], wakeMin = 420, sl
   const names = ["Breakfast", "Lunch", "Dinner"];
   if (winEnd - winStart > 600) names.splice(2, 0, "Snack");
   let prevM = -Infinity;
-  const flex = names.map((nm, i) => {
+  let flex = names.map((nm, i) => {
     let m = clamp(wakeMin + MEAL_OFFSET[nm], winStart, winEnd);
     if (m <= prevM) m = Math.min(winEnd, prevM + 60); // keep order if the window is tight
     prevM = m;
     return { id: `flex-${dayKey}-${i}`, type: "flexible", mealName: nm, status: "planned", loggedMin: null, plannedMin: m, macros: { carbsG: 0, proteinG: 0, fatG: 0 }, activityId: null, note: "" };
   });
+  // Drop a Snack crammed within the min-viable gap of a floor — its budget flows
+  // into the remaining meals (e.g. lunch) instead of manufacturing a 10-min slot.
+  flex = flex.filter(s => !(s.mealName === "Snack" && floors.some(f => Math.abs(f.plannedMin - s.plannedMin) < MIN_VIABLE_GAP_MINUTES)));
 
   // ── 3. mark logged (match real meals to nearest slot). Logged slots lock to
   //       the ACTUAL eaten macros and are excluded from all later recompute. ──

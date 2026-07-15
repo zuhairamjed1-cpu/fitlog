@@ -64,5 +64,30 @@ t("logging a meal marks nearest slot; other meals keep clock times", () => {
   assert.equal(withLog.slots.find(s => s.mealName === "Dinner").plannedMin, dinnerBefore, "dinner keeps its clock time");
 });
 
+// pre-workout carbs stay within the 20–40g ceiling regardless of intensity
+t("pre-workout carbs never exceed 40g", () => {
+  for (const intensity of ["light", "moderate", "hard"]) {
+    const { slots } = base({ sessions: [{ id: "g", type: "gym", time: "16:00", durationMin: 90, intensity }] });
+    const pre = slots.find(s => s.mealName === "Pre-workout");
+    assert.ok(pre.macros.carbsG >= 20 && pre.macros.carbsG <= 40, `${intensity} pre carbs ${pre.macros.carbsG} out of 20–40`);
+  }
+});
+
+// post-workout floor header macros == the recovery targets (header/chip sync)
+t("post-workout floor macros hit the §5.1 protein target", () => {
+  const { slots } = base({ sessions: [{ id: "g", type: "gym", time: "16:00", durationMin: 60, intensity: "moderate" }] });
+  const post = slots.find(s => s.mealName === "Post-workout");
+  assert.equal(post.macros.proteinG, 50, "post protein must equal the 50g floor target shown by the chip");
+});
+
+// no snack crammed next to a floor
+t("no snack generated within the min-viable gap of a floor", () => {
+  const { slots } = base({ sessions: [{ id: "g", type: "gym", time: "16:00", durationMin: 60, intensity: "hard" }] });
+  const snack = slots.find(s => s.mealName === "Snack");
+  const floors = slots.filter(s => s.type === "floor");
+  if (snack) floors.forEach(f => assert.ok(Math.abs(f.plannedMin - snack.plannedMin) >= 90, "snack too close to a floor"));
+  assert.ok(true);
+});
+
 console.log(`partitioning: ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);
