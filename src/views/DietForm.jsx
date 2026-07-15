@@ -5,7 +5,7 @@ import { MacroDonut, Card, toast } from "../components/primitives";
 import { RecentList } from "../components/RecentList";
 import { mealTypes } from "../config";
 import { getDayContext } from "../engines/dayContext";
-import { planFueling, reconcileFueling, sleepWindow, SESSION_TYPES } from "../engines/fueling";
+import { NutritionPartitioningCard } from "../components/NutritionPartitioningCard";
 import { estimateGlycemicLoad, dayGlycemicLoad } from "../engines/glycemic";
 import { computeProteinDistribution } from "../engines/protein";
 import { localDateStr, getTodayStr, formatShortDate, daysAgoFrom } from "../lib/dates";
@@ -294,124 +294,6 @@ function GLPill({ meal, showValue = true }) {
   const src = r.source === "database" ? "matched to known GI data" : "rough estimate (food not in GI table)";
   const title = `Estimated glycemic load ~${r.gl} (${r.band})${r.blunted ? " — softened by the protein/fat in this meal" : ""}. ${src}. Not a blood-glucose measurement.`;
   return <span className="gl-pill" data-band={r.band} title={title}>GL {r.band}{showValue ? `\u00a0·\u00a0${r.gl}` : ""}</span>;
-}
-
-// Carbs-around-training card — only renders when you've trained recently and have
-// timed meals to analyze. Honest: pre-fuel is a performance lever, daily total rules.
-// ─── FUEL CARD (planner + adaptive energy check, sleep-aware) ───────────────
-function FuelCard({ data, goals, addEntry, deleteEntry }) {
-  const today = getTodayStr();
-  const tomorrow = localDateStr(new Date(Date.now() + 86400000));
-  const [planDate, setPlanDate] = useState(today);
-  const [addType, setAddType] = useState(null);
-  const [form, setForm] = useState({ time: "17:00", durationMin: "", intensity: "moderate" });
-  const weightKg = goals?.profile?.weightKg;
-  const sw = useMemo(() => sleepWindow(data), [data]);
-  const sessions = (data.plannedSessions || []).filter(s => s.date === planDate).sort((a, b) => (a.time || "").localeCompare(b.time || ""));
-  const plan = useMemo(() => planFueling({ sessions, weightKg, goals, wakeMin: sw.wakeMin, sleepMin: sw.sleepMin }), [sessions, weightKg, goals, sw]);
-  const now = new Date();
-  const nowMin = now.getHours() * 60 + now.getMinutes();
-  const isToday = planDate === today;
-  // TODO(bio-day): filters by stored calendar `.date`, bypassing getDayContext()'s
-  // biological-day bucketing — in bio-day mode this can group meals differently than
-  // the rest of the app. Left as-is (pre-existing); see refactor report.
-  const meals = (data.diet || []).filter(d => d.date === planDate);
-  const rec = useMemo(() => (plan && plan.blocks) ? reconcileFueling({ plan, meals, nowMin: isToday ? nowMin : -1 }) : null, [plan, meals, nowMin, isToday]);
-
-  const fmtH = m => `${Math.floor(m / 60) % 24}:${String(m % 60).padStart(2, "0")}`;
-  const timeToMin = t => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ""); return m ? +m[1] * 60 + +m[2] : 0; };
-
-  function addSession() {
-    if (!addType) return;
-    addEntry("plannedSessions")({ id: Date.now(), date: planDate, type: addType, time: form.time, durationMin: +form.durationMin || SESSION_TYPES[addType].defMin, intensity: form.intensity });
-    setAddType(null); setForm({ time: "17:00", durationMin: "", intensity: "moderate" }); haptic(8); toast("✦ Session added");
-  }
-
-  return (
-    <Card title="Fuel" sub="meals & carbs timed to your sessions and sleep">
-      <div className="seg" style={{ marginBottom: 12 }}>
-        <button className={`seg-btn ${planDate === today ? "active" : ""}`} onClick={() => setPlanDate(today)}>Today</button>
-        <button className={`seg-btn ${planDate === tomorrow ? "active" : ""}`} onClick={() => setPlanDate(tomorrow)}>Tomorrow</button>
-      </div>
-
-      {!weightKg && <div className="sleep-flag" style={{ marginBottom: 10 }}>⚠ Set your bodyweight in your profile — fuel targets scale with it.</div>}
-
-      {sessions.length > 0 && (
-        <div className="fuel-sessions">
-          {sessions.map(s => (
-            <div key={s.id} className="fuel-sess">
-              <span>{(SESSION_TYPES[s.type] || {}).label || s.type} · {s.time} · {s.durationMin || (SESSION_TYPES[s.type] || {}).defMin}min · {s.intensity}</span>
-              <button className="skin-x" onClick={() => deleteEntry("plannedSessions")(s.id)}>×</button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {addType ? (
-        <div className="stack" style={{ marginTop: 10 }}>
-          <div className="muted small">{SESSION_TYPES[addType].label} — when & how hard?</div>
-          <div className="field-grid three">
-            <label>Time<input type="time" value={form.time} onChange={e => setForm(f => ({ ...f, time: e.target.value }))} /></label>
-            <label>Mins<input type="number" inputMode="numeric" value={form.durationMin} onChange={e => setForm(f => ({ ...f, durationMin: e.target.value }))} placeholder={`${SESSION_TYPES[addType].defMin}`} /></label>
-            <label>Intensity<select value={form.intensity} onChange={e => setForm(f => ({ ...f, intensity: e.target.value }))}><option value="light">Light</option><option value="moderate">Moderate</option><option value="hard">Hard</option></select></label>
-          </div>
-          <div className="row"><button className="btn-ghost flex" onClick={() => setAddType(null)}>Cancel</button><button className="btn flex" onClick={addSession}>Add session</button></div>
-        </div>
-      ) : (
-        <div className="fuel-type-chips">
-          {Object.entries(SESSION_TYPES).map(([k, v]) => <button key={k} className="fuel-type-chip" onClick={() => { setAddType(k); haptic(8); }}>+ {v.label}</button>)}
-        </div>
-      )}
-
-      {plan && plan.blocks && (
-        <div className="fuel-plan">
-          <div className="fuel-totals">
-            <div className="fuel-tot"><span className="fuel-tot-v">{plan.dailyCarbs}g</span><span className="fuel-tot-l">carbs · {plan.gPerKg} g/kg</span></div>
-            <div className="fuel-tot"><span className="fuel-tot-v">{plan.dailyProtein}g</span><span className="fuel-tot-l">protein</span></div>
-            <div className="fuel-tot"><span className="fuel-tot-v">{plan.loadLevel}</span><span className="fuel-tot-l">load</span></div>
-          </div>
-
-          {sw.hasData && <p className="muted small" style={{ margin: "0 0 12px" }}>Timed around your ~{fmtH(sw.wakeMin)} wake and ~{fmtH(sw.sleepMin)} sleep.</p>}
-
-          {isToday && rec && (
-            <div className="es-embed">
-              <div className="es-bars">
-                <div className="es-bar-row"><span className="es-bar-lab">Eaten</span><div className="rt-bar" style={{ margin: 0, flex: 1 }}><div className="rt-bar-fill" style={{ width: `${rec.carbPct}%` }} /></div><span className="es-bar-v">{rec.consumedCarbs}/{rec.dailyCarbs}g C</span></div>
-                <div className="es-bar-row"><span className="es-bar-lab">Protein</span><div className="rt-bar" style={{ margin: 0, flex: 1 }}><div className="rt-bar-fill" style={{ width: `${rec.proteinPct}%`, background: "#b4a8e8" }} /></div><span className="es-bar-v">{rec.consumedProtein}/{rec.dailyProtein}g P</span></div>
-              </div>
-              <p className="es-status" data-tone={rec.tone}>{rec.status}</p>
-              <p className="muted small" style={{ lineHeight: 1.5, marginTop: 4 }}>{rec.advice}</p>
-              {rec.addPhrase && <p className="muted small" style={{ lineHeight: 1.5, marginTop: 6 }}>Roughly that's: <b>{rec.addPhrase}</b>.</p>}
-            </div>
-          )}
-
-          <div className="fuel-timeline">
-            {(rec ? rec.timeline : plan.blocks).map((b, i) => (
-              b.kind === "session" ? (
-                <div key={i} className="fuel-block fuel-session-row" data-kind="session">
-                  <span className="fuel-time">{b.time}</span>
-                  <div className="fuel-bd"><div className="fuel-label">🏋 {b.label}</div></div>
-                </div>
-              ) : (
-                <div key={i} className={`fuel-block${b.done ? " done" : ""}${b.isNext ? " next" : ""}`} data-kind={b.kind}>
-                  <span className="fuel-time">{b.time}</span>
-                  <div className="fuel-bd">
-                    <div className="fuel-label">{b.isNext ? "→ " : ""}{b.label} <span className="fuel-macros">{b.carbsG}g C{b.proteinG ? ` · ${b.proteinG}g P` : ""}</span>{b.carbType ? <span className={`carb-chip ${b.carbType}`}>{b.carbType}</span> : null}</div>
-                    <div className="muted small" style={{ lineHeight: 1.4, marginTop: 2 }}>{b.done ? (b.foodsLine || "Logged.") : `${b.typeNote || b.baseNote || b.note || ""}${b.foodIdea ? ` — e.g. ${b.foodIdea}.` : ""}`}</div>
-                  </div>
-                </div>
-              )
-            ))}
-          </div>
-          {plan.notes.map((n, i) => <p key={i} className="muted small" style={{ lineHeight: 1.45, marginTop: 8 }}>{n}</p>)}
-        </div>
-      )}
-
-      {sessions.length === 0 && !addType && (
-        <p className="muted small" style={{ marginTop: 10, lineHeight: 1.5 }}>Add your gym session or sport for {planDate === today ? "today" : "tomorrow"} and FitLog builds a carb-and-protein timeline around it — fitted to your sleep, with live tracking of what you've eaten and what to add.</p>
-      )}
-    </Card>
-  );
 }
 
 export function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp = [], addEntry, deleteEntry }) {
@@ -849,8 +731,8 @@ export function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp 
       )}
       </div>
       <SupplementCard data={data} addEntry={addEntry} deleteEntry={deleteEntry} />
+      <NutritionPartitioningCard data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />
       <ProteinTimingCard data={data} goals={goals} todayDiet={todayDiet} />
-      <FuelCard data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />
       <RecentList
         entries={[
           ...(recent || []).map(m => ({ ...m, _kind: "meal", _t: m.consumedAt ?? m.ts ?? new Date(`${m.date}T${m.time || "12:00"}:00`).getTime() })),
