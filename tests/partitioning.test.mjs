@@ -54,18 +54,14 @@ t("adding an activity does not touch a logged slot", () => {
   assert.deepEqual(loggedAfter.macros, loggedBefore.macros, "logged slot macros unchanged (immutable)");
 });
 
-// ── 2. drift shifts only slots AFTER the logged meal's actual timestamp ──
-t("drift reflows only slots after the logged timestamp", () => {
-  // no reflow anchor from now (nowMin early). Log breakfast LATE (drift).
+// ── 2. meals hold clock times; logging marks nearest slot, others unchanged ──
+t("logging a meal marks nearest slot; other meals keep clock times", () => {
   const noLog = base({ sessions: [], nowMin: 420 });
   const dinnerBefore = noLog.slots.find(s => s.mealName === "Dinner").plannedMin;
   const breakfast = noLog.slots.find(s => s.mealName === "Breakfast");
-  // eat "breakfast" 3h later than planned → drift anchor moves forward
-  const driftMin = breakfast.plannedMin + 180;
-  const withDrift = base({ sessions: [], nowMin: 420, loggedMeals: [{ min: driftMin, carbsG: 60, proteinG: 40, fatG: 15 }] });
-  const dinnerAfter = withDrift.slots.find(s => s.mealName === "Dinner" && s.status === "planned");
-  assert.ok(dinnerAfter, "dinner still planned");
-  assert.ok(dinnerAfter.plannedMin >= driftMin, "remaining planned slots pushed after the drifted log");
+  const withLog = base({ sessions: [], nowMin: 420, loggedMeals: [{ min: breakfast.plannedMin, carbsG: 60, proteinG: 40, fatG: 15 }] });
+  assert.equal(withLog.slots.find(s => s.mealName === "Breakfast").status, "logged", "breakfast logged");
+  assert.equal(withLog.slots.find(s => s.mealName === "Dinner").plannedMin, dinnerBefore, "dinner keeps its clock time");
 });
 
 console.log(`partitioning: ${pass} passed, ${fail} failed`);

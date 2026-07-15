@@ -69,8 +69,10 @@ export function NutritionPartitioningCard({ data, goals, addEntry, deleteEntry }
         } else out.push(s);
       } else out.push(s);
     }
-    return out;
-  }, [tl]);
+    // Insert the activity itself as a timeline block (between its floors).
+    activities.forEach(a => out.push({ id: `act-${a.id}`, kind: "activity", plannedMin: timeToMin(a.time), label: (SESSION_TYPES[a.type] || {}).label || a.type, durationMin: a.durationMin || (SESSION_TYPES[a.type] || {}).defMin, intensity: a.intensity }));
+    return out.sort((x, y) => x.plannedMin - y.plannedMin);
+  }, [tl, activities]);
 
   const addSession = () => {
     if (!addType) return;
@@ -128,6 +130,18 @@ export function NutritionPartitioningCard({ data, goals, addEntry, deleteEntry }
         <div style={{ position: "relative", paddingLeft: 22 }}>
           <div style={{ position: "absolute", left: 6, top: 6, bottom: 6, width: 2, background: "var(--line)" }} />
           {cards.map(s => {
+            if (s.kind === "activity") {
+              return (
+                <div key={s.id} style={{ position: "relative", marginBottom: 10 }}>
+                  <span style={{ position: "absolute", left: -23, top: 12, width: 14, height: 14, borderRadius: "50%", background: "var(--accent)", border: "2px solid var(--bg)" }} />
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderRadius: 12, background: "rgba(120,180,200,0.12)", border: "1px solid var(--accent)" }}>
+                    <span style={{ fontSize: 12, color: "var(--text-2)", fontVariantNumeric: "tabular-nums", minWidth: 58 }}>{fmt(s.plannedMin)}</span>
+                    <span style={{ flex: 1, fontSize: 14, fontWeight: 700, color: "var(--text)" }}>🏋 {s.label}</span>
+                    <span style={{ fontSize: 11.5, color: "var(--text-2)" }}>{s.durationMin}min · {s.intensity}</span>
+                  </div>
+                </div>
+              );
+            }
             const floor = s.type === "floor";
             const logged = s.status === "logged";
             const tight = tightIds.has(s.id);

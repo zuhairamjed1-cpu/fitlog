@@ -18,6 +18,8 @@ const FLOOR_CARB_CAP = 0.50;  // floors may claim at most this share of daily ca
 const FLOOR_PROT_CAP = 0.45;
 const INTENSITY_FACTOR = { light: 0.8, moderate: 1.0, hard: 1.3 };
 const FLEX_WEIGHTS = { Breakfast: 0.30, Lunch: 0.35, Dinner: 0.30, Snack: 0.05 };
+// Natural clock anchors (minutes-of-day). TODO: confirm against spec / make user-set.
+const MEAL_CLOCK = { Breakfast: 8 * 60, Lunch: 13 * 60, Snack: 16 * 60, Dinner: 19 * 60 };
 
 const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
 export const timeToMin = t => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ""); return m ? +m[1] * 60 + +m[2] : 0; };
@@ -73,14 +75,18 @@ export function buildTimeline({ dayKey, totals, sessions = [], wakeMin = 420, sl
   const floorSum = key => floors.reduce((s, f) => s + f.macros[key], 0);
 
   // ── 2. flexible anchors ──
+  // Anchor meals to natural CLOCK times (not evenly smeared across the sleep
+  // window — that produced a 6pm "Breakfast" when sleep data skewed the window).
+  // Each is clamped into the waking window so odd wake/sleep never invert them.
   const names = ["Breakfast", "Lunch", "Dinner"];
-  if (winEnd - winStart > 600) names.splice(2, 0, "Snack"); // long day → add a snack between lunch & dinner
-  const n = names.length;
-  const flex = names.map((nm, i) => ({
-    id: `flex-${dayKey}-${i}`, type: "flexible", mealName: nm, status: "planned", loggedMin: null,
-    plannedMin: Math.round(winStart + ((winEnd - winStart) * i) / (n - 1)),
-    macros: { carbsG: 0, proteinG: 0, fatG: 0 }, activityId: null, note: "",
-  }));
+  if (winEnd - winStart > 600) names.splice(2, 0, "Snack");
+  let prevM = -Infinity;
+  const flex = names.map((nm, i) => {
+    let m = clamp(MEAL_CLOCK[nm], winStart, winEnd);
+    if (m <= prevM) m = Math.min(winEnd, prevM + 60); // keep order if the window is tight
+    prevM = m;
+    return { id: `flex-${dayKey}-${i}`, type: "flexible", mealName: nm, status: "planned", loggedMin: null, plannedMin: m, macros: { carbsG: 0, proteinG: 0, fatG: 0 }, activityId: null, note: "" };
+  });
 
   // ── 3. mark logged (match real meals to nearest slot). Logged slots lock to
   //       the ACTUAL eaten macros and are excluded from all later recompute. ──
@@ -95,16 +101,11 @@ export function buildTimeline({ dayKey, totals, sessions = [], wakeMin = 420, sl
     }
   });
 
-  // ── 4. reflow: re-space PLANNED + FUTURE flexible slots ──
-  const lastLogged = all.filter(s => s.status === "logged").reduce((mx, s) => Math.max(mx, s.loggedMin), -Infinity);
-  const driftAnchor = lastLogged > -Infinity ? lastLogged + DRIFT_DAMPING_MINUTES : winStart;
-  const reflowStart = Math.max(winStart, nowMin != null ? nowMin : winStart, driftAnchor);
-  const planFuture = flex.filter(s => s.status === "planned" && s.plannedMin >= reflowStart);
-  if (planFuture.length) {
-    const lo = clamp(reflowStart, winStart, winEnd), hi = winEnd;
-    const step = planFuture.length > 1 ? (hi - lo) / (planFuture.length) : 0;
-    planFuture.sort((a, b) => a.plannedMin - b.plannedMin).forEach((s, i) => { s.plannedMin = Math.round(lo + step * (i + 0.5)); });
-  }
+  // ── 4. reflow ──
+  // Meals hold their natural clock times; we do NOT stampede unlogged meals to
+  // after "now" (that bunched the whole day into the evening). Reflow here is
+  // limited to the MACRO budget in step 5 — logged meals lock, remaining budget
+  // flows to the still-planned meals. `nowMin` is used only for display state.
 
   // ── 5. macro distribution: floors + already-eaten (logged) come off the top;
   //       the REMAINDER is split across PLANNED flexibles only. Logged slots keep

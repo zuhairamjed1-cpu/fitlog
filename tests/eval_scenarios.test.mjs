@@ -23,18 +23,17 @@ t("S1 logged slots byte-identical after activity add", () => {
   assert.deepEqual(pick(after), pick(before), "logged slots changed");
 });
 
-// S2 — drift shifts only forward slots; floors stay anchored to the session
-t("S2 drift reflows forward flexibles only, floors anchored", () => {
-  const noLog = mk({ nowMin: 420, sessions: [{ id: "gym", type: "gym", time: "17:00", durationMin: 60, intensity: "hard" }] });
+// S2 — meals hold clock times; logging marks nearest slot; floors stay anchored
+t("S2 logging marks nearest slot; other meals + floors unchanged", () => {
+  const S = [{ id: "gym", type: "gym", time: "17:00", durationMin: 60, intensity: "hard" }];
+  const noLog = mk({ nowMin: 420, sessions: S });
   const dinner0 = noLog.slots.find(s => s.mealName === "Dinner").plannedMin;
   const preFloor0 = noLog.slots.find(s => s.id === "pre-gym").plannedMin;
   const lunch = noLog.slots.find(s => s.mealName === "Lunch");
-  const driftMin = 14 * 60 + 30; // logged lunch at 2:30pm
-  const drift = mk({ nowMin: 420, sessions: [{ id: "gym", type: "gym", time: "17:00", durationMin: 60, intensity: "hard" }], loggedMeals: [{ min: driftMin, carbsG: 80, proteinG: 45, fatG: 18 }] });
-  const preFloor1 = drift.slots.find(s => s.id === "pre-gym").plannedMin;
-  const dinner1 = drift.slots.find(s => s.mealName === "Dinner" && s.status === "planned").plannedMin;
-  assert.equal(preFloor1, preFloor0, "pre-floor must stay anchored to the 5pm session");
-  assert.ok(dinner1 >= driftMin, "dinner must reflow after the 2:30 log");
+  const logged = mk({ nowMin: 420, sessions: S, loggedMeals: [{ min: lunch.plannedMin, carbsG: 80, proteinG: 45, fatG: 18 }] });
+  assert.equal(logged.slots.find(s => s.id === "pre-gym").plannedMin, preFloor0, "pre-floor anchored to session");
+  assert.equal(logged.slots.find(s => s.mealName === "Lunch").status, "logged", "lunch logged");
+  assert.equal(logged.slots.find(s => s.mealName === "Dinner").plannedMin, dinner0, "dinner keeps clock time (no stampede)");
 });
 
 // S3 — floors never merge regardless of compression
