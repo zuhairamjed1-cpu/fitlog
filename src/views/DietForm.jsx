@@ -495,7 +495,9 @@ export function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp 
   const bioWeekday = new Date(dayCtx.currentDayKey() + "T00:00:00").toLocaleDateString("en-US", { weekday: "short" });
 
   // ── Post-workout quick-log context ──
-  // Show the preset shortcut only when a PLANNED post-workout floor sits near now.
+  // Show the preset shortcut whenever today has a PLANNED (not-yet-logged)
+  // post-workout floor and we're at/after the run-up to that workout — it stays
+  // available through the rest of the day until the post-workout meal is logged.
   const [pwOpen, setPwOpen] = useState(false);
   const todayStr = getTodayStr();
   const sw = useMemo(() => sleepWindow(data), [data]);
@@ -506,7 +508,9 @@ export function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp 
     if (!sessions.length) return null;
     const logged = (data?.diet || []).filter(m => m.date === todayStr).map(m => ({ min: timeToMin(m.time), carbsG: m.carbs || 0, proteinG: m.protein || 0, fatG: m.fat || 0 }));
     const tl = buildTimeline({ dayKey: todayStr, totals: { carbsG: goals.carbs || 0, proteinG: goals.protein || 0, fatG: goals.fat || 0 }, sessions, wakeMin: sw.wakeMin, sleepMin: sw.sleepMin, nowMin, loggedMeals: logged });
-    return tl.slots.find(s => s.type === "floor" && s.mealName === "Post-workout" && s.status === "planned" && Math.abs(s.plannedMin - nowMin) <= POST_CONTEXT_WINDOW_MIN) || null;
+    // Available from ~2h before the post-workout floor onward (i.e. around/after
+    // training) until it's logged — not just a tight ±window.
+    return tl.slots.find(s => s.type === "floor" && s.mealName === "Post-workout" && s.status === "planned" && nowMin >= s.plannedMin - 120) || null;
   }, [data?.plannedSessions, data?.diet, goals, sw, nowMin, todayStr]);
 
   function quickLogPost(items, micros) {
