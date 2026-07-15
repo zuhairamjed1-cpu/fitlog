@@ -4,7 +4,7 @@ import { SESSION_TYPES } from "../engines/fueling";
 import { estimateSleepNeed } from "../engines/sleep";
 import { getTodayStr, WEEKDAYS } from "../lib/dates";
 import { haptic, SFX } from "../lib/fx";
-import { buildTimeline, timeToMin, minToTime, TIGHT_GAP_THRESHOLD_MINUTES } from "../lib/partitioning";
+import { buildTimeline, timeToMin, minToTime, TIGHT_GAP_THRESHOLD_MINUTES, suggestGymWindow, gymSleepProximity } from "../lib/partitioning";
 import { POST_WORKOUT_PRESET, inRange } from "../lib/postWorkoutPreset";
 
 // ─── Nutrition partitioning ─────────────────────────────────────────────────
@@ -64,6 +64,11 @@ export function NutritionPartitioningCard({ data, goals, addEntry, deleteEntry }
   }), [planDate, hasTargets, totals.carbsG, totals.proteinG, totals.fatG, JSON.stringify(activities), wakeMin, sleepMin, nowMin, JSON.stringify(loggedMeals)]);
 
   const tightIds = useMemo(() => { const s = new Set(); tl.tightPairs.forEach(([a, b]) => { s.add(a); s.add(b); }); return s; }, [tl]);
+  const proxIds = useMemo(() => new Set(tl.sleepProximityIds || []), [tl]);
+  // Suggested gym window when it's a training day with no time set yet.
+  const suggest = useMemo(() => (planReadyLike() && isTraining && activities.length === 0) ? suggestGymWindow({ wakeMin, sleepMin }) : null, [isTraining, activities.length, wakeMin, sleepMin]);
+  function planReadyLike() { return hasTargets && wakeMin != null; }
+  const confirmSuggested = () => { if (!suggest) return; addEntry("plannedSessions")({ id: Date.now(), date: planDate, type: "gym", time: minToTime(suggest.suggestMin), durationMin: 60, intensity: "moderate" }); haptic(10); SFX.tap(); };
 
   // Visual merge: consecutive flexible slots within mergeGap fold into one card.
   const cards = useMemo(() => {
@@ -153,6 +158,16 @@ export function NutritionPartitioningCard({ data, goals, addEntry, deleteEntry }
       {!tl.neutralOk && activities.length > 0 && (
         <div className="muted small" style={{ marginBottom: 10, color: "#f9c97e" }}>⚠ No 3h+ activity-free window — floors are crowding the day.</div>
       )}
+      {planReady && tl.isCompressed && (
+        <div className="muted small" style={{ marginBottom: 10, color: "#f9c97e" }}>⚠ Short awake window — meals are compressed. Later meals sit close to bedtime.</div>
+      )}
+      {planReady && suggest && (
+        <div style={{ marginBottom: 12, padding: "12px 14px", borderRadius: 12, background: "rgba(120,180,200,0.1)", border: "1px solid var(--accent)" }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>Training day — when's the gym?</div>
+          <div className="muted small" style={{ margin: "4px 0 10px" }}>Suggested window <b style={{ color: "var(--text)" }}>{fmt(suggest.loMin)}–{fmt(suggest.hiMin)}</b>{gymSleepProximity({ startMin: suggest.suggestMin, sleepMin }) ? " · close to bed — earlier is better" : ""}</div>
+          <button className="btn" onClick={confirmSuggested} style={{ padding: "0 16px" }}>Confirm {fmt(suggest.suggestMin)}</button>
+        </div>
+      )}
 
       {/* timeline */}
       {planReady && (
@@ -191,6 +206,7 @@ export function NutritionPartitioningCard({ data, goals, addEntry, deleteEntry }
                     </span>
                     {floor && <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--accent)" }}>floor</span>}
                     {tight && <span style={{ fontSize: 10, fontWeight: 700, color: "#f9c97e", border: "1px solid rgba(249,201,126,0.4)", borderRadius: 6, padding: "1px 5px" }}>tight</span>}
+                    {proxIds.has(s.id) && <span style={{ fontSize: 10, fontWeight: 700, color: "#b4a8e8", border: "1px solid rgba(180,168,232,0.4)", borderRadius: 6, padding: "1px 5px" }}>near bed</span>}
                   </div>
                   <div style={{ display: "flex", gap: 12, marginTop: 5, fontSize: 12.5, fontVariantNumeric: "tabular-nums" }}>
                     <span style={{ color: "#f9c97e" }}>{s.macros.carbsG}g C</span>
@@ -223,8 +239,8 @@ export function NutritionPartitioningCard({ data, goals, addEntry, deleteEntry }
         </div>
       )}
 
-      {planReady && isTraining && activities.length === 0 && (
-        <p className="muted small" style={{ marginTop: 8, lineHeight: 1.5 }}>Today is a <b>{splitLabel}</b> day. Add your workout time with <b>+ Activity</b> — FitLog inserts fixed pre/post fuel slots (and the post-workout quick-log) around it.</p>
+      {planReady && isTraining && activities.length === 0 && !suggest && (
+        <p className="muted small" style={{ marginTop: 8, lineHeight: 1.5 }}>Today is a <b>{splitLabel}</b> day, but the awake window's too tight for a clean gym slot. Add a time with <b>+ Activity</b> if you're training.</p>
       )}
       {planReady && !isTraining && (
         <p className="muted small" style={{ marginTop: 8, lineHeight: 1.5 }}>Rest day per your weekly plan — no training floors, just your meals spread across the day.</p>

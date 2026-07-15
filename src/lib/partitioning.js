@@ -18,9 +18,15 @@ const PRE_CARB_MIN = 20, PRE_CARB_MAX = 40;
 // Post-workout recovery targets (§5.1). These ARE the floor's header macros, so
 // the card header matches the target chips. carbs = glucose(30–40)+fructose(15–20).
 const POST_TARGET = { carbsG: 48, proteinG: 50, fatG: 5 }; // TODO: confirm against spec
-// A flexible slot is never generated in a gap smaller than this next to another
-// slot — stops a "snack" being crammed 10 min before training. TODO: confirm.
-const MIN_VIABLE_GAP_MINUTES = 90;
+// A flexible slot is never generated within this of another slot/floor/activity
+// — stops a "snack" being crammed 10 min before training. Leftover budget
+// redistributes to the remaining meals. TODO: confirm against spec.
+export const MIN_VIABLE_FLEXIBLE_SLOT_GAP_MINUTES = 30;
+// A slot within this of bedtime trips the sleep-proximity flag (§11.3); a
+// trailing meal this close compresses rather than colliding with sleep (§11.5).
+export const SLEEP_PROXIMITY_MINUTES = 120;
+// Wake→bed shorter than this → isCompressed warning instead of a broken plan.
+const MIN_AWAKE_WINDOW_MINUTES = 12 * 60;
 // Meal anchors as minutes AFTER wake — the plan runs off when you actually got
 // up (from the logged sleep), not a fixed clock. TODO: confirm / make user-set.
 const MEAL_OFFSET = { Breakfast: 45, Lunch: 5 * 60, Snack: 8 * 60, Dinner: 11 * 60 };
@@ -88,9 +94,18 @@ export function buildTimeline({ dayKey, totals, sessions = [], wakeMin = 420, sl
     prevM = m;
     return { id: `flex-${dayKey}-${i}`, type: "flexible", mealName: nm, status: "planned", loggedMin: null, plannedMin: m, macros: { carbsG: 0, proteinG: 0, fatG: 0 }, activityId: null, note: "" };
   });
-  // Drop a Snack crammed within the min-viable gap of a floor — its budget flows
-  // into the remaining meals (e.g. lunch) instead of manufacturing a 10-min slot.
-  flex = flex.filter(s => !(s.mealName === "Snack" && floors.some(f => Math.abs(f.plannedMin - s.plannedMin) < MIN_VIABLE_GAP_MINUTES)));
+  // Drop a Snack crammed within the min-viable gap of a floor, the activity
+  // itself, or another meal — its budget flows into the remaining meals instead
+  // of manufacturing a slot jammed 10 min before training.
+  const activityMins = sessions.map(s => timeToMin(s.time));
+  const neighbours = m => [...floors.map(f => f.plannedMin), ...activityMins, ...flex.filter(x => x.mealName !== "Snack").map(x => x.plannedMin)];
+  flex = flex.filter(s => !(s.mealName === "Snack" && neighbours(s.plannedMin).some(nm => Math.abs(nm - s.plannedMin) < MIN_VIABLE_FLEXIBLE_SLOT_GAP_MINUTES)));
+  // If a post-workout floor lands after the last meal's anchor (a late workout),
+  // trail the last meal after it so it becomes the near-bed slot that compresses,
+  // rather than sitting before the workout.
+  const lastPost = floors.filter(f => f.mealName === "Post-workout").reduce((mx, f) => Math.max(mx, f.plannedMin), -Infinity);
+  const lastMeal = flex[flex.length - 1];
+  if (lastMeal && lastPost > -Infinity && lastPost + 45 > lastMeal.plannedMin) lastMeal.plannedMin = clamp(lastPost + 45, lastMeal.plannedMin, winEnd);
 
   // ── 3. mark logged (match real meals to nearest slot). Logged slots lock to
   //       the ACTUAL eaten macros and are excluded from all later recompute. ──
@@ -138,14 +153,44 @@ export function buildTimeline({ dayKey, totals, sessions = [], wakeMin = 420, sl
   for (const fm of [...floorMins, winEnd]) { if (fm - prev >= NEUTRAL_WINDOW_MINUTES) { neutralOk = true; break; } prev = Math.max(prev, fm); }
   if (!floorMins.length) neutralOk = true;
 
+  // ── 7. sleep-proximity (§11.3) + compression (§11.5) ──
+  // Any slot within SLEEP_PROXIMITY of bedtime is flagged; the last flexible
+  // meal there is marked compressed so the UI shrinks it instead of colliding.
+  const sleepProximityIds = [];
+  slots.forEach(s => { if (sleepMin - s.plannedMin <= SLEEP_PROXIMITY_MINUTES && s.plannedMin <= sleepMin) { s.nearBedtime = true; sleepProximityIds.push(s.id); } });
+  const lastFlex = [...slots].reverse().find(s => s.type === "flexible");
+  if (lastFlex && lastFlex.nearBedtime) lastFlex.compressed = true;
+  const isCompressed = (sleepMin - wakeMin) < MIN_AWAKE_WINDOW_MINUTES;
+
   // attach ISO + human note
   slots.forEach(s => {
     s.plannedTime = minToISO(dayKey, s.plannedMin);
     s.loggedTime = s.loggedMin != null ? minToISO(dayKey, s.loggedMin) : null;
-    if (s.type === "flexible" && !s.note) s.note = `${s.mealName} — spread your remaining carbs, protein and fat evenly here.`;
+    if (s.type === "flexible" && !s.note) s.note = s.compressed
+      ? `${s.mealName} — close to bed; keep it light and lower-fat.`
+      : `${s.mealName} — spread your remaining carbs, protein and fat evenly here.`;
   });
 
-  return { slots, tightPairs, neutralOk, floorCount: floors.length, mergeGap: MERGE_GAP_MINUTES };
+  return { slots, tightPairs, neutralOk, floorCount: floors.length, mergeGap: MERGE_GAP_MINUTES, sleepProximityIds, isCompressed };
+}
+
+// Suggested gym WINDOW (a range, not a fixed time) for a training day with no
+// time set — midday-ish, kept clear of the sleep-proximity zone (§ scheduling).
+// Returns { loMin, hiMin, suggestMin } or null if the day is too compressed.
+export function suggestGymWindow({ wakeMin = 420, sleepMin = 1380 } = {}) {
+  const latestStart = sleepMin - SLEEP_PROXIMITY_MINUTES - 90; // leave room for post-floor + wind-down
+  const earliestStart = wakeMin + 180;                          // not right after waking
+  if (latestStart <= earliestStart) return null;               // too compressed for a clean window
+  const mid = Math.round((wakeMin + sleepMin) / 2);
+  const suggestMin = clamp(mid, earliestStart, latestStart);
+  return { loMin: Math.max(earliestStart, suggestMin - 90), hiMin: Math.min(latestStart, suggestMin + 90), suggestMin };
+}
+
+// True if a fixed (or suggested) gym start pushes its post-workout floor into
+// the sleep-proximity zone — fires for USER-chosen times too, not just suggests.
+export function gymSleepProximity({ startMin, durationMin = 60, sleepMin = 1380 }) {
+  const postMin = startMin + durationMin + 15;
+  return (sleepMin - postMin) <= SLEEP_PROXIMITY_MINUTES;
 }
 
 // Sum of a macro across slots — used by callers/tests to assert the invariant.
