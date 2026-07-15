@@ -18,8 +18,9 @@ const FLOOR_CARB_CAP = 0.50;  // floors may claim at most this share of daily ca
 const FLOOR_PROT_CAP = 0.45;
 const INTENSITY_FACTOR = { light: 0.8, moderate: 1.0, hard: 1.3 };
 const FLEX_WEIGHTS = { Breakfast: 0.30, Lunch: 0.35, Dinner: 0.30, Snack: 0.05 };
-// Natural clock anchors (minutes-of-day). TODO: confirm against spec / make user-set.
-const MEAL_CLOCK = { Breakfast: 8 * 60, Lunch: 13 * 60, Snack: 16 * 60, Dinner: 19 * 60 };
+// Meal anchors as minutes AFTER wake — the plan runs off when you actually got
+// up (from the logged sleep), not a fixed clock. TODO: confirm / make user-set.
+const MEAL_OFFSET = { Breakfast: 45, Lunch: 5 * 60, Snack: 8 * 60, Dinner: 11 * 60 };
 
 const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
 export const timeToMin = t => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ""); return m ? +m[1] * 60 + +m[2] : 0; };
@@ -82,7 +83,7 @@ export function buildTimeline({ dayKey, totals, sessions = [], wakeMin = 420, sl
   if (winEnd - winStart > 600) names.splice(2, 0, "Snack");
   let prevM = -Infinity;
   const flex = names.map((nm, i) => {
-    let m = clamp(MEAL_CLOCK[nm], winStart, winEnd);
+    let m = clamp(wakeMin + MEAL_OFFSET[nm], winStart, winEnd);
     if (m <= prevM) m = Math.min(winEnd, prevM + 60); // keep order if the window is tight
     prevM = m;
     return { id: `flex-${dayKey}-${i}`, type: "flexible", mealName: nm, status: "planned", loggedMin: null, plannedMin: m, macros: { carbsG: 0, proteinG: 0, fatG: 0 }, activityId: null, note: "" };

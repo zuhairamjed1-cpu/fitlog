@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
-import { Card } from "./primitives";
-import { SESSION_TYPES, sleepWindow } from "../engines/fueling";
-import { getTodayStr } from "../lib/dates";
+import { Card, Empty } from "./primitives";
+import { SESSION_TYPES } from "../engines/fueling";
+import { estimateSleepNeed } from "../engines/sleep";
+import { getTodayStr, WEEKDAYS } from "../lib/dates";
 import { haptic, SFX } from "../lib/fx";
 import { buildTimeline, timeToMin, minToTime, TIGHT_GAP_THRESHOLD_MINUTES } from "../lib/partitioning";
 import { POST_WORKOUT_PRESET, inRange } from "../lib/postWorkoutPreset";
@@ -18,19 +19,35 @@ export function NutritionPartitioningCard({ data, goals, addEntry, deleteEntry }
   const today = getTodayStr();
   const tomorrow = localDate(Date.now() + 86400000);
   const [planDate, setPlanDate] = useState(today);
-  const [adhoc, setAdhoc] = useState({}); // { [dateKey]: [session,...] } — day-local, never written to Plan
   const [addType, setAddType] = useState(null);
   const [form, setForm] = useState({ time: "17:00", durationMin: "", intensity: "moderate" });
 
   const totals = { carbsG: goals?.carbs || 0, proteinG: goals?.protein || 0, fatG: goals?.fat || 0 };
   const hasTargets = totals.carbsG + totals.proteinG + totals.fatG > 0;
 
-  const sw = useMemo(() => sleepWindow(data), [data]);
-  const planned = (data.plannedSessions || []).filter(s => s.date === planDate).map(s => ({ ...s, _source: "default" }));
-  const dayAdhoc = (adhoc[planDate] || []).map(s => ({ ...s, _source: "added" }));
-  const activities = [...planned, ...dayAdhoc].sort((a, b) => timeToMin(a.time) - timeToMin(b.time));
-
+  // ── wake time drives the whole plan ──
+  // Meals aren't laid out until the day's sleep is logged; the wake time from
+  // that log anchors everything (biological-day aware).
   const isToday = planDate === today;
+  // Today's sleep = the entry whose date is today (logged on waking).
+  const todaySleep = useMemo(() => (data.sleep || []).filter(s => s.date === planDate && s.wakeTime).sort((a, b) => (b.id || 0) - (a.id || 0))[0]
+    || (!isToday ? (data.sleep || []).filter(s => s.wakeTime).sort((a, b) => (b.date || "").localeCompare(a.date || ""))[0] : null), [data.sleep, planDate, isToday]);
+  const wakeEstimated = !!(todaySleep && todaySleep.date !== planDate);
+  const wakeMin = todaySleep ? timeToMin(todaySleep.wakeTime) : null;
+  const needH = useMemo(() => estimateSleepNeed(data, goals).hours, [data, goals]);
+  const sleepMin = wakeMin != null ? wakeMin + Math.round((24 - needH) * 60) : null; // next bedtime
+
+  // ── rest vs training from the weekly plan ("Your week") ──
+  const plan = goals?.plan || {};
+  const dow = WEEKDAYS[(new Date(planDate + "T00:00:00").getDay() + 6) % 7];
+  const isTraining = (plan.trainingDays || []).includes(dow);
+  const splitLabel = isTraining ? (plan.assignments?.[dow] || "Training") : "Rest";
+
+  // Timed workout sessions for the day (persisted, so the meal-log quick-log can
+  // see them too). This is the timed-session layer — NOT the weekly split plan.
+  // On a rest day the plan carries no workout floors.
+  const activities = isTraining ? (data.plannedSessions || []).filter(s => s.date === planDate).sort((a, b) => timeToMin(a.time) - timeToMin(b.time)) : [];
+
   const now = new Date();
   const nowMin = isToday ? now.getHours() * 60 + now.getMinutes() : null;
   const loggedMeals = (data.diet || []).filter(m => m.date === planDate).map(m => ({ min: timeToMin(m.time), id: m.id, carbsG: m.carbs || 0, proteinG: m.protein || 0, fatG: m.fat || 0 }));
@@ -42,9 +59,9 @@ export function NutritionPartitioningCard({ data, goals, addEntry, deleteEntry }
     return best ? best.postWorkout : null;
   };
 
-  const tl = useMemo(() => buildTimeline({
-    dayKey: planDate, totals, sessions: activities, wakeMin: sw.wakeMin, sleepMin: sw.sleepMin, nowMin, loggedMeals,
-  }), [planDate, totals.carbsG, totals.proteinG, totals.fatG, JSON.stringify(activities), sw.wakeMin, sw.sleepMin, nowMin, JSON.stringify(loggedMeals)]);
+  const tl = useMemo(() => (wakeMin == null || !hasTargets) ? { slots: [], tightPairs: [], neutralOk: true, mergeGap: 75 } : buildTimeline({
+    dayKey: planDate, totals, sessions: activities, wakeMin, sleepMin, nowMin, loggedMeals,
+  }), [planDate, hasTargets, totals.carbsG, totals.proteinG, totals.fatG, JSON.stringify(activities), wakeMin, sleepMin, nowMin, JSON.stringify(loggedMeals)]);
 
   const tightIds = useMemo(() => { const s = new Set(); tl.tightPairs.forEach(([a, b]) => { s.add(a); s.add(b); }); return s; }, [tl]);
 
@@ -76,15 +93,19 @@ export function NutritionPartitioningCard({ data, goals, addEntry, deleteEntry }
 
   const addSession = () => {
     if (!addType) return;
-    const s = { id: Date.now(), date: planDate, type: addType, time: form.time, durationMin: +form.durationMin || SESSION_TYPES[addType].defMin, intensity: form.intensity };
-    setAdhoc(a => ({ ...a, [planDate]: [...(a[planDate] || []), s] }));
+    addEntry("plannedSessions")({ id: Date.now(), date: planDate, type: addType, time: form.time, durationMin: +form.durationMin || SESSION_TYPES[addType].defMin, intensity: form.intensity });
     setAddType(null); setForm({ time: "17:00", durationMin: "", intensity: "moderate" }); haptic(8); SFX.tap();
   };
-  const removeAdhoc = id => setAdhoc(a => ({ ...a, [planDate]: (a[planDate] || []).filter(s => s.id !== id) }));
+  const removeSession = id => { deleteEntry("plannedSessions")(id); haptic(6); };
+
+  const planReady = hasTargets && wakeMin != null;
+  const sub = wakeMin != null
+    ? `${splitLabel} day · up ${fmt(wakeMin)}${wakeEstimated ? " (est.)" : ""} → bed ~${fmt(sleepMin)}`
+    : "Plans around your wake time — log sleep to build it";
 
   return (
-    <Card title="Nutrition partitioning" sub="Your daily targets, spread across the day around training & sleep"
-      action={<button className="btn-ghost btn-sm" onClick={() => setAddType(addType ? null : Object.keys(SESSION_TYPES)[0])}>+ Activity</button>}>
+    <Card title="Nutrition partitioning" sub={sub}
+      action={isTraining ? <button className="btn-ghost btn-sm" onClick={() => setAddType(addType ? null : Object.keys(SESSION_TYPES)[0])}>+ Activity</button> : null}>
 
       <div className="seg" style={{ marginBottom: 12 }}>
         <button className={`seg-btn ${isToday ? "active" : ""}`} onClick={() => setPlanDate(today)}>Today</button>
@@ -93,14 +114,22 @@ export function NutritionPartitioningCard({ data, goals, addEntry, deleteEntry }
 
       {!hasTargets && <p className="muted small" style={{ marginBottom: 10 }}>Set your daily calorie & macro goals to see a partitioned plan.</p>}
 
+      {hasTargets && wakeMin == null && (
+        <Empty icon="◐" title={isToday ? "Log today's sleep to lay out your meals" : "No wake time yet"}
+          hint={isToday ? "The whole plan runs off when you woke up. Log last night's sleep and your meals appear, spaced around your day." : "Log a night's sleep first — tomorrow's plan estimates from your usual wake time."} />
+      )}
+
+      {planReady && wakeEstimated && (
+        <div className="muted small" style={{ marginBottom: 10 }}>Estimated from your usual wake time — log tonight's sleep to firm it up.</div>
+      )}
+
       {/* activity chips */}
       {activities.length > 0 && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
           {activities.map(a => (
             <span key={a.id} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, padding: "4px 10px", borderRadius: 999, background: "var(--bg-2)", border: "1px solid var(--line)", color: "var(--text-2)" }}>
               {(SESSION_TYPES[a.type] || {}).label || a.type} · {a.time}
-              <span style={{ fontSize: 10, color: a._source === "added" ? "var(--accent)" : "var(--muted)" }}>{a._source}</span>
-              {a._source === "added" && <button onClick={() => removeAdhoc(a.id)} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", fontSize: 13, lineHeight: 1 }}>×</button>}
+              <button onClick={() => removeSession(a.id)} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", fontSize: 13, lineHeight: 1 }}>×</button>
             </span>
           ))}
         </div>
@@ -126,7 +155,7 @@ export function NutritionPartitioningCard({ data, goals, addEntry, deleteEntry }
       )}
 
       {/* timeline */}
-      {hasTargets && (
+      {planReady && (
         <div style={{ position: "relative", paddingLeft: 22 }}>
           <div style={{ position: "absolute", left: 6, top: 6, bottom: 6, width: 2, background: "var(--line)" }} />
           {cards.map(s => {
@@ -194,8 +223,11 @@ export function NutritionPartitioningCard({ data, goals, addEntry, deleteEntry }
         </div>
       )}
 
-      {hasTargets && activities.length === 0 && (
-        <p className="muted small" style={{ marginTop: 4, lineHeight: 1.5 }}>Add a gym session or sport with <b>+ Activity</b> and FitLog inserts fixed pre/post fuel slots and reflows the rest of your day around them.</p>
+      {planReady && isTraining && activities.length === 0 && (
+        <p className="muted small" style={{ marginTop: 8, lineHeight: 1.5 }}>Today is a <b>{splitLabel}</b> day. Add your workout time with <b>+ Activity</b> — FitLog inserts fixed pre/post fuel slots (and the post-workout quick-log) around it.</p>
+      )}
+      {planReady && !isTraining && (
+        <p className="muted small" style={{ marginTop: 8, lineHeight: 1.5 }}>Rest day per your weekly plan — no training floors, just your meals spread across the day.</p>
       )}
     </Card>
   );
