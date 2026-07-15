@@ -10,6 +10,13 @@ import { estimateGlycemicLoad, dayGlycemicLoad } from "../engines/glycemic";
 import { computeProteinDistribution } from "../engines/protein";
 import { localDateStr, getTodayStr, formatShortDate, daysAgoFrom } from "../lib/dates";
 import { haptic, SFX } from "../lib/fx";
+import { sleepWindow } from "../engines/fueling";
+import { buildTimeline, timeToMin } from "../lib/partitioning";
+import { PostWorkoutQuickLogModal } from "../components/PostWorkoutQuickLogModal";
+
+// Quick-log shows when we're within this many minutes of a planned post-workout
+// floor (≤ the engine's LOG_MATCH so the logged meal always binds to that floor).
+const POST_CONTEXT_WINDOW_MIN = 90;
 
 // ===== extracted body =====
 // ─── BARCODE SCANNER ──
@@ -487,6 +494,31 @@ export function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp 
   const pct = (v, g) => (g ? Math.min(100, Math.round((v / g) * 100)) : 0);
   const bioWeekday = new Date(dayCtx.currentDayKey() + "T00:00:00").toLocaleDateString("en-US", { weekday: "short" });
 
+  // ── Post-workout quick-log context ──
+  // Show the preset shortcut only when a PLANNED post-workout floor sits near now.
+  const [pwOpen, setPwOpen] = useState(false);
+  const todayStr = getTodayStr();
+  const sw = useMemo(() => sleepWindow(data), [data]);
+  const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+  const pwFloor = useMemo(() => {
+    if (!goals) return null;
+    const sessions = (data?.plannedSessions || []).filter(s => s.date === todayStr);
+    if (!sessions.length) return null;
+    const logged = (data?.diet || []).filter(m => m.date === todayStr).map(m => ({ min: timeToMin(m.time), carbsG: m.carbs || 0, proteinG: m.protein || 0, fatG: m.fat || 0 }));
+    const tl = buildTimeline({ dayKey: todayStr, totals: { carbsG: goals.carbs || 0, proteinG: goals.protein || 0, fatG: goals.fat || 0 }, sessions, wakeMin: sw.wakeMin, sleepMin: sw.sleepMin, nowMin, loggedMeals: logged });
+    return tl.slots.find(s => s.type === "floor" && s.mealName === "Post-workout" && s.status === "planned" && Math.abs(s.plannedMin - nowMin) <= POST_CONTEXT_WINDOW_MIN) || null;
+  }, [data?.plannedSessions, data?.diet, goals, sw, nowMin, todayStr]);
+
+  function quickLogPost(items, micros) {
+    const tot = items.reduce((a, it) => ({ calories: a.calories + (it.calories || 0), protein: a.protein + (it.protein || 0), carbs: a.carbs + (it.carbs || 0), fat: a.fat + (it.fat || 0) }), { calories: 0, protein: 0, carbs: 0, fat: 0 });
+    const now = Date.now();
+    const hh = String(new Date().getHours()).padStart(2, "0"), mm = String(new Date().getMinutes()).padStart(2, "0");
+    onAdd({ date: todayStr, time: `${hh}:${mm}`, ts: now, consumedAt: now, loggedAt: now, meal: "Post-workout", food: "Post-workout meal", calories: tot.calories, protein: tot.protein, carbs: tot.carbs, fat: tot.fat, items, postWorkout: micros, notes: "Quick-logged post-workout preset (estimates)", id: now });
+    toast("◉ Post-workout meal logged");
+    setPwOpen(false);
+    haptic(10);
+  }
+
   return (
     <div className="stack meal-redesign">
     {goals && (
@@ -526,6 +558,13 @@ export function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp 
           ? <span className="bio">◐ Bio day · {bioWeekday}</span>
           : <span className="bio" style={{ color: "var(--mut)", background: "transparent", border: "1px solid var(--line)" }}>Calendar day</span>}
       </div>
+
+      {pwFloor && (
+        <button className="btn full" style={{ marginBottom: 10, background: "rgba(120,180,200,0.14)", border: "1px solid var(--accent)", color: "var(--text)" }} onClick={() => setPwOpen(true)}>
+          ⚡ Quick log · Post-workout meal
+        </button>
+      )}
+      {pwOpen && <PostWorkoutQuickLogModal onLog={quickLogPost} onClose={() => setPwOpen(false)} onManual={() => setPwOpen(false)} />}
 
       {/* Meal type · When · Time */}
       <div className="row2">

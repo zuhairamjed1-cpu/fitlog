@@ -4,6 +4,7 @@ import { SESSION_TYPES, sleepWindow } from "../engines/fueling";
 import { getTodayStr } from "../lib/dates";
 import { haptic, SFX } from "../lib/fx";
 import { buildTimeline, timeToMin, minToTime, TIGHT_GAP_THRESHOLD_MINUTES } from "../lib/partitioning";
+import { POST_WORKOUT_PRESET, inRange } from "../lib/postWorkoutPreset";
 
 // ─── Nutrition partitioning ─────────────────────────────────────────────────
 // Redistributes the EXISTING daily macro target across a per-day meal timeline,
@@ -33,6 +34,13 @@ export function NutritionPartitioningCard({ data, goals, addEntry, deleteEntry }
   const now = new Date();
   const nowMin = isToday ? now.getHours() * 60 + now.getMinutes() : null;
   const loggedMeals = (data.diet || []).filter(m => m.date === planDate).map(m => ({ min: timeToMin(m.time), id: m.id, carbsG: m.carbs || 0, proteinG: m.protein || 0, fatG: m.fat || 0 }));
+
+  // Post-workout micro breakdown from a quick-logged meal near a floor (§5 chips).
+  const postMicrosFor = floor => {
+    let best = null, bestD = 90;
+    (data.diet || []).filter(m => m.date === planDate && m.postWorkout).forEach(m => { const d = Math.abs(timeToMin(m.time) - floor.plannedMin); if (d <= bestD) { best = m; bestD = d; } });
+    return best ? best.postWorkout : null;
+  };
 
   const tl = useMemo(() => buildTimeline({
     dayKey: planDate, totals, sessions: activities, wakeMin: sw.wakeMin, sleepMin: sw.sleepMin, nowMin, loggedMeals,
@@ -146,6 +154,24 @@ export function NutritionPartitioningCard({ data, goals, addEntry, deleteEntry }
                     <span style={{ color: "#b4a8e8" }}>{s.macros.proteinG}g P</span>
                     <span style={{ color: "#f47e6e" }}>{s.macros.fatG}g F</span>
                   </div>
+                  {floor && s.mealName === "Post-workout" && (() => {
+                    const micros = postMicrosFor(s) || {};
+                    const T = POST_WORKOUT_PRESET.targets;
+                    const defs = [["proteinG", "P", "g"], ["glucoseG", "glu", "g"], ["fructoseG", "fru", "g"], ["saltTsp", "salt", ""], ["omega3Mg", "ω3", ""]];
+                    return (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 7 }}>
+                        {defs.map(([k, lab]) => {
+                          const cur = micros[k] || 0; const t = T[k]; const ok = inRange(cur, t);
+                          return (
+                            <span key={k} style={{ fontSize: 10.5, padding: "2px 7px", borderRadius: 7, fontVariantNumeric: "tabular-nums",
+                              border: `1px solid ${ok ? "rgba(95,207,128,0.4)" : "var(--line)"}`, background: ok ? "rgba(95,207,128,0.1)" : "transparent", color: ok ? "var(--good)" : "var(--text-2)" }}>
+                              {lab} {cur}/{t.max != null ? `${t.min}–${t.max}` : `${t.min}+`}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
                   {s.note && <div className="muted small" style={{ marginTop: 4, lineHeight: 1.4 }}>{s.note}</div>}
                 </div>
               </div>
