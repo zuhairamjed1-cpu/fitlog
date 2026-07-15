@@ -228,7 +228,7 @@ function AppShell({ session, syncing }) {
     <>
       <style>{styles}</style>
       <ToastHost />
-      {showWelcome && <WelcomeSplash session={session} goals={goals} onDone={() => setShowWelcome(false)} />}
+      {showWelcome && <WelcomeSplash session={session} goals={goals} data={data} addEntry={addEntry} onDone={() => setShowWelcome(false)} />}
       <div className="app">
         <header className="topbar">
           <h1 className="brand">FitLog</h1>
