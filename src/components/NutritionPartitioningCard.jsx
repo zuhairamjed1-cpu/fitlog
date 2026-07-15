@@ -65,6 +65,7 @@ export function NutritionPartitioningCard({ data, goals, addEntry, deleteEntry }
 
   const tightIds = useMemo(() => { const s = new Set(); tl.tightPairs.forEach(([a, b]) => { s.add(a); s.add(b); }); return s; }, [tl]);
   const proxIds = useMemo(() => new Set(tl.sleepProximityIds || []), [tl]);
+  const insufIds = useMemo(() => new Set(tl.insufficientIds || []), [tl]);
   // Suggested gym window when it's a training day with no time set yet.
   const suggest = useMemo(() => (planReadyLike() && isTraining && activities.length === 0) ? suggestGymWindow({ wakeMin, sleepMin }) : null, [isTraining, activities.length, wakeMin, sleepMin]);
   function planReadyLike() { return hasTargets && wakeMin != null; }
@@ -161,6 +162,9 @@ export function NutritionPartitioningCard({ data, goals, addEntry, deleteEntry }
       {planReady && tl.isCompressed && (
         <div className="muted small" style={{ marginBottom: 10, color: "#f9c97e" }}>⚠ Short awake window — meals are compressed. Later meals sit close to bedtime.</div>
       )}
+      {planReady && insufIds.size > 0 && (
+        <div className="muted small" style={{ marginBottom: 10, color: "#f47e6e" }}>⚠ Your remaining budget is very low after logged meals + floors — the flagged meals are held at a minimum.</div>
+      )}
       {planReady && suggest && (
         <div style={{ marginBottom: 12, padding: "12px 14px", borderRadius: 12, background: "rgba(120,180,200,0.1)", border: "1px solid var(--accent)" }}>
           <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>Training day — when's the gym?</div>
@@ -207,6 +211,7 @@ export function NutritionPartitioningCard({ data, goals, addEntry, deleteEntry }
                     {floor && <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--accent)" }}>floor</span>}
                     {tight && <span style={{ fontSize: 10, fontWeight: 700, color: "#f9c97e", border: "1px solid rgba(249,201,126,0.4)", borderRadius: 6, padding: "1px 5px" }}>tight</span>}
                     {proxIds.has(s.id) && <span style={{ fontSize: 10, fontWeight: 700, color: "#b4a8e8", border: "1px solid rgba(180,168,232,0.4)", borderRadius: 6, padding: "1px 5px" }}>near bed</span>}
+                    {insufIds.has(s.id) && <span style={{ fontSize: 10, fontWeight: 700, color: "#f47e6e", border: "1px solid rgba(244,126,110,0.4)", borderRadius: 6, padding: "1px 5px" }}>low budget</span>}
                   </div>
                   <div style={{ display: "flex", gap: 12, marginTop: 5, fontSize: 12.5, fontVariantNumeric: "tabular-nums" }}>
                     <span style={{ color: "#f9c97e" }}>{s.macros.carbsG}g C</span>

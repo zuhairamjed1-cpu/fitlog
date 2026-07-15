@@ -139,6 +139,9 @@ export function buildTimeline({ dayKey, totals, sessions = [], wakeMin = 420, sl
     const parts = splitInt(budget, weights);
     plannedFlex.forEach((s, i) => { s.macros[key] = parts[i]; });
   });
+  // §12.5 guard rail (live): a planned meal that lands below the display floor
+  // gets flagged so the card can show a non-blocking insufficient-budget warning.
+  const insufficientIds = plannedFlex.filter(s => (s.macros.carbsG + s.macros.proteinG + s.macros.fatG) < MIN_DISPLAY_FLOOR_G).map(s => s.id);
 
   // ── 6. tight-gap pairs (floor near flexible) + neutral window ──
   const slots = [...floors, ...flex].sort((a, b) => a.plannedMin - b.plannedMin);
@@ -171,7 +174,7 @@ export function buildTimeline({ dayKey, totals, sessions = [], wakeMin = 420, sl
       : `${s.mealName} — spread your remaining carbs, protein and fat evenly here.`;
   });
 
-  return { slots, tightPairs, neutralOk, floorCount: floors.length, mergeGap: MERGE_GAP_MINUTES, sleepProximityIds, isCompressed };
+  return { slots, tightPairs, neutralOk, floorCount: floors.length, mergeGap: MERGE_GAP_MINUTES, sleepProximityIds, isCompressed, insufficientIds };
 }
 
 // Suggested gym WINDOW (a range, not a fixed time) for a training day with no
@@ -195,3 +198,41 @@ export function gymSleepProximity({ startMin, durationMin = 60, sleepMin = 1380 
 
 // Sum of a macro across slots — used by callers/tests to assert the invariant.
 export const sumMacro = (slots, key) => slots.reduce((s, sl) => s + (sl.macros[key] || 0), 0);
+
+// ─── §12 GOAL-CHANGE TRIGGER ────────────────────────────────────────────────
+// Third recompute trigger (alongside time-now + drift). Fires when the daily
+// calorie/macro target changes. Logged slots + floors are read-only; only the
+// UNLOGGED flexible slots are rewritten, keeping their proportional share of the
+// unlogged-flexible pool. Distinct from the §5 workout floors.
+export const MIN_DISPLAY_FLOOR_G = 5; // TODO: tune — min viable macro to avoid a near-zero meal
+
+const MACROS = ["carbsG", "proteinG", "fatG"];
+const sumMacros = slots => slots.reduce((a, s) => { MACROS.forEach(k => a[k] += (s.macros[k] || 0)); return a; }, { carbsG: 0, proteinG: 0, fatG: 0 });
+
+export function recomputeOnGoalChange(newDailyTarget, currentSlots) {
+  const logged = currentSlots.filter(s => s.status === "logged");
+  const floors = currentSlots.filter(s => s.type === "floor");
+  const unlogged = currentSlots.filter(s => s.type === "flexible" && s.status === "planned");
+
+  // §12.6 — nothing left to redistribute: read-only comparison, no mutation.
+  if (!unlogged.length) {
+    return { mode: "summary", actual: sumMacros(currentSlots), target: { ...newDailyTarget }, slots: currentSlots, warnings: [] };
+  }
+
+  const loggedT = sumMacros(logged);
+  const floorT = sumMacros(floors);
+  const denom = sumMacros(unlogged); // ratio over the UNLOGGED flexible pool
+  const warnings = new Set();
+
+  unlogged.forEach(slot => {
+    MACROS.forEach(k => {
+      const remaining = (newDailyTarget[k] || 0) - loggedT[k] - floorT[k];
+      const share = denom[k] > 0 ? slot.macros[k] / denom[k] : 1 / unlogged.length;
+      let v = remaining * share;
+      if (v < MIN_DISPLAY_FLOOR_G) { warnings.add(slot.id); v = MIN_DISPLAY_FLOOR_G; } // §12.5 guard rail
+      slot.macros[k] = Math.round(v);
+    });
+  });
+
+  return { mode: "recompute", slots: currentSlots, warnings: [...warnings] };
+}
