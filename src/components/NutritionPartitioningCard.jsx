@@ -6,6 +6,9 @@ import { getTodayStr, WEEKDAYS } from "../lib/dates";
 import { haptic, SFX } from "../lib/fx";
 import { buildTimeline, timeToMin, minToTime, TIGHT_GAP_THRESHOLD_MINUTES, suggestGymWindow, gymSleepProximity } from "../lib/partitioning";
 import { POST_WORKOUT_PRESET, inRange } from "../lib/postWorkoutPreset";
+import { predictBedtime, planRemainingIntake } from "../lib/prebedTaper";
+
+const FORM_LABEL = { "full-meal": "a full meal", "lighter-solid-or-shake": "something lighter or a shake", "liquid-preferred": "liquid (shake/smoothie)", "casein-or-milk-shake": "a casein or milk shake" };
 
 // ─── Nutrition partitioning ─────────────────────────────────────────────────
 // Redistributes the EXISTING daily macro target across a per-day meal timeline,
@@ -35,7 +38,11 @@ export function NutritionPartitioningCard({ data, goals, addEntry, deleteEntry }
   const wakeEstimated = !!(todaySleep && todaySleep.date !== planDate);
   const wakeMin = todaySleep ? timeToMin(todaySleep.wakeTime) : null;
   const needH = useMemo(() => estimateSleepNeed(data, goals).hours, [data, goals]);
-  const sleepMin = wakeMin != null ? wakeMin + Math.round((24 - needH) * 60) : null; // next bedtime
+  // Predicted bedtime (§13.1) from sleep history, anomaly-filtered. Source-agnostic.
+  const bedPred = useMemo(() => predictBedtime((data.sleep || []).filter(s => s.bedtime).sort((a, b) => (b.date || "").localeCompare(a.date || "") || (b.id || 0) - (a.id || 0)).map(s => s.bedtime)), [data.sleep]);
+  // Bedtime on the same forward scale as wake (after-midnight → +24h).
+  const bedMin = wakeMin != null ? (bedPred.bedtime <= wakeMin ? bedPred.bedtime + 1440 : bedPred.bedtime) : null;
+  const sleepMin = bedMin != null ? bedMin : (wakeMin != null ? wakeMin + Math.round((24 - needH) * 60) : null);
 
   // ── rest vs training from the weekly plan ("Your week") ──
   const plan = goals?.plan || {};
@@ -66,6 +73,15 @@ export function NutritionPartitioningCard({ data, goals, addEntry, deleteEntry }
   const tightIds = useMemo(() => { const s = new Set(); tl.tightPairs.forEach(([a, b]) => { s.add(a); s.add(b); }); return s; }, [tl]);
   const proxIds = useMemo(() => new Set(tl.sleepProximityIds || []), [tl]);
   const insufIds = useMemo(() => new Set(tl.insufficientIds || []), [tl]);
+
+  // Pre-bed calorie taper (§13): re-evaluate as the clock advances toward bed.
+  const taper = useMemo(() => {
+    if (!(hasTargets && wakeMin != null) || !isToday || bedMin == null) return null;
+    const nowM = new Date().getHours() * 60 + new Date().getMinutes();
+    const eaten = (data.diet || []).filter(m => m.date === planDate).reduce((a, m) => a + (m.calories || 0), 0);
+    const remaining = Math.max(0, (goals?.calories || 0) - eaten);
+    return planRemainingIntake(nowM, bedMin, remaining);
+  }, [hasTargets, wakeMin, isToday, bedMin, goals?.calories, data.diet, planDate]);
   // Suggested gym window when it's a training day with no time set yet.
   const suggest = useMemo(() => (planReadyLike() && isTraining && activities.length === 0) ? suggestGymWindow({ wakeMin, sleepMin }) : null, [isTraining, activities.length, wakeMin, sleepMin]);
   function planReadyLike() { return hasTargets && wakeMin != null; }
@@ -164,6 +180,13 @@ export function NutritionPartitioningCard({ data, goals, addEntry, deleteEntry }
       )}
       {planReady && insufIds.size > 0 && (
         <div className="muted small" style={{ marginBottom: 10, color: "#f47e6e" }}>⚠ Your remaining budget is very low after logged meals + floors — the flagged meals are held at a minimum.</div>
+      )}
+      {planReady && taper && (taper.tapered || !taper.onTrack) && (
+        <div className="muted small" style={{ marginBottom: 10, color: "#9fb0c8" }}>
+          🌙 ~{taper.hoursToBed.toFixed(1)}h to predicted bed{bedPred.anomaly ? " (adj.)" : ""} — {taper.tapered
+            ? `keep it ${FORM_LABEL[taper.form] || taper.form}, ≤${taper.ceilingKcal} kcal${taper.skipIfPossible ? " (or skip)" : ""}.`
+            : `you're behind, so the last meal absorbs the remaining ~${Math.round(taper.suggestKcal)} kcal before the 3h pre-bed line.`}
+        </div>
       )}
       {planReady && suggest && (
         <div style={{ marginBottom: 12, padding: "12px 14px", borderRadius: 12, background: "rgba(120,180,200,0.1)", border: "1px solid var(--accent)" }}>
