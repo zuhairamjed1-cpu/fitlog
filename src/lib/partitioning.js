@@ -111,17 +111,34 @@ export function buildTimeline({ dayKey, totals, sessions = [], wakeMin = 420, sl
   const lastMeal = flex[flex.length - 1];
   if (lastMeal && lastPost > -Infinity && lastPost + 45 > lastMeal.plannedMin) lastMeal.plannedMin = clamp(lastPost + 45, lastMeal.plannedMin, winEnd);
 
-  // ── 3. mark logged (match real meals to nearest slot). Logged slots lock to
-  //       the ACTUAL eaten macros and are excluded from all later recompute. ──
+  // ── 3. mark logged. Entries carrying a meal `label` are AGGREGATED by that
+  //       label into the matching slot (all "Lunch" entries → the Lunch slot,
+  //       summed, regardless of count or time gap). Label-less entries fall back
+  //       to nearest-time matching. Logged slots lock to the summed eaten macros
+  //       and are excluded from all later recompute. Aggregation is derived — the
+  //       individual logged records stay immutable (§3). ──
   const all = [...floors, ...flex];
-  loggedMeals.forEach(mealRaw => {
+  const norm = s => (s || "").trim().toLowerCase();
+  const labelled = loggedMeals.filter(m => m.label);
+  const byLabel = {};
+  labelled.forEach(m => {
+    const L = norm(m.label);
+    const g = byLabel[L] || (byLabel[L] = { carbsG: 0, proteinG: 0, fatG: 0, min: Infinity });
+    g.carbsG += m.carbsG || 0; g.proteinG += m.proteinG || 0; g.fatG += m.fatG || 0;
+    const mm = m.min != null ? m.min : timeToMin(m.time);
+    g.min = Math.min(g.min, mm);
+  });
+  Object.entries(byLabel).forEach(([label, agg]) => {
+    let slot = all.find(sl => sl.status !== "logged" && norm(sl.mealName) === label);
+    if (!slot) { let bd = LOG_MATCH_MINUTES; all.forEach(sl => { if (sl.status === "logged") return; const d = Math.abs(sl.plannedMin - agg.min); if (d <= bd) { slot = sl; bd = d; } }); }
+    if (slot) { slot.status = "logged"; slot.loggedMin = agg.min === Infinity ? slot.plannedMin : agg.min; slot.macros = { carbsG: Math.round(agg.carbsG), proteinG: Math.round(agg.proteinG), fatG: Math.round(agg.fatG) }; }
+  });
+  // label-less entries → nearest-time, one slot each (back-compat)
+  loggedMeals.filter(m => !m.label).forEach(mealRaw => {
     const mm = mealRaw.min != null ? mealRaw.min : timeToMin(mealRaw.time);
     let best = null, bestD = LOG_MATCH_MINUTES;
     all.forEach(sl => { if (sl.status === "logged") return; const d = Math.abs(sl.plannedMin - mm); if (d <= bestD) { best = sl; bestD = d; } });
-    if (best) {
-      best.status = "logged"; best.loggedMin = mm;
-      best.macros = { carbsG: Math.round(mealRaw.carbsG || 0), proteinG: Math.round(mealRaw.proteinG || 0), fatG: Math.round(mealRaw.fatG || 0) };
-    }
+    if (best) { best.status = "logged"; best.loggedMin = mm; best.macros = { carbsG: Math.round(mealRaw.carbsG || 0), proteinG: Math.round(mealRaw.proteinG || 0), fatG: Math.round(mealRaw.fatG || 0) }; }
   });
 
   // ── 4. reflow ──

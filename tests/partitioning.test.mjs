@@ -96,5 +96,38 @@ t("no snack generated inside the pre→post training window", () => {
   slots.filter(s => s.type === "flexible").forEach(f => assert.ok(f.plannedMin < pre - 1 || f.plannedMin > post + 1, `flexible ${f.mealName} inside training window`));
 });
 
+// aggregate multiple logged entries under the same meal label into one slot
+t("two Lunch entries sum into the Lunch slot (not just one)", () => {
+  const lunch = base({}).slots.find(s => s.mealName === "Lunch");
+  const logged = [
+    { label: "Lunch", min: lunch.plannedMin, carbsG: 1, proteinG: 16, fatG: 30 },       // eggs
+    { label: "Lunch", min: lunch.plannedMin + 15, carbsG: 40, proteinG: 6, fatG: 2 },   // bread
+  ];
+  const { slots } = base({ loggedMeals: logged });
+  const ln = slots.find(s => s.mealName === "Lunch");
+  assert.equal(ln.status, "logged");
+  assert.equal(ln.macros.carbsG, 41, "carbs summed (eggs 1 + bread 40)");
+  assert.equal(ln.macros.proteinG, 22, "protein summed");
+  assert.equal(ln.macros.fatG, 32, "fat summed");
+  // exactly one Lunch slot — no duplicate
+  assert.equal(slots.filter(s => s.mealName === "Lunch").length, 1);
+});
+
+t("three Breakfast entries → one summed Breakfast slot", () => {
+  const bk = base({}).slots.find(s => s.mealName === "Breakfast");
+  const logged = [0, 10, 20].map((d, i) => ({ label: "Breakfast", min: bk.plannedMin + d, carbsG: 10, proteinG: 12, fatG: 5 }));
+  const { slots } = base({ loggedMeals: logged });
+  const b = slots.find(s => s.mealName === "Breakfast");
+  assert.equal(b.macros.carbsG, 30); assert.equal(b.macros.proteinG, 36);
+  assert.equal(slots.filter(s => s.mealName === "Breakfast").length, 1);
+});
+
+t("deleting one entry recomputes the slot total", () => {
+  const lunch = base({}).slots.find(s => s.mealName === "Lunch");
+  const afterDelete = base({ loggedMeals: [{ label: "Lunch", min: lunch.plannedMin, carbsG: 1, proteinG: 16, fatG: 30 }] });
+  const ln = afterDelete.slots.find(s => s.mealName === "Lunch");
+  assert.equal(ln.macros.carbsG, 1, "only the remaining entry counts");
+});
+
 console.log(`partitioning: ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);
