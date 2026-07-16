@@ -94,12 +94,16 @@ export function buildTimeline({ dayKey, totals, sessions = [], wakeMin = 420, sl
     prevM = m;
     return { id: `flex-${dayKey}-${i}`, type: "flexible", mealName: nm, status: "planned", loggedMin: null, plannedMin: m, macros: { carbsG: 0, proteinG: 0, fatG: 0 }, activityId: null, note: "" };
   });
-  // Drop a Snack crammed within the min-viable gap of a floor, the activity
-  // itself, or another meal — its budget flows into the remaining meals instead
-  // of manufacturing a slot jammed 10 min before training.
+  // Drop a Snack when it (a) sits INSIDE a training window (between an activity's
+  // pre- and post-workout floor — you don't snack mid-workout), or (b) is crammed
+  // within the min-viable gap of a floor, the activity, or another meal. Its
+  // budget flows into the remaining meals instead of a jammed peri-workout slot.
+  const windows = {};
+  floors.forEach(f => { (windows[f.activityId] = windows[f.activityId] || {})[f.id.startsWith("pre-") ? "pre" : "post"] = f.plannedMin; });
+  const inTrainingWindow = m => Object.values(windows).some(w => w.pre != null && w.post != null && m >= w.pre - 1 && m <= w.post + 1);
   const activityMins = sessions.map(s => timeToMin(s.time));
   const neighbours = m => [...floors.map(f => f.plannedMin), ...activityMins, ...flex.filter(x => x.mealName !== "Snack").map(x => x.plannedMin)];
-  flex = flex.filter(s => !(s.mealName === "Snack" && neighbours(s.plannedMin).some(nm => Math.abs(nm - s.plannedMin) < MIN_VIABLE_FLEXIBLE_SLOT_GAP_MINUTES)));
+  flex = flex.filter(s => !(s.mealName === "Snack" && (inTrainingWindow(s.plannedMin) || neighbours(s.plannedMin).some(nm => Math.abs(nm - s.plannedMin) < MIN_VIABLE_FLEXIBLE_SLOT_GAP_MINUTES))));
   // If a post-workout floor lands after the last meal's anchor (a late workout),
   // trail the last meal after it so it becomes the near-bed slot that compresses,
   // rather than sitting before the workout.

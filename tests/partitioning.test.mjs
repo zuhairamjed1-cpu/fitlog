@@ -89,5 +89,12 @@ t("no snack generated within the min-viable gap of a floor", () => {
   assert.ok(true);
 });
 
+// no flexible slot inside a training window (between pre- and post-workout floor)
+t("no snack generated inside the pre→post training window", () => {
+  const { slots } = buildTimeline({ dayKey: "2026-07-20", totals: TOTALS, wakeMin: 510, sleepMin: 1380, sessions: [{ id: 1, type: "gym", time: "16:00", durationMin: 60, intensity: "moderate" }] });
+  const pre = slots.find(s => s.id === "pre-1").plannedMin, post = slots.find(s => s.id === "post-1").plannedMin;
+  slots.filter(s => s.type === "flexible").forEach(f => assert.ok(f.plannedMin < pre - 1 || f.plannedMin > post + 1, `flexible ${f.mealName} inside training window`));
+});
+
 console.log(`partitioning: ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);
