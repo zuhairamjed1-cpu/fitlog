@@ -35,22 +35,22 @@ export function setCurrentUser(id: string | null) { _currentUserId = id; }
 // Pushes the full {data, goals, chat} bundle to Supabase for the logged-in user.
 // Debounced so rapid edits don't spam the server.
 let _syncTimer: ReturnType<typeof setTimeout> | null = null;
+let _pending = false; // an edit is waiting to be pushed
 export function cloudSync(userId?: string | null) {
   const uid = userId || _currentUserId;
   if (!hasSupabase || !uid) return;
+  _pending = true;
   if (_syncTimer) clearTimeout(_syncTimer);
-  _syncTimer = setTimeout(async () => {
-    try {
-      const payload = {
-        user_id: uid,
-        data: loadData(),
-        goals: loadGoals(),
-        chat: JSON.parse(localStorage.getItem(STORAGE_KEY + "_chat") || "[]"),
-        updated_at: new Date().toISOString(),
-      };
-      await supabase!.from("fitlog_data").upsert(payload, { onConflict: "user_id" });
-    } catch (e) { /* offline — will retry on next change */ }
-  }, 1200);
+  _syncTimer = setTimeout(() => { _syncTimer = null; void cloudPushNow(uid); }, 1200);
+}
+
+// Flush any pending debounced write RIGHT NOW — call on app background/close so a
+// meal logged on the phone actually reaches the cloud before the tab is frozen.
+export function flushSync(userId?: string | null) {
+  const uid = userId || _currentUserId;
+  if (!hasSupabase || !uid || !_pending) return;
+  if (_syncTimer) { clearTimeout(_syncTimer); _syncTimer = null; }
+  return cloudPushNow(uid);
 }
 
 // Pulls cloud data into localStorage. Returns true if cloud had data.
@@ -88,5 +88,6 @@ export async function cloudPushNow(userId: string): Promise<void> {
       chat: JSON.parse(localStorage.getItem(STORAGE_KEY + "_chat") || "[]"),
       updated_at: new Date().toISOString(),
     }, { onConflict: "user_id" });
-  } catch (e) {}
+    _pending = false; // durably written
+  } catch (e) { /* offline — stays pending, retried on next change/flush */ }
 }

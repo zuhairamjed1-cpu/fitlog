@@ -17,7 +17,7 @@ import { PlanTab } from "./views/PlanTab";
 import { DietForm } from "./views/DietForm";
 import { STORAGE_KEY } from "./lib/keys";
 import { TABS, defaultData, defaultProfile, defaultStrategy, defaultGoals, fitnessGoals, mealTypes, sportsOptions, sleepQuality, intensityLevels, NIC_TYPES, NIC_CONTEXTS, NIC_QUICK, SPLIT_TYPES, defaultPlan, TYPE_DOT, TYPE_ICON, MODELS, loadModelPref, saveModelPref, currentModelId } from "./config";
-import { loadData, loadGoals, saveData, saveGoals, setCurrentUser, cloudSync, cloudPull, cloudPushNow } from "./state/store";
+import { loadData, loadGoals, saveData, saveGoals, setCurrentUser, cloudSync, cloudPull, cloudPushNow, flushSync } from "./state/store";
 import { haptic, SFX, soundEnabled, setSoundPref } from "./lib/fx";
 import { Ring, MacroDonut, MiniChart, Card, Empty, toast, ToastHost, ConfirmModal, useConfirm } from "./components/primitives";
 import { styles } from "./styles";
@@ -123,6 +123,28 @@ export default function FitnessTracker() {
       } catch (e) {}
       setSyncing(false);
     })();
+  }, [session?.user?.id]);
+
+  // Cross-device durability: flush pending writes when the app is backgrounded/
+  // closed (so a phone log actually reaches the cloud), and re-pull when it comes
+  // back to the foreground (so the laptop picks up what the phone just logged).
+  useEffect(() => {
+    const uid = session?.user?.id;
+    if (!uid) return;
+    const flush = () => { flushSync(uid); };
+    const onVisible = async () => {
+      if (document.visibilityState === "hidden") { flush(); return; }
+      // foregrounded → pull latest, then reload derived state if cloud had data
+      try { const pulled = await cloudPull(uid); if (pulled) setBootKey(k => k + 1); } catch (e) {}
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("pagehide", flush);
+    window.addEventListener("beforeunload", flush);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("pagehide", flush);
+      window.removeEventListener("beforeunload", flush);
+    };
   }, [session?.user?.id]);
 
   if (!authChecked) {
