@@ -9,6 +9,8 @@ import { POST_WORKOUT_PRESET, inRange } from "../lib/postWorkoutPreset";
 import { predictBedtime, planRemainingIntake } from "../lib/prebedTaper";
 
 const FORM_LABEL = { "full-meal": "a full meal", "lighter-solid-or-shake": "something lighter or a shake", "liquid-preferred": "liquid (shake/smoothie)", "casein-or-milk-shake": "a casein or milk shake" };
+// Atwater kcal from macros (4/4/9).
+const kcalOf = m => Math.round((m.carbsG || 0) * 4 + (m.proteinG || 0) * 4 + (m.fatG || 0) * 9);
 
 // ─── Nutrition partitioning ─────────────────────────────────────────────────
 // Redistributes the EXISTING daily macro target across a per-day meal timeline,
@@ -236,7 +238,8 @@ export function NutritionPartitioningCard({ data, goals, addEntry, deleteEntry }
                     {proxIds.has(s.id) && <span style={{ fontSize: 10, fontWeight: 700, color: "#b4a8e8", border: "1px solid rgba(180,168,232,0.4)", borderRadius: 6, padding: "1px 5px" }}>near bed</span>}
                     {insufIds.has(s.id) && <span style={{ fontSize: 10, fontWeight: 700, color: "#f47e6e", border: "1px solid rgba(244,126,110,0.4)", borderRadius: 6, padding: "1px 5px" }}>low budget</span>}
                   </div>
-                  <div style={{ display: "flex", gap: 12, marginTop: 5, fontSize: 12.5, fontVariantNumeric: "tabular-nums" }}>
+                  <div style={{ display: "flex", gap: 12, marginTop: 5, fontSize: 12.5, fontVariantNumeric: "tabular-nums", alignItems: "baseline" }}>
+                    <span style={{ color: "var(--text)", fontWeight: 700 }}>{kcalOf(s.macros)}<span style={{ color: "var(--text-2)", fontWeight: 400, fontSize: 11 }}> kcal</span></span>
                     <span style={{ color: "#f9c97e" }}>{s.macros.carbsG}g C</span>
                     <span style={{ color: "#b4a8e8" }}>{s.macros.proteinG}g P</span>
                     <span style={{ color: "#f47e6e" }}>{s.macros.fatG}g F</span>
