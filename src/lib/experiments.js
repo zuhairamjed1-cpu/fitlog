@@ -146,8 +146,12 @@ export function makeExperiment(fields) {
 
 // Human label for a metric.
 export function metricLabel(m) {
+  if (!m) return "no metric set";
   const statLabel = { est1RM: "est-1RM", volume: "volume", sets: "sets", score: "score", debt: "debt", avg: "avg", total: "total", count: "count" }[m.stat] || m.stat;
-  return m.source === "exercise" ? `${m.key} ${statLabel}` : `${m.source} ${statLabel}`;
+  // Exercise with a specific lift → "Bench Press volume"; keyless (whole-workout
+  // aggregate) → "workout volume". Never render the literal "undefined".
+  const scope = m.source === "exercise" ? (m.key || "workout") : m.source;
+  return [scope, statLabel].filter(Boolean).join(" ") || "no metric set";
 }
 
 function fmtDelta(exp, ev) {

@@ -6,6 +6,7 @@ import { deriveStatus, daysElapsed, evaluate, metricSeries, metricLabel, makeExp
 
 const AC = "#4fb3bd", GOOD = "#5fcf80", BAD = "#f4776a", MUT = "#6b7480", T2 = "#9aa4b2", TX = "#eef2f6", LINE = "#262d38";
 const dayDiff = (a, b) => Math.round((new Date(b + "T00:00:00") - new Date(a + "T00:00:00")) / 86400000);
+const monShort = d => new Date(d + "T00:00:00").toLocaleDateString("en-US", { month: "short" });
 
 const STAT_BY_SOURCE = {
   exercise: ["volume", "sets", "count"],
@@ -48,7 +49,7 @@ export function ExperimentTimelineCard({ data, goals, setData, onNav }) {
   const hasAny = exps.length > 0;
 
   return (
-    <Card title="🧪 Experiments" sub={span ? `${formatShortDate(span.min)} – ${formatShortDate(span.max)}` : "Test one change at a time"}
+    <Card title="🧪 Experiments" sub={span ? `${monShort(span.min)} → ${monShort(span.max)}` : "Test one change at a time"}
       action={hasAny ? <button className="btn-ghost btn-sm" onClick={() => setAll(true)}>All ›</button> : null}>
 
       {/* verdict prompts */}
@@ -105,7 +106,7 @@ export function ExperimentTimelineCard({ data, goals, setData, onNav }) {
 function TimelineRow({ e, pos, today, data, exps, onOpen }) {
   const status = e._status;
   const left = pos(e.startDate), right = pos(e.endDate);
-  const width = Math.max(3, right - left);
+  const width = Math.max(6, right - left);
   const color = status === "active" ? AC : status === "planned" ? MUT : GOOD;
   let subtitle, rightLabel;
   if (status === "active") { const { day, total } = daysElapsed(e, today); subtitle = `day ${day} of ${total} · ${metricLabel(e.metric)}`; }
@@ -117,16 +118,20 @@ function TimelineRow({ e, pos, today, data, exps, onOpen }) {
         <span style={{ flex: 1, fontSize: 13, fontWeight: 600, color: TX, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.title}</span>
         {rightLabel && <span style={{ fontSize: 11, fontWeight: 700, textTransform: "capitalize", color: e.verdict === "kept" ? GOOD : e.verdict === "dropped" ? BAD : MUT }}>{rightLabel}</span>}
       </div>
-      <div style={{ position: "relative", height: 9, marginTop: 5, borderRadius: 999, background: "rgba(255,255,255,0.04)" }}>
+      <div style={{ position: "relative", height: 22, marginTop: 6 }}>
         {status === "planned" ? (
-          <div style={{ position: "absolute", left: `${left}%`, width: `${width}%`, top: 0, bottom: 0, borderRadius: 999, border: `1.5px dashed ${MUT}` }} />
+          <div style={{ position: "absolute", left: `${left}%`, width: `${width}%`, top: 0, bottom: 0, borderRadius: 8, border: `1px dashed ${MUT}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+            <span style={{ fontSize: 10.5, fontWeight: 600, color: MUT }}>planned</span>
+          </div>
         ) : status === "active" ? (
           <>
-            <div style={{ position: "absolute", left: `${left}%`, width: `${width}%`, top: 0, bottom: 0, borderRadius: 999, background: "rgba(79,179,189,0.25)" }} />
-            <div style={{ position: "absolute", left: `${left}%`, width: `${width * daysElapsed(e, today).day / daysElapsed(e, today).total}%`, top: 0, bottom: 0, borderRadius: 999, background: AC }} />
+            <div style={{ position: "absolute", left: `${left}%`, width: `${width}%`, top: 0, bottom: 0, borderRadius: 8, background: "rgba(79,179,189,0.28)" }} />
+            <div style={{ position: "absolute", left: `${left}%`, width: `${width * daysElapsed(e, today).day / daysElapsed(e, today).total}%`, top: 0, bottom: 0, borderRadius: 8, background: AC, display: "flex", alignItems: "center", paddingLeft: 8, overflow: "hidden" }}>
+              <span style={{ fontSize: 10.5, fontWeight: 700, color: "#04191b", whiteSpace: "nowrap" }}>active</span>
+            </div>
           </>
         ) : (
-          <div style={{ position: "absolute", left: `${left}%`, width: `${width}%`, top: 0, bottom: 0, borderRadius: 999, background: color, opacity: 0.5 }} />
+          <div style={{ position: "absolute", left: `${left}%`, width: `${width}%`, top: 0, bottom: 0, borderRadius: 8, background: color, opacity: e.verdict === "kept" ? 0.55 : 0.35 }} />
         )}
       </div>
       <div style={{ fontSize: 11.5, color: T2, marginTop: 4 }}>{subtitle}</div>
