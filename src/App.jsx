@@ -168,6 +168,10 @@ export default function FitnessTracker() {
 
 
 
+// Display-only tab labels. Internal keys stay stable so routing, deep-links
+// (navTo) and stored state don't churn when a tab is renamed.
+const TAB_LABEL = { Insights: "Goals" };
+
 function AppShell({ session, syncing }) {
   const [activeTab, setActiveTab] = useState("Home");
   const [logOpen, setLogOpen] = useState(false);
@@ -259,7 +263,7 @@ function AppShell({ session, syncing }) {
 
         <main className="main">
           {activeTab === "Home" && <ErrorBoundary compact label="Home"><HomeTab data={data} goals={goals} onAddWater={addEntry("water")} onAddNicotine={addEntry("nicotine")} onNav={navTo} addEntry={addEntry} deleteEntry={deleteEntry} setData={setData} /></ErrorBoundary>}
-          {activeTab === "Insights" && <ErrorBoundary compact label="Insights"><Suspense fallback={<div className="muted-center" style={{ padding: 40 }}><span className="spinner" /></div>}><HistoryTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} onSaveGoals={setGoals} initialCat={insightsCat} /></Suspense></ErrorBoundary>}
+          {activeTab === "Insights" && <ErrorBoundary compact label="Goals"><Suspense fallback={<div className="muted-center" style={{ padding: 40 }}><span className="spinner" /></div>}><HistoryTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} onSaveGoals={setGoals} initialCat={insightsCat} /></Suspense></ErrorBoundary>}
           {activeTab === "Coach" && <ErrorBoundary compact label="Coach"><Suspense fallback={<div className="muted-center" style={{ padding: 40 }}><span className="spinner" /></div>}><CoachTab data={data} goals={goals} /></Suspense></ErrorBoundary>}
           {activeTab === "Me" && <ErrorBoundary compact label="Me"><MeTab data={data} goals={goals} onSaveGoals={setGoals} onClearAll={clearAll} onImport={importData} session={session} onSignOut={signOut} addEntry={addEntry} deleteEntry={deleteEntry} /></ErrorBoundary>}
         </main>
@@ -272,14 +276,14 @@ function AppShell({ session, syncing }) {
           {["Home", "Insights"].map(tab => (
             <button key={tab} className={`tabbtn ${activeTab === tab ? "active" : ""}`} onClick={() => go(tab)}>
               <TabIcon name={tab} active={activeTab === tab} />
-              <span className="tabbtn-label">{tab}</span>
+              <span className="tabbtn-label">{TAB_LABEL[tab] || tab}</span>
             </button>
           ))}
           <button className="tab-plus" onClick={() => openLog(null)} aria-label="Log"><span className="tab-plus-glyph">＋</span></button>
           {["Coach", "Me"].map(tab => (
             <button key={tab} className={`tabbtn ${activeTab === tab ? "active" : ""}`} onClick={() => go(tab)}>
               <TabIcon name={tab} active={activeTab === tab} />
-              <span className="tabbtn-label">{tab}</span>
+              <span className="tabbtn-label">{TAB_LABEL[tab] || tab}</span>
             </button>
           ))}
         </nav>
