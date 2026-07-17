@@ -10,6 +10,7 @@ import { WaterForm, WeightForm } from "../views/IntakeTab";
 import { JournalTab } from "../views/JournalTab";
 import { NicotineTab } from "../views/NicotineTab";
 import { PlanTab } from "../views/PlanTab";
+import { StoolTracker } from "../views/StoolTracker";
 import { SkinSection } from "../views/skin/SkinSection";
 import { SleepSection } from "../views/SleepSection";
 import { WorkoutScreen, SportsForm } from "../views/WorkoutScreen";
@@ -54,6 +55,7 @@ export function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, se
       { key: "sleep", label: "Sleep", icon: "◐", color: "#6ee7f7" },
       { key: "nicotine", label: "Nicotine", icon: "●", color: "#d98fa8" },
       { key: "skin", label: "Skin", icon: "✦", color: "#e89ab0" },
+      { key: "stool", label: "Stool", icon: "⊙", color: "#a68a64" },
       { key: "journal", label: "Journal", icon: "✎", color: "#9aa8e8" },
       { key: "ejac", label: "Private", icon: "◯", color: "#c9a2e8" },
     ] },
@@ -75,6 +77,7 @@ export function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, se
       case "nicotine": return <NicotineTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />;
       case "journal": return <JournalTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} setData={setData} />;
       case "skin": return <SkinSection data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} updateEntry={updateEntry} onSaveGoals={onSaveGoals} />;
+      case "stool": return <StoolTracker data={data} addEntry={addEntry} deleteEntry={deleteEntry} />;
       case "goalplan": return <GoalPlanV3 data={data} goals={goals} onSaveGoals={onSaveGoals} addEntry={addEntry} deleteEntry={deleteEntry} />;
       case "ejac": return <PrivateSection data={data} addEntry={addEntry} deleteEntry={deleteEntry} />;
       case "notes": return <NotesScreen data={data} goals={goals} setData={setData} />;
