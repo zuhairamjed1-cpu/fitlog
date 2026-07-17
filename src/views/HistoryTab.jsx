@@ -15,6 +15,10 @@ import { computeEnergyBalance } from "../engines/energy";
 import { estimateSleepNeed } from "../engines/sleep";
 import { parseWorkout, bestSet, e1rm } from "../engines/workout";
 import { formatShortDate, daysAgo } from "../lib/dates";
+import { WeekPlannerCard } from "../components/WeekPlannerCard";
+import { UrgeTracker } from "../components/UrgeTracker";
+import { NicotineTab } from "./NicotineTab";
+import { SkinSection } from "./skin/SkinSection";
 
 
 // Shared per-day series builders. Nutrition series bucket by the ACTIVE day
@@ -89,6 +93,8 @@ function TrainingTrends({ data, goals, range, setRange, workoutPts, onSaveGoals,
   return (
     <>
       <StreakCard data={data} goals={goals} onSaveGoals={onSaveGoals} />
+
+      <WeekPlannerCard data={data} goals={goals} onSaveGoals={onSaveGoals} />
 
       <ProgressionCard data={data} goals={goals} />
 
@@ -171,6 +177,9 @@ const TREND_CATS = [
   { key: "nutrition", label: "🍎 Nutrition" },
   { key: "training", label: "💪 Training" },
   { key: "sleep", label: "😴 Sleep" },
+  { key: "ejac", label: "🌊 Urges" },
+  { key: "nicotine", label: "🚬 Nicotine" },
+  { key: "skin", label: "✦ Skin" },
 ];
 
 function TrendsView({ data, goals, addEntry, deleteEntry, onSaveGoals, initialCat }) {
@@ -190,11 +199,14 @@ function TrendsView({ data, goals, addEntry, deleteEntry, onSaveGoals, initialCa
       {cat === "nutrition" && <NutritionTrends data={data} goals={goals} addEntry={addEntry} range={range} setRange={setRange} calPts={calPts} proteinPts={proteinPts} waterPts={waterPts} series={series} />}
       {cat === "training" && <TrainingTrends data={data} goals={goals} range={range} setRange={setRange} workoutPts={workoutPts} onSaveGoals={onSaveGoals} series={series} />}
       {cat === "sleep" && <SleepTrends data={data} goals={goals} range={range} setRange={setRange} sleepPts={sleepPts} series={series} />}
+      {cat === "ejac" && <UrgeTracker data={data} addEntry={addEntry} deleteEntry={deleteEntry} />}
+      {cat === "nicotine" && <NicotineTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />}
+      {cat === "skin" && <SkinSection data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} onSaveGoals={onSaveGoals} />}
     </>
   );
 }
 
-function ListsView({ data, deleteEntry }) {
+export function ListsView({ data, deleteEntry }) {
   const [cat, setCat] = useState("diet");
   const [limit, setLimit] = useState(50);
   const [confirm, confirmModal] = useConfirm();
@@ -371,17 +383,11 @@ function HistItem({ item, type, onDelete }) {
   );
 }
 
+// Lists moved to the Me tab; Goals is trends-only now.
 export function HistoryTab({ data, goals, addEntry, deleteEntry, onSaveGoals, initialCat }) {
-  const [view, setView] = useState("trends"); // trends | lists
-  useEffect(() => { if (initialCat) setView("trends"); }, [initialCat]);
   return (
     <div className="stack">
-      <div className="subtabs">
-        <button className={`subtab ${view === "trends" ? "active" : ""}`} onClick={() => setView("trends")}>📊 Trends</button>
-        <button className={`subtab ${view === "lists" ? "active" : ""}`} onClick={() => setView("lists")}>≡ Lists</button>
-      </div>
-      {view === "trends" && <TrendsView data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} onSaveGoals={onSaveGoals} initialCat={initialCat} />}
-      {view === "lists" && <ListsView data={data} deleteEntry={deleteEntry} />}
+      <TrendsView data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} onSaveGoals={onSaveGoals} initialCat={initialCat} />
     </div>
   );
 }

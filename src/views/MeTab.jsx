@@ -1,5 +1,6 @@
 import { useState, Suspense, lazy } from "react";
 import { EjacTab } from "../views/EjacTab";
+import { ListsView } from "./HistoryTab";
 const SettingsTab = lazy(() => import("./SettingsTab"));
 
 // ===== extracted body =====
@@ -22,6 +23,14 @@ export function MeTab({ data, goals, onSaveGoals, onClearAll, onImport, session,
       <div className="stack">
         <button className="log-back" onClick={() => setView("menu")}>‹ Me</button>
         <EjacTab data={data} addEntry={addEntry} deleteEntry={deleteEntry} />
+      </div>
+    );
+  }
+  if (view === "lists") {
+    return (
+      <div className="stack">
+        <button className="log-back" onClick={() => setView("menu")}>‹ Me</button>
+        <ListsView data={data} deleteEntry={deleteEntry} />
       </div>
     );
   }
@@ -65,6 +74,7 @@ export function MeTab({ data, goals, onSaveGoals, onClearAll, onImport, session,
       <div>
         <div className="me-group-title">Data &amp; private</div>
         <div className="me-rows">
+          <Row icon="≡" label="Lists" onClick={() => open("lists")} />
           <Row icon="⬇" label="Export & backup" onClick={() => open("settings", "export")} />
           <Row icon="⌗" label="Manage data" onClick={() => open("settings", "data")} />
           <Row icon="◯" label="Private tracker" onClick={() => open("ejac")} />
