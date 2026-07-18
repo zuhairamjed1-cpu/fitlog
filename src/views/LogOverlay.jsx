@@ -69,7 +69,7 @@ export function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, se
 
   const renderForm = () => {
     switch (view) {
-      case "diet": return <DietForm onAdd={addEntry("diet")} recent={data.diet} goals={goals} data={data} todayDiet={data.diet.filter(d => d.date === today)} addEntry={addEntry} deleteEntry={deleteEntry} />;
+      case "diet": return <DietForm onAdd={addEntry("diet")} recent={data.diet} goals={goals} data={data} todayDiet={data.diet.filter(d => d.date === today)} addEntry={addEntry} deleteEntry={deleteEntry} onSaveGoals={onSaveGoals} />;
       case "water": return <WaterForm data={data} goals={goals} onAdd={addEntry("water")} onDelete={deleteEntry("water")} />;
       case "weight": return <WeightForm data={data} goals={goals} onAdd={addEntry("weight")} onDelete={deleteEntry("weight")} />;
       case "exercise": return <WorkoutScreen data={data} goals={goals} addEntry={addEntry} onSaveGoals={onSaveGoals} />;

@@ -125,6 +125,69 @@ function BarcodeScanner({ onResult, onClose }) {
   );
 }
 
+// ─── PROTEIN POWDER ──
+// Set your current powder once (per-scoop macros); one tap logs a scoop, and the
+// AI meal analyzer uses these exact values whenever you describe a shake.
+function ProteinPowderCard({ goals, onSaveGoals, onAdd }) {
+  const p = goals?.proteinPowder || null;
+  const [editing, setEditing] = useState(!p);
+  const [form, setForm] = useState(() => p || { name: "", scoop: "1 scoop", proteinG: "", carbsG: "", fatG: "" });
+  const [scoops, setScoops] = useState(1);
+
+  const kcal = m => Math.round((m.proteinG || 0) * 4 + (m.carbsG || 0) * 4 + (m.fatG || 0) * 9);
+
+  const save = () => {
+    if (!form.name.trim() || !onSaveGoals) return;
+    const powder = { name: form.name.trim(), scoop: form.scoop.trim() || "1 scoop", proteinG: +form.proteinG || 0, carbsG: +form.carbsG || 0, fatG: +form.fatG || 0 };
+    onSaveGoals({ ...goals, proteinPowder: powder });
+    setEditing(false); haptic(8); toast("✓ Protein powder saved", { silent: true });
+  };
+
+  const logScoop = () => {
+    if (!p) return;
+    const n = Math.max(1, scoops);
+    const m = { protein: p.proteinG * n, carbs: p.carbsG * n, fat: p.fatG * n };
+    const now = Date.now();
+    onAdd({ id: now, date: getTodayStr(), ts: now, consumedAt: now, meal: "Protein shake", food: `${p.name} ×${n} ${p.scoop}`, calories: kcal({ proteinG: m.protein, carbsG: m.carbs, fatG: m.fat }), protein: Math.round(m.protein), carbs: Math.round(m.carbs), fat: Math.round(m.fat), notes: "Protein powder scoop" });
+    haptic(10); SFX.tap(); toast(`◉ ${n} scoop${n > 1 ? "s" : ""} logged`, { silent: true });
+  };
+
+  return (
+    <Card title="Protein powder" sub={p ? `Your reference — ${p.name}` : "Set your current powder for one-tap logging"}
+      action={p && !editing ? <button className="btn-ghost" style={{ minWidth: 40, padding: "8px 12px" }} onClick={() => { setForm(p); setEditing(true); }}>Edit</button> : null}>
+      {editing ? (
+        <div className="stack">
+          <input placeholder="Brand + product, e.g. “ON Gold Standard Whey”" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
+          <div className="field-grid" style={{ gridTemplateColumns: "1.2fr 1fr 1fr 1fr", gap: 8 }}>
+            <label>Scoop<input value={form.scoop} onChange={e => setForm(f => ({ ...f, scoop: e.target.value }))} placeholder="1 scoop" /></label>
+            <label>Protein<input type="number" inputMode="numeric" value={form.proteinG} onChange={e => setForm(f => ({ ...f, proteinG: e.target.value }))} placeholder="g" /></label>
+            <label>Carbs<input type="number" inputMode="numeric" value={form.carbsG} onChange={e => setForm(f => ({ ...f, carbsG: e.target.value }))} placeholder="g" /></label>
+            <label>Fat<input type="number" inputMode="numeric" value={form.fatG} onChange={e => setForm(f => ({ ...f, fatG: e.target.value }))} placeholder="g" /></label>
+          </div>
+          <div className="row">
+            {p && <button className="btn-ghost flex" onClick={() => setEditing(false)}>Cancel</button>}
+            <button className="btn flex" onClick={save} disabled={!form.name.trim()}>Save powder</button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="muted small" style={{ marginBottom: 10 }}>
+            Per {p.scoop}: <b style={{ color: "#b4a8e8" }}>{p.proteinG}g P</b> · <b style={{ color: "#f9c97e" }}>{p.carbsG}g C</b> · <b style={{ color: "#f47e6e" }}>{p.fatG}g F</b> · {kcal({ proteinG: p.proteinG, carbsG: p.carbsG, fatG: p.fatG })} kcal
+          </div>
+          <div className="row" style={{ alignItems: "center", gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <button className="btn-ghost" style={{ minWidth: 36, padding: "8px 0" }} onClick={() => setScoops(s => Math.max(1, s - 1))}>−</button>
+              <span style={{ width: 28, textAlign: "center", fontVariantNumeric: "tabular-nums" }}>{scoops}</span>
+              <button className="btn-ghost" style={{ minWidth: 36, padding: "8px 0" }} onClick={() => setScoops(s => s + 1)}>+</button>
+            </div>
+            <button className="btn flex" onClick={logScoop}>＋ Log {scoops} scoop{scoops > 1 ? "s" : ""}</button>
+          </div>
+        </>
+      )}
+    </Card>
+  );
+}
+
 // ─── DIET FORM ──
 // Supplement quick-log (sits under the meal card). Pick a saved supplement from
 // the library, set the amount, and log it. The ＋ flow takes a free-text
@@ -304,7 +367,7 @@ function GLPill({ meal, showValue = true }) {
   return <span className="gl-pill" data-band={r.band} title={title}>GL {r.band}{showValue ? `\u00a0·\u00a0${r.gl}` : ""}</span>;
 }
 
-export function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp = [], addEntry, deleteEntry }) {
+export function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp = [], addEntry, deleteEntry, onSaveGoals }) {
   // Running totals follow the ACTIVE day (biological or calendar) via the gateway.
   const dayCtx = getDayContext(data, goals);
   const todayDiet = data ? dayCtx.meals(dayCtx.currentDayKey()) : todayDietProp;
@@ -407,7 +470,13 @@ export function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp 
       }
       // Image path runs Haiku-first and escalates to Sonnet only on a flagged meal
       // (handled inside the pipeline); text stays on Haiku. `brain` is unused now.
-      const r = await analyzeFoodAI(mode === "text" ? text : "", b64, mt, useWeb);
+      // Reference the user's saved protein powder so the AI uses its real macros
+      // for any scoop, instead of guessing.
+      const powder = goals?.proteinPowder;
+      const refText = (mode === "text" && powder?.name && /shake|whey|protein\s*powder|scoop|casein|isolate/i.test(text))
+        ? `${text}\n\n(Reference — my protein powder "${powder.name}": per ${powder.scoop || "scoop"} = ${powder.proteinG || 0}g protein, ${powder.carbsG || 0}g carbs, ${powder.fatG || 0}g fat. Use these exact values for any scoop of my powder.)`
+        : text;
+      const r = await analyzeFoodAI(mode === "text" ? refText : "", b64, mt, useWeb);
       if (r && r.calories >= 0 && r.items?.length) setResult(r);
       else setError(mode === "image" ? "Couldn't read that photo well. Try a clearer shot, or describe the meal in words." : "Couldn't analyze that. Try being more specific (portion size, cooking method).");
     } catch (e) { setError("Network issue. Try again."); }
@@ -802,6 +871,7 @@ export function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp 
         </div>
       )}
       </div>
+      <ProteinPowderCard goals={goals} onSaveGoals={onSaveGoals} onAdd={onAdd} />
       <SupplementCard data={data} addEntry={addEntry} deleteEntry={deleteEntry} />
       <NutritionPartitioningCard data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />
       <ProteinTimingCard data={data} goals={goals} todayDiet={todayDiet} />
