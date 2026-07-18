@@ -64,12 +64,12 @@ t("logging a meal marks nearest slot; other meals keep clock times", () => {
   assert.equal(withLog.slots.find(s => s.mealName === "Dinner").plannedMin, dinnerBefore, "dinner keeps its clock time");
 });
 
-// pre-workout carbs stay within the 20–40g ceiling regardless of intensity
-t("pre-workout carbs never exceed 40g", () => {
+// pre-workout carbs are a flat 60–100g load (revised spec), not intensity-scaled
+t("pre-workout carbs within the flat 60–100g load", () => {
   for (const intensity of ["light", "moderate", "hard"]) {
     const { slots } = base({ sessions: [{ id: "g", type: "gym", time: "16:00", durationMin: 90, intensity }] });
     const pre = slots.find(s => s.mealName === "Pre-workout");
-    assert.ok(pre.macros.carbsG >= 20 && pre.macros.carbsG <= 40, `${intensity} pre carbs ${pre.macros.carbsG} out of 20–40`);
+    assert.ok(pre.macros.carbsG >= 60 && pre.macros.carbsG <= 100, `${intensity} pre carbs ${pre.macros.carbsG} out of 60–100`);
   }
 });
 

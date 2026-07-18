@@ -13,8 +13,12 @@ const LOG_MATCH_MINUTES = 90;                    // a logged meal within this of
 const NEUTRAL_WINDOW_MINUTES = 180;              // required ≥1 activity-free span. TODO: confirm against spec
 const INTENSITY_FACTOR = { light: 0.8, moderate: 1.0, hard: 1.2 };
 const FLEX_WEIGHTS = { Breakfast: 0.30, Lunch: 0.35, Dinner: 0.30, Snack: 0.05 };
-// Pre-workout fast-carb ceiling range (§5.1) — never above 40g.
-const PRE_CARB_MIN = 20, PRE_CARB_MAX = 40;
+// Pre-workout fast-carb load (revised spec) — flat 60–100g, not scaled.
+const PRE_CARB_MIN = 60, PRE_CARB_MAX = 100;
+const PRE_CARB_G = 80; // flat target within the range. TODO: confirm against spec
+// Below this a flexible meal's carbs are considered crowded out by the big
+// pre-workout floor → non-blocking warning (values stay, sum invariant holds).
+const VIABLE_CARB_MIN_G = 30; // TODO: confirm against spec
 // Post-workout recovery targets (§5.1). These ARE the floor's header macros, so
 // the card header matches the target chips. carbs = glucose(30–40)+fructose(15–20).
 const POST_TARGET = { carbsG: 48, proteinG: 50, fatG: 5 }; // TODO: confirm against spec
@@ -48,9 +52,9 @@ function splitInt(total, weights) {
 
 function floorMacros(totals, session) {
   const dur = session.durationMin || (SESSION_TYPES[session.type] || {}).defMin || 60;
-  const intf = INTENSITY_FACTOR[session.intensity] || 1;
-  // Pre: fast carbs within the 20–40g ceiling, light protein, no fat.
-  const preCarb = clamp(Math.round(30 * intf), PRE_CARB_MIN, PRE_CARB_MAX);
+  // Pre: flat fast-carb load (60–100g), light protein, no fat. Not intensity-
+  // scaled — a larger fixed number than before.
+  const preCarb = clamp(PRE_CARB_G, PRE_CARB_MIN, PRE_CARB_MAX);
   // Post: the §5.1 recovery targets (fixed — these show in the header + chips).
   return {
     dur,
@@ -160,9 +164,17 @@ export function buildTimeline({ dayKey, totals, sessions = [], wakeMin = 420, sl
     const parts = splitInt(budget, weights);
     plannedFlex.forEach((s, i) => { s.macros[key] = parts[i]; });
   });
-  // §12.5 guard rail (live): a planned meal that lands below the display floor
-  // gets flagged so the card can show a non-blocking insufficient-budget warning.
-  const insufficientIds = plannedFlex.filter(s => (s.macros.carbsG + s.macros.proteinG + s.macros.fatG) < MIN_DISPLAY_FLOOR_G).map(s => s.id);
+  // §12.5 guard rail (live): flag a planned meal for a non-blocking warning when
+  // (a) it lands below the display floor at all, or (b) the big pre-workout carb
+  // floor has crowded its carbs below a viable minimum. Values are NOT mutated —
+  // the daily-total invariant (Σ slots == target) holds; the card just warns.
+  const insuf = new Set();
+  plannedFlex.forEach(s => {
+    if ((s.macros.carbsG + s.macros.proteinG + s.macros.fatG) < MIN_DISPLAY_FLOOR_G) insuf.add(s.id);
+    if (s.macros.carbsG < VIABLE_CARB_MIN_G) insuf.add(s.id);
+  });
+  const insufficientIds = [...insuf];
+  const carbsCrowded = plannedFlex.length > 0 && plannedFlex.some(s => s.macros.carbsG < VIABLE_CARB_MIN_G) && floors.some(f => f.mealName === "Pre-workout");
 
   // ── 6. tight-gap pairs (floor near flexible) + neutral window ──
   const slots = [...floors, ...flex].sort((a, b) => a.plannedMin - b.plannedMin);
@@ -195,7 +207,7 @@ export function buildTimeline({ dayKey, totals, sessions = [], wakeMin = 420, sl
       : `${s.mealName} — spread your remaining carbs, protein and fat evenly here.`;
   });
 
-  return { slots, tightPairs, neutralOk, floorCount: floors.length, mergeGap: MERGE_GAP_MINUTES, sleepProximityIds, isCompressed, insufficientIds };
+  return { slots, tightPairs, neutralOk, floorCount: floors.length, mergeGap: MERGE_GAP_MINUTES, sleepProximityIds, isCompressed, insufficientIds, carbsCrowded };
 }
 
 // Suggested gym WINDOW (a range, not a fixed time) for a training day with no

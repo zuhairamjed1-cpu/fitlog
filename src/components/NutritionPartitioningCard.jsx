@@ -174,6 +174,9 @@ export function NutritionPartitioningCard({ data, goals, addEntry, deleteEntry }
         </div>
       )}
 
+      {tl.carbsCrowded && (
+        <div className="muted small" style={{ marginBottom: 10, color: "#f9c97e" }}>⚠ Your pre-workout carb load is crowding out the rest of the day — the other meals are running lean on carbs.</div>
+      )}
       {!tl.neutralOk && activities.length > 0 && (
         <div className="muted small" style={{ marginBottom: 10, color: "#f9c97e" }}>⚠ No 3h+ activity-free window — floors are crowding the day.</div>
       )}
