@@ -6,6 +6,7 @@ import { getTodayStr, WEEKDAYS } from "../lib/dates";
 import { haptic, SFX } from "../lib/fx";
 import { buildTimeline, timeToMin, minToTime, TIGHT_GAP_THRESHOLD_MINUTES, suggestGymWindow, gymSleepProximity } from "../lib/partitioning";
 import { POST_WORKOUT_PRESET, inRange } from "../lib/postWorkoutPreset";
+import { PRE_WORKOUT_PRESET, inCarbRange } from "../lib/preWorkoutPreset";
 import { predictBedtime, planRemainingIntake } from "../lib/prebedTaper";
 
 const FORM_LABEL = { "full-meal": "a full meal", "lighter-solid-or-shake": "something lighter or a shake", "liquid-preferred": "liquid (shake/smoothie)", "casein-or-milk-shake": "a casein or milk shake" };
@@ -66,6 +67,12 @@ export function NutritionPartitioningCard({ data, goals, addEntry, deleteEntry }
     let best = null, bestD = 90;
     (data.diet || []).filter(m => m.date === planDate && m.postWorkout).forEach(m => { const d = Math.abs(timeToMin(m.time) - floor.plannedMin); if (d <= bestD) { best = m; bestD = d; } });
     return best ? best.postWorkout : null;
+  };
+  // Pre-workout carbs from a quick-logged meal near the pre floor (§10.5 chip).
+  const preCarbsFor = floor => {
+    let best = null, bestD = 90;
+    (data.diet || []).filter(m => m.date === planDate && m.preWorkout).forEach(m => { const d = Math.abs(timeToMin(m.time) - floor.plannedMin); if (d <= bestD) { best = m; bestD = d; } });
+    return best ? (best.preWorkout.carbsG || 0) : 0;
   };
 
   const tl = useMemo(() => (wakeMin == null || !hasTargets) ? { slots: [], tightPairs: [], neutralOk: true, mergeGap: 75 } : buildTimeline({
@@ -262,6 +269,17 @@ export function NutritionPartitioningCard({ data, goals, addEntry, deleteEntry }
                             </span>
                           );
                         })}
+                      </div>
+                    );
+                  })()}
+                  {floor && s.mealName === "Pre-workout" && (() => {
+                    const cur = preCarbsFor(s); const T = PRE_WORKOUT_PRESET.target.carbsG; const ok = inCarbRange(cur, T);
+                    return (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 7 }}>
+                        <span style={{ fontSize: 10.5, padding: "2px 7px", borderRadius: 7, fontVariantNumeric: "tabular-nums",
+                          border: `1px solid ${ok ? "rgba(95,207,128,0.4)" : "var(--line)"}`, background: ok ? "rgba(95,207,128,0.1)" : "transparent", color: ok ? "var(--good)" : "var(--text-2)" }}>
+                          carbs {cur}/{T.min}–{T.max}
+                        </span>
                       </div>
                     );
                   })()}

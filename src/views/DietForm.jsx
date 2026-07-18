@@ -13,6 +13,7 @@ import { haptic, SFX } from "../lib/fx";
 import { sleepWindow } from "../engines/fueling";
 import { buildTimeline, timeToMin } from "../lib/partitioning";
 import { PostWorkoutQuickLogModal } from "../components/PostWorkoutQuickLogModal";
+import { PreWorkoutQuickLogModal } from "../components/PreWorkoutQuickLogModal";
 
 // Quick-log shows when we're within this many minutes of a planned post-workout
 // floor (≤ the engine's LOG_MATCH so the logged meal always binds to that floor).
@@ -523,6 +524,28 @@ export function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp 
     haptic(10);
   }
 
+  // ── Pre-workout quick-log context (mirror of post; carb-defined) ──
+  const [prwOpen, setPrwOpen] = useState(false);
+  const prwFloor = useMemo(() => {
+    if (!goals) return null;
+    const sessions = (data?.plannedSessions || []).filter(s => s.date === todayStr);
+    if (!sessions.length) return null;
+    const logged = (data?.diet || []).filter(m => m.date === todayStr).map(m => ({ min: timeToMin(m.time), carbsG: m.carbs || 0, proteinG: m.protein || 0, fatG: m.fat || 0 }));
+    const tl = buildTimeline({ dayKey: todayStr, totals: { carbsG: goals.carbs || 0, proteinG: goals.protein || 0, fatG: goals.fat || 0 }, sessions, wakeMin: sw.wakeMin, sleepMin: sw.sleepMin, nowMin, loggedMeals: logged });
+    // Available from ~1h before the pre-workout floor onward, until it's logged.
+    return tl.slots.find(s => s.type === "floor" && s.mealName === "Pre-workout" && s.status === "planned" && nowMin >= s.plannedMin - 60) || null;
+  }, [data?.plannedSessions, data?.diet, goals, sw, nowMin, todayStr]);
+
+  function quickLogPre(items, carbs) {
+    const tot = items.reduce((a, it) => ({ calories: a.calories + (it.calories || 0), carbs: a.carbs + (it.carbs || 0) }), { calories: 0, carbs: 0 });
+    const now = Date.now();
+    const hh = String(new Date().getHours()).padStart(2, "0"), mm = String(new Date().getMinutes()).padStart(2, "0");
+    onAdd({ date: todayStr, time: `${hh}:${mm}`, ts: now, consumedAt: now, loggedAt: now, meal: "Pre-workout", food: "Pre-workout meal", calories: tot.calories, protein: 0, carbs: tot.carbs, fat: 0, items, preWorkout: { carbsG: carbs }, notes: "Quick-logged pre-workout preset (estimates)", id: now });
+    toast("◉ Pre-workout meal logged");
+    setPrwOpen(false);
+    haptic(10);
+  }
+
   return (
     <div className="stack meal-redesign">
     {goals && (
@@ -563,6 +586,12 @@ export function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp 
           : <span className="bio" style={{ color: "var(--mut)", background: "transparent", border: "1px solid var(--line)" }}>Calendar day</span>}
       </div>
 
+      {prwFloor && (
+        <button className="btn full" style={{ marginBottom: 10, background: "rgba(120,180,200,0.14)", border: "1px solid var(--accent)", color: "var(--text)" }} onClick={() => setPrwOpen(true)}>
+          ⚡ Quick log · Pre-workout meal
+        </button>
+      )}
+      {prwOpen && <PreWorkoutQuickLogModal onLog={quickLogPre} onClose={() => setPrwOpen(false)} onManual={() => setPrwOpen(false)} />}
       {pwFloor && (
         <button className="btn full" style={{ marginBottom: 10, background: "rgba(120,180,200,0.14)", border: "1px solid var(--accent)", color: "var(--text)" }} onClick={() => setPwOpen(true)}>
           ⚡ Quick log · Post-workout meal
