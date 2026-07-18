@@ -188,6 +188,47 @@ function ProteinPowderCard({ goals, onSaveGoals, onAdd }) {
   );
 }
 
+// ─── CHEAT MEALS ──
+// Plan a free meal on a specific day + slot. Any meal logged on that day/slot is
+// excluded from the day's target totals.
+function CheatMealCard({ goals, onSaveGoals }) {
+  const today = getTodayStr();
+  const [date, setDate] = useState(daysAgoFrom(today, -1)); // default tomorrow
+  const [meal, setMeal] = useState("Dinner");
+  const list = (goals?.cheatMeals || []).filter(c => c.date >= today).sort((a, b) => (a.date + a.meal).localeCompare(b.date + b.meal));
+
+  const add = () => {
+    if (!onSaveGoals) return;
+    const key = `${date}|${meal}`;
+    if ((goals.cheatMeals || []).some(c => `${c.date}|${c.meal}` === key)) { toast("Already planned", { silent: true }); return; }
+    onSaveGoals({ ...goals, cheatMeals: [...(goals.cheatMeals || []), { date, meal }] });
+    haptic(8); toast(`✓ Cheat ${meal.toLowerCase()} planned`, { silent: true });
+  };
+  const remove = (c) => onSaveGoals({ ...goals, cheatMeals: (goals.cheatMeals || []).filter(x => !(x.date === c.date && x.meal === c.meal)) });
+
+  return (
+    <Card title="Cheat meals" sub="Pick a day + meal — it won't count against that day's targets">
+      <div className="row2">
+        <div className="fld" style={{ flex: 1 }}><span>Day</span><input type="date" min={today} value={date} onChange={e => setDate(e.target.value)} /></div>
+        <div className="fld" style={{ flex: 1 }}><span>Meal</span>
+          <select value={meal} onChange={e => setMeal(e.target.value)}>{mealTypes.map(m => <option key={m}>{m}</option>)}</select>
+        </div>
+      </div>
+      <button className="btn full" style={{ marginTop: 10 }} onClick={add}>＋ Plan cheat meal</button>
+      {list.length > 0 && (
+        <div className="list" style={{ marginTop: 12 }}>
+          {list.map(c => (
+            <div key={`${c.date}|${c.meal}`} className="list-row">
+              <div className="list-main"><div>{c.meal} · {formatShortDate(c.date)}</div><div className="muted small">free — excluded from targets</div></div>
+              <button className="x" aria-label="Remove" onClick={() => remove(c)}>×</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 // ─── DIET FORM ──
 // Supplement quick-log (sits under the meal card). Pick a saved supplement from
 // the library, set the amount, and log it. The ＋ flow takes a free-text
@@ -451,7 +492,7 @@ export function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp 
     if (!m || !bcProduct) return;
     const r = whenToStore();
     const portionNote = useServing && bcProduct.perServing ? `1 serving${bcProduct.servingSize ? ` (${bcProduct.servingSize})` : ""}` : `${grams}g`;
-    onAdd({ date: r.date, time: r.time, ts: r.consumedAt, consumedAt: r.consumedAt, loggedAt: Date.now(), ...(r.excludeFromCoach ? { excludeFromCoach: true } : {}), meal, food: bcProduct.name, calories: m.cal, protein: m.protein, carbs: m.carbs, fat: m.fat, notes: `Barcode ${bcProduct.code} · ${portionNote}`, id: Date.now() });
+    onAdd({ date: r.date, time: r.time, ts: r.consumedAt, consumedAt: r.consumedAt, loggedAt: Date.now(), ...(r.excludeFromCoach ? { excludeFromCoach: true } : {}), ...(cheatSet.has(`${r.date}|${meal}`) ? { cheat: true, excludeFromCoach: true } : {}), meal, food: bcProduct.name, calories: m.cal, protein: m.protein, carbs: m.carbs, fat: m.fat, notes: `Barcode ${bcProduct.code} · ${portionNote}`, id: Date.now() });
     toast("◉ " + bcProduct.name.slice(0, 24) + " added");
     setBcProduct(null); setError("");
   }
@@ -530,7 +571,7 @@ export function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp 
     const totalsOk = ["calories", "protein", "carbs", "fat"].every(k => Number.isFinite(result[k]));
     if (!totalsOk) return; // belt-and-suspenders: never write NaN/Infinity to the store
     const r = whenToStore();
-    onAdd({ date: r.date, time: r.time, ts: r.consumedAt, consumedAt: r.consumedAt, loggedAt: Date.now(), ...(r.excludeFromCoach ? { excludeFromCoach: true } : {}), meal, food: result.food, calories: result.calories, protein: result.protein, carbs: result.carbs, fat: result.fat, notes: result.notes || "", items: cleanItems, id: Date.now() });
+    onAdd({ date: r.date, time: r.time, ts: r.consumedAt, consumedAt: r.consumedAt, loggedAt: Date.now(), ...(r.excludeFromCoach ? { excludeFromCoach: true } : {}), ...(cheatSet.has(`${r.date}|${meal}`) ? { cheat: true, excludeFromCoach: true } : {}), meal, food: result.food, calories: result.calories, protein: result.protein, carbs: result.carbs, fat: result.fat, notes: result.notes || "", items: cleanItems, id: Date.now() });
     toast("◉ " + (result.food || "Meal").slice(0, 24) + " added");
     setResult(null); setText(""); setFile(null); setPreview(null); setError("");
   }
@@ -547,10 +588,14 @@ export function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp 
     : when === "2days" ? "2 days ago"
     : when === "pick" ? formatShortDate(date)
     : (dayCtx.mode === "biological" ? "Current bio day" : "Today");
-  const dayCal = selMeals.reduce((a, m) => a + (m.calories || 0), 0);
-  const dayP = selMeals.reduce((a, m) => a + (m.protein || 0), 0);
-  const dayC = selMeals.reduce((a, m) => a + (m.carbs || 0), 0);
-  const dayF = selMeals.reduce((a, m) => a + (m.fat || 0), 0);
+  // Planned cheat meals are free — excluded from the day's target totals.
+  const cheatSet = useMemo(() => new Set((goals?.cheatMeals || []).map(c => `${c.date}|${c.meal}`)), [goals]);
+  const isCheat = m => m.cheat || cheatSet.has(`${m.date}|${m.meal}`);
+  const counted = selMeals.filter(m => !isCheat(m));
+  const dayCal = counted.reduce((a, m) => a + (m.calories || 0), 0);
+  const dayP = counted.reduce((a, m) => a + (m.protein || 0), 0);
+  const dayC = counted.reduce((a, m) => a + (m.carbs || 0), 0);
+  const dayF = counted.reduce((a, m) => a + (m.fat || 0), 0);
   const calLeft = (goals?.calories || 0) - dayCal;
   const pLeft = (goals?.protein || 0) - dayP;
 
@@ -872,6 +917,7 @@ export function DietForm({ onAdd, recent, goals, data, todayDiet: todayDietProp 
       )}
       </div>
       <ProteinPowderCard goals={goals} onSaveGoals={onSaveGoals} onAdd={onAdd} />
+      <CheatMealCard goals={goals} onSaveGoals={onSaveGoals} />
       <SupplementCard data={data} addEntry={addEntry} deleteEntry={deleteEntry} />
       <NutritionPartitioningCard data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />
       <ProteinTimingCard data={data} goals={goals} todayDiet={todayDiet} />

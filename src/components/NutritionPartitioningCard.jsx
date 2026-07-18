@@ -60,7 +60,9 @@ export function NutritionPartitioningCard({ data, goals, addEntry, deleteEntry }
 
   const now = new Date();
   const nowMin = isToday ? now.getHours() * 60 + now.getMinutes() : null;
-  const loggedMeals = (data.diet || []).filter(m => m.date === planDate).map(m => ({ min: timeToMin(m.time), id: m.id, label: m.meal, carbsG: m.carbs || 0, proteinG: m.protein || 0, fatG: m.fat || 0 }));
+  // Planned cheat meals are free — kept out of the partitioning budget.
+  const cheatSet = new Set((goals?.cheatMeals || []).map(c => `${c.date}|${c.meal}`));
+  const loggedMeals = (data.diet || []).filter(m => m.date === planDate && !m.cheat && !cheatSet.has(`${m.date}|${m.meal}`)).map(m => ({ min: timeToMin(m.time), id: m.id, label: m.meal, carbsG: m.carbs || 0, proteinG: m.protein || 0, fatG: m.fat || 0 }));
 
   // Post-workout micro breakdown from a quick-logged meal near a floor (§5 chips).
   const postMicrosFor = floor => {
