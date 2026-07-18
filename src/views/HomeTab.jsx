@@ -266,6 +266,8 @@ export function HomeTab({ data, goals, onAddWater, onAddNicotine, onNav, addEntr
         <span className="qa-icon">✦</span><span>Ask coach</span>
       </button>
 
+      <SkincareChecklistCard data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} onNav={onNav} />
+
       <TaskCard data={data} addEntry={addEntry} deleteEntry={deleteEntry} setData={setData} />
 
       <ExperimentTimelineCard data={data} goals={goals} setData={setData} onNav={onNav} />
@@ -311,6 +313,63 @@ export function HomeTab({ data, goals, onAddWater, onAddNicotine, onNav, addEntr
         );
       })()}
     </div>
+  );
+}
+
+// ─── Skincare AM/PM routine checklist ───────────────────────────────────────
+// Ticks individual routine steps; each tick writes a skinRoutineLogs entry
+// {date, slot, product} — the same store the Skin section's adherence reads.
+function SkincareChecklistCard({ data, goals, addEntry, deleteEntry, onNav }) {
+  const today = getTodayStr();
+  const routine = (goals && goals.skinRoutine) || { am: [], pm: [] };
+  const logs = (data.skinRoutineLogs || []).filter(l => l.date === today);
+  const doneEntry = (slot, product) => logs.find(l => l.slot === slot && l.product === product);
+
+  const toggle = (slot, product) => {
+    const e = doneEntry(slot, product);
+    if (e) { deleteEntry("skinRoutineLogs")(e.id); }
+    else { addEntry("skinRoutineLogs")({ id: Date.now(), date: today, slot, product }); haptic(8); SFX.tap(); }
+  };
+
+  const hasRoutine = (routine.am || []).length + (routine.pm || []).length > 0;
+  if (!hasRoutine) {
+    return (
+      <Card title="Skincare" sub="AM / PM routine">
+        <Empty icon="✦" title="No routine set yet" hint="Add your AM & PM products in Log → Skin, then tick them off here each day." />
+        <button className="btn-ghost full" style={{ marginTop: 10 }} onClick={() => onNav("Log", "skin")}>Set up routine</button>
+      </Card>
+    );
+  }
+
+  const Slot = ({ slot, label, icon }) => {
+    const steps = routine[slot] || [];
+    if (!steps.length) return null;
+    const done = steps.filter(s => doneEntry(slot, s.product)).length;
+    return (
+      <div style={{ marginBottom: slot === "am" ? 14 : 0 }}>
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 6 }}>
+          <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--text-2)" }}>{icon} {label}</span>
+          <span className="muted small">{done}/{steps.length}</span>
+        </div>
+        {steps.map((s, i) => {
+          const on = !!doneEntry(slot, s.product);
+          return (
+            <button key={i} onClick={() => toggle(slot, s.product)}
+              style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", background: "none", border: "none", padding: "7px 0", cursor: "pointer", borderTop: i ? "1px dashed var(--line)" : "none" }}>
+              <span style={{ width: 20, height: 20, flexShrink: 0, borderRadius: 6, border: `1.5px solid ${on ? "var(--good)" : "var(--border-strong)"}`, background: on ? "var(--good)" : "transparent", color: "#04191b", fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{on ? "✓" : ""}</span>
+              <span style={{ fontSize: 14, color: on ? "var(--muted)" : "var(--text)", textDecoration: on ? "line-through" : "none" }}>{s.product}</span>
+            </button>
+          );
+        })}
+      </div>
+    );
+  };
+
+  return (
+    <Card title="Skincare" sub="Tick off today's routine">
+      <Slot slot="am" label="Morning" icon="☀" />
+      <Slot slot="pm" label="Evening" icon="☾" />
+    </Card>
   );
 }
 

@@ -38,21 +38,23 @@ export function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, se
   const [view, setView] = useState(initial || null);
   const today = getTodayStr();
   const groups = [
+    { title: "Daily", items: [
+      { key: "diet", label: "Meal", icon: "◉", color: "#f9c97e" },
+      { key: "exercise", label: "Workout", icon: "◆", color: "#f47e6e" },
+      { key: "sleep", label: "Sleep", icon: "◐", color: "#6ee7f7" },
+    ] },
+    { title: "Nutrition", items: [
+      { key: "water", label: "Water", icon: "◊", color: "#5cc8df" },
+    ] },
+    { title: "Training", items: [
+      { key: "sports", label: "Sport", icon: "◇", color: "#8fd989" },
+      { key: "weight", label: "Weight", icon: "◈", color: "#e8c97e" },
+    ] },
     { title: "Goal", items: [
       { key: "goalplan", label: "Goal Plan", icon: "◎", color: "#7cc4a0" },
       { key: "plan", label: "Plan", icon: "▦", color: "#6ee7f7" },
     ] },
-    { title: "Nutrition", items: [
-      { key: "diet", label: "Meal", icon: "◉", color: "#f9c97e" },
-      { key: "water", label: "Water", icon: "◊", color: "#5cc8df" },
-    ] },
-    { title: "Training", items: [
-      { key: "exercise", label: "Workout", icon: "◆", color: "#f47e6e" },
-      { key: "sports", label: "Sport", icon: "◇", color: "#8fd989" },
-      { key: "weight", label: "Weight", icon: "◈", color: "#e8c97e" },
-    ] },
     { title: "Wellness", items: [
-      { key: "sleep", label: "Sleep", icon: "◐", color: "#6ee7f7" },
       { key: "nicotine", label: "Nicotine", icon: "●", color: "#d98fa8" },
       { key: "skin", label: "Skin", icon: "✦", color: "#e89ab0" },
       { key: "stool", label: "Stool", icon: "⊙", color: "#a68a64" },
