@@ -137,6 +137,8 @@ export function HomeTab({ data, goals, onAddWater, onAddNicotine, onNav, addEntr
   const todayDiet = dayCtx.meals(nutriDay);
   const todayCal = todayDiet.reduce((a, m) => a + (m.calories || 0), 0);
   const todayProtein = todayDiet.reduce((a, m) => a + (m.protein || 0), 0);
+  const todayCarbs = todayDiet.reduce((a, m) => a + (m.carbs || 0), 0);
+  const todayFat = todayDiet.reduce((a, m) => a + (m.fat || 0), 0);
   const todayWaterMl = data.water.filter(w => w.date === today).reduce((a, w) => a + w.ml, 0);
   const todaySleep = data.sleep.find(s => s.date === today);
   const todayWorkout = data.exercise.find(e => e.date === today);
@@ -193,99 +195,185 @@ export function HomeTab({ data, goals, onAddWater, onAddNicotine, onNav, addEntr
 
   return (
     <div className="stack">
-      {/* GREETING */}
-      <div className="greeting">
-        <p className="greeting-date">{now.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}</p>
-        <h1 className="greeting-h">{greeting}</h1>
-        <div className="greeting-row">
-          <span className="greeting-goal">{goals.goal}</span>
-          {streak > 0 && <span className="streak-chip" title="Consecutive days logged">🔥 {streak} day{streak === 1 ? "" : "s"}</span>}
-        </div>
-      </div>
+      {(() => {
+        const routine = (goals && goals.skinRoutine) || { am: [], pm: [] };
+        const rlogs = (data.skinRoutineLogs || []).filter(l => l.date === today);
+        const skinDone = slot => (routine[slot] || []).filter(s => rlogs.some(l => l.slot === slot && l.product === s.product)).length;
+        const skinTotal = skinDone("am") + skinDone("pm");
+        const skinCount = (routine.am || []).length + (routine.pm || []).length;
+        const toggleSkin = (slot, product) => {
+          const e = rlogs.find(l => l.slot === slot && l.product === product);
+          if (e) deleteEntry("skinRoutineLogs")(e.id);
+          else { addEntry("skinRoutineLogs")({ id: Date.now(), date: today, slot, product }); haptic(8); SFX.tap(); }
+        };
+        const tasks = data.tasks || [];
+        const toggleTask = t => setData(d => ({ ...d, tasks: (d.tasks || []).map(x => x.id === t.id ? { ...x, done: !x.done } : x) }));
+        const macros = [
+          { name: "Protein", cur: todayProtein, goal: goals.protein, color: "#b4a8e8" },
+          { name: "Carbs", cur: todayCarbs, goal: goals.carbs, color: "#f9c97e" },
+          { name: "Fat", cur: todayFat, goal: goals.fat, color: "#f47e6e" },
+        ];
+        const kcalLeft = Math.max(0, goals.calories - todayCal);
+        const calFrac = goals.calories ? Math.min(1, todayCal / goals.calories) : 0;
+        const feed = [
+          todaySleep && { icon: "◐", c: "#6ee7f7", text: `${todaySleep.duration}h sleep · ${todaySleep.quality.toLowerCase()}`, t: todaySleep.time || "" },
+          ...todayDiet.map(m => ({ icon: "◉", c: "#4fb3bd", text: `${m.meal} · ${m.calories} kcal · ${(m.food || "").slice(0, 26)}${(m.food || "").length > 26 ? "…" : ""}`, t: m.time || "" })),
+          todayWorkout && { icon: "◆", c: "#f47e6e", text: `Workout · ${todayWorkout.label}`, t: "" },
+          todaySport && { icon: "◇", c: "#8fd989", text: `${todaySport.sport} · ${todaySport.duration}min`, t: "" },
+        ].filter(Boolean);
 
-      {/* PRIMARY RINGS */}
-      <Card>
-        {bioActive && <div className="bioday-tag" title="Calories &amp; protein are grouped by your biological day (resets at your sleep time, not midnight)">◐ Current biological day</div>}
-        <div className="rings-row">
-          <Ring pct={calPct} label="Calories" value={todayCal || "0"} unit="" big />
-          <Ring pct={prtPct} label="Protein" value={todayProtein || "0"} unit="g" big />
-          <Ring pct={waterPct} label="Water" value={todayWaterMl ? (todayWaterMl >= 1000 ? (todayWaterMl/1000).toFixed(1) : todayWaterMl) : "0"} unit={todayWaterMl >= 1000 ? "L" : "ml"} big />
-        </div>
-        {ringsEmpty ? (
-          <p className="rings-zero">Your day's a clean slate — log a meal or some water to start filling these. 💪</p>
-        ) : (
-          <>
-            <div className="ring-targets">
-              <span>{todayCal}/{goals.calories} kcal</span>
-              <span>{todayProtein}/{goals.protein}g protein</span>
-              <span>{todayWaterMl}/{goals.waterGoalMl}ml</span>
-            </div>
-            <div className="day-progress">
-              <div className="day-progress-bar"><div className="day-progress-fill" style={{ width: `${dayPct}%` }} /></div>
-              <span className="day-progress-label">
-                {ringsHit === 3 ? "🎉 All goals hit — crushed it!" : ringsHit > 0 ? `${ringsHit}/3 goals hit · ${dayPct}% of the way` : `${dayPct}% of the way there`}
-              </span>
-            </div>
-          </>
-        )}
-      </Card>
-
-      {/* FOCUS NOW — ranked highest-leverage signals (F1) */}
-      {focus.length > 0 && (
-        <Card title="Focus now" sub="Your highest-leverage signals, ranked">
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {focus.slice(0, 3).map((f, i) => (
-              <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-                <span style={{ fontWeight: 700, color: "var(--accent)", minWidth: 16, lineHeight: 1.5 }}>{i + 1}</span>
-                <span className="small" style={{ lineHeight: 1.5 }}>{f.text}</span>
+        const CARD = { background: "linear-gradient(158deg,#161d27,#10141b)", border: "1px solid #232c38", borderRadius: 22, padding: "22px 20px", boxShadow: "0 24px 50px -30px rgba(0,0,0,.9)" };
+        const H = { fontSize: 15, fontWeight: 800 };
+        const SkinSlot = ({ slot, label, dot }) => {
+          const steps = routine[slot] || [];
+          if (!steps.length) return null;
+          return (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                <b style={{ fontSize: 12, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", color: "#9aa4b2" }}>{dot} {label}</b>
+                <span style={{ fontSize: 12, color: "#6b7480", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{skinDone(slot)}/{steps.length}</span>
               </div>
-            ))}
+              {steps.map((s, i) => {
+                const on = rlogs.some(l => l.slot === slot && l.product === s.product);
+                return (
+                  <button key={i} onClick={() => toggleSkin(slot, s.product)} style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", background: "none", border: "none", borderTop: i ? "1px dashed #232c38" : "none", padding: "8px 0", cursor: "pointer" }}>
+                    <span style={{ width: 20, height: 20, flex: "none", borderRadius: 6, border: `1.5px solid ${on ? "#5fcf80" : "#333c47"}`, background: on ? "#5fcf80" : "transparent", color: "#04191b", fontSize: 12, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>{on ? "✓" : ""}</span>
+                    <span style={{ fontSize: 14, color: on ? "#6b7480" : "#eef2f6", textDecoration: on ? "line-through" : "none" }}>{s.product}</span>
+                  </button>
+                );
+              })}
+            </div>
+          );
+        };
+
+        return (
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            {/* HEADER */}
+            <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "2px 2px" }}>
+              <div>
+                <div style={{ fontSize: 12, letterSpacing: ".14em", textTransform: "uppercase", color: "#6b7480", fontWeight: 700 }}>{now.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}</div>
+                <div style={{ fontSize: 25, fontWeight: 800, letterSpacing: "-.025em", marginTop: 5 }}>{greeting}</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+                  <span style={{ width: 7, height: 7, borderRadius: 999, background: "#5fcf80", boxShadow: "0 0 9px #5fcf80" }} />
+                  <span style={{ fontSize: 13, color: "#9aa4b2", fontWeight: 500 }}>{goals.goal}{ringsHit === 3 ? " · all goals hit" : " · day on track"}</span>
+                </div>
+              </div>
+              <div style={{ width: 46, height: 46, borderRadius: 999, flex: "none", background: "linear-gradient(135deg,#4fb3bd,#b4a8e8)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 16, color: "#0e1116", boxShadow: "0 10px 24px -12px rgba(79,179,189,.8)" }}>{(goals.goal || "•")[0].toUpperCase()}</div>
+            </header>
+
+            {/* CALORIES + MACROS + STREAK */}
+            <section style={{ ...CARD, position: "relative", overflow: "hidden", padding: "22px 20px" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={H}>Today</div>
+                  {streak > 0 && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, background: "linear-gradient(100deg,rgba(249,201,126,.16),rgba(244,126,110,.12))", border: "1px solid rgba(249,201,126,.32)", borderRadius: 999, padding: "4px 10px 4px 8px" }}>
+                      <span style={{ color: "#f9c97e" }}>🔥</span>
+                      <span style={{ fontSize: 12, fontWeight: 800, color: "#f9c97e", fontVariantNumeric: "tabular-nums" }}>{streak}</span>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: "#c9a36a" }}>day streak</span>
+                    </div>
+                  )}
+                </div>
+                <div style={{ fontSize: 12, color: "#9aa4b2", fontVariantNumeric: "tabular-nums", fontWeight: 600, background: "rgba(255,255,255,.04)", border: "1px solid #232c38", borderRadius: 999, padding: "5px 11px" }}>{todayCal.toLocaleString()} / {goals.calories.toLocaleString()} kcal</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 22 }}>
+                <div style={{ width: 112, height: 112, flex: "none", position: "relative" }}>
+                  <svg viewBox="0 0 100 100" style={{ transform: "rotate(-90deg)", width: "100%", height: "100%" }}>
+                    <defs><linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stopColor="#4fb3bd" /><stop offset="100%" stopColor="#b4a8e8" /></linearGradient></defs>
+                    <circle cx="50" cy="50" r="42" fill="none" stroke="rgba(255,255,255,.05)" strokeWidth="9" />
+                    <circle cx="50" cy="50" r="42" fill="none" stroke="url(#ringGrad)" strokeWidth="9" strokeLinecap="round" strokeDasharray="264" strokeDashoffset={264 * (1 - calFrac)} style={{ transition: "stroke-dashoffset .7s cubic-bezier(.5,0,.2,1)" }} />
+                  </svg>
+                  <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+                    <b style={{ fontSize: 24, fontWeight: 800, letterSpacing: "-.02em", fontVariantNumeric: "tabular-nums" }}>{kcalLeft.toLocaleString()}</b>
+                    <span style={{ fontSize: 11, color: "#9aa4b2", fontWeight: 600 }}>kcal left</span>
+                  </div>
+                </div>
+                <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 13 }}>
+                  {macros.map(m => (
+                    <div key={m.name} style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, fontWeight: 600 }}>
+                        <span style={{ display: "flex", alignItems: "center", gap: 7 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: m.color }} />{m.name}</span>
+                        <span style={{ color: "#9aa4b2", fontVariantNumeric: "tabular-nums" }}>{Math.round(m.cur)} / {m.goal}g</span>
+                      </div>
+                      <div style={{ height: 8, borderRadius: 999, background: "rgba(255,255,255,.055)", overflow: "hidden" }}><i style={{ display: "block", height: "100%", borderRadius: 999, width: `${m.goal ? Math.min(100, Math.round(m.cur / m.goal * 100)) : 0}%`, background: m.color }} /></div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </section>
+
+            {/* QUICK ACTIONS */}
+            <section style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <button onClick={() => onNav("Log", "diet")} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, padding: 16, borderRadius: 16, border: "1px solid #4fb3bd", background: "linear-gradient(100deg,rgba(79,179,189,.26),rgba(180,168,232,.12))", color: "#eef2f6", fontFamily: "inherit", fontSize: 15, fontWeight: 700, cursor: "pointer" }}>◉ Log a meal</button>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 10 }}>
+                {[
+                  { label: "Workout", ico: "◆", c: "#f9c97e", on: () => onNav("Log", "exercise") },
+                  { label: "Sleep", ico: "◐", c: "#b4a8e8", on: () => onNav("Log", "sleep") },
+                  { label: "+250ml water", ico: "◊", c: "#4fb3bd", on: addWater },
+                  { label: "Act tracker", ico: "🌊", c: "#5fcf80", on: () => onNav("Log", "ejac") },
+                ].map(q => (
+                  <button key={q.label} onClick={q.on} style={{ display: "flex", alignItems: "center", gap: 11, padding: 15, borderRadius: 15, border: "1px solid #232c38", background: "linear-gradient(158deg,#161d27,#12161d)", color: "#eef2f6", fontFamily: "inherit", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+                    <span style={{ width: 30, height: 30, flex: "none", borderRadius: 9, background: `${q.c}1a`, display: "flex", alignItems: "center", justifyContent: "center", color: q.c, fontSize: 15 }}>{q.ico}</span>
+                    {q.label}
+                  </button>
+                ))}
+              </div>
+              <button onClick={() => onNav("Coach")} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%", padding: 14, borderRadius: 15, border: "1px dashed #333c47", background: "transparent", color: "#9aa4b2", fontFamily: "inherit", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>✦ Ask coach</button>
+            </section>
+
+            {/* SKINCARE */}
+            {skinCount > 0 ? (
+              <section style={CARD}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+                  <div><div style={H}>Skincare</div><div style={{ fontSize: 12, color: "#6b7480", fontWeight: 500, marginTop: 2 }}>Tick off today's routine</div></div>
+                  <div style={{ fontSize: 12, color: "#4fb3bd", fontWeight: 700, fontVariantNumeric: "tabular-nums", background: "rgba(79,179,189,.1)", border: "1px solid rgba(79,179,189,.3)", borderRadius: 999, padding: "5px 11px" }}>{skinTotal}/{skinCount}</div>
+                </div>
+                <SkinSlot slot="am" label="Morning" dot="☀" />
+                <SkinSlot slot="pm" label="Evening" dot="☾" />
+              </section>
+            ) : (
+              <section style={CARD}>
+                <div style={H}>Skincare</div>
+                <div style={{ fontSize: 13, color: "#9aa4b2", margin: "8px 0 12px" }}>No routine yet — add your AM & PM products, then tick them off here.</div>
+                <button onClick={() => onNav("Log", "skin")} style={{ width: "100%", padding: 12, borderRadius: 12, border: "1px solid #232c38", background: "transparent", color: "#9aa4b2", fontFamily: "inherit", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Set up routine</button>
+              </section>
+            )}
+
+            {/* TASKS */}
+            <section style={CARD}>
+              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 8 }}>
+                <div><div style={H}>Tasks &amp; improvements</div><div style={{ fontSize: 12, color: "#6b7480", fontWeight: 500, marginTop: 2 }}>{tasks.length ? `${tasks.filter(t => !t.done).length} open · ${tasks.filter(t => t.done).length} done` : "Small things to get better at"}</div></div>
+              </div>
+              {tasks.length === 0 && <div style={{ fontSize: 13, color: "#6b7480" }}>Nothing yet — add tasks from the old Tasks card below.</div>}
+              {tasks.map((t, i) => (
+                <button key={t.id} onClick={() => toggleTask(t)} style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", background: "none", border: "none", borderTop: i ? "1px dashed #232c38" : "none", padding: "9px 0", cursor: "pointer" }}>
+                  <span style={{ width: 18, height: 18, flex: "none", borderRadius: 5, border: `1.5px solid ${t.done ? "#4fb3bd" : "#333c47"}`, background: t.done ? "#4fb3bd" : "transparent", color: "#04191b", fontSize: 11, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>{t.done ? "✓" : ""}</span>
+                  <span style={{ fontSize: 14, color: t.done ? "#6b7480" : "#eef2f6", textDecoration: t.done ? "line-through" : "none" }}>{t.text}</span>
+                </button>
+              ))}
+            </section>
+
+            {/* EXPERIMENTS (real, interactive) */}
+            <ExperimentTimelineCard data={data} goals={goals} setData={setData} onNav={onNav} />
+
+            {/* FEED */}
+            <section style={CARD}>
+              <div style={{ ...H, marginBottom: 10 }}>Logged today</div>
+              {feed.length === 0 ? (
+                <div style={{ fontSize: 13, color: "#6b7480" }}>Nothing logged yet — tap a quick action above.</div>
+              ) : feed.map((f, i) => (
+                <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "11px 0", fontSize: 13.5, fontWeight: 500, borderTop: i ? "1px dashed #232c38" : "none" }}>
+                  <span style={{ display: "flex", alignItems: "center", gap: 10 }}><span style={{ width: 28, height: 28, flex: "none", borderRadius: 8, background: `${f.c}1a`, display: "flex", alignItems: "center", justifyContent: "center", color: f.c, fontSize: 14 }}>{f.icon}</span>{f.text}</span>
+                  {f.t && <span style={{ color: "#6b7480", fontVariantNumeric: "tabular-nums", fontSize: 12, fontWeight: 600, flex: "none" }}>{f.t}</span>}
+                </div>
+              ))}
+            </section>
+
+            {/* keep the full Tasks editor + old add-flow available */}
+            <TaskCard data={data} addEntry={addEntry} deleteEntry={deleteEntry} setData={setData} />
           </div>
-        </Card>
-      )}
-
-      {/* QUICK ACTIONS */}
-      <div className="quick-actions">
-        <button className="qa qa-primary" onClick={() => onNav("Log", "diet")}>
-          <span className="qa-icon">◉</span><span>Log meal</span>
-        </button>
-        <button className="qa" onClick={addWater}>
-          <span className="qa-icon">◊</span><span>+ 250ml water</span>
-        </button>
-        <button className="qa" onClick={() => onNav("Log", "exercise")}>
-          <span className="qa-icon">◆</span><span>Log workout</span>
-        </button>
-        <button className="qa" onClick={quickNicotine} onContextMenu={e => { e.preventDefault(); onNav("Log", "nicotine"); }}>
-          <span className="qa-icon">🚬</span><span>Log {NIC_QUICK[0].label}</span>
-        </button>
-        <button className="qa" onClick={() => onNav("Log", "ejac")}>
-          <span className="qa-icon">🌊</span><span>Act tracker</span>
-        </button>
-      </div>
-      <button className="qa-wide" onClick={() => onNav("Coach")}>
-        <span className="qa-icon">✦</span><span>Ask coach</span>
-      </button>
-
-      <SkincareChecklistCard data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} onNav={onNav} />
-
-      <TaskCard data={data} addEntry={addEntry} deleteEntry={deleteEntry} setData={setData} />
-
-      <ExperimentTimelineCard data={data} goals={goals} setData={setData} onNav={onNav} />
-
-      {/* TODAY LOGGED */}
-      <Card title="Today">
-        {nothingToday ? (
-          <Empty title="Nothing logged yet" hint="Tap a quick action above to get started" />
-        ) : (
-          <div className="today-items">
-            {todaySleep && <div className="today-item"><span className="today-dot" style={{ background: TYPE_DOT.sleep }} /><span className="today-text">{todaySleep.duration}h sleep · {todaySleep.quality.toLowerCase()}</span></div>}
-            {todayDiet.map(m => <div key={m.id} className="today-item"><span className="today-dot" style={{ background: TYPE_DOT.diet }} /><span className="today-text">{m.time ? `${m.time} · ` : ""}{m.meal} · {m.calories} kcal · {m.food.slice(0, 28)}{m.food.length > 28 ? "…" : ""}</span></div>)}
-            {todayWorkout && <div className="today-item"><span className="today-dot" style={{ background: TYPE_DOT.exercise }} /><span className="today-text">Workout · {todayWorkout.label}</span></div>}
-            {todaySport && <div className="today-item"><span className="today-dot" style={{ background: TYPE_DOT.sports }} /><span className="today-text">{todaySport.sport} · {todaySport.duration}min</span></div>}
-            {todaySupps.length > 0 && <div className="today-item"><span className="today-dot" style={{ background: TYPE_DOT.supplements }} /><span className="today-text">{todaySupps.length} supplement{todaySupps.length === 1 ? "" : "s"} · {todaySupps.map(s => s.name).join(", ")}</span></div>}
-          </div>
-        )}
-      </Card>
+        );
+      })()}
 
       {/* ACHIEVEMENTS */}
       {(() => {
