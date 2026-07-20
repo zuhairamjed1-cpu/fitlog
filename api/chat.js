@@ -14,7 +14,7 @@
 
 const ALLOWED_MODELS = new Set([
   "claude-haiku-4-5",
-  "claude-sonnet-4-20250514",
+  "claude-sonnet-5",
 ]);
 
 const MAX_TOKENS_CAP = 4000;

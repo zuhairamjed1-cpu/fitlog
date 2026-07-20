@@ -11,7 +11,9 @@
 // from re-hitting the network (the audit flagged zero caching). Safe-guarded so
 // a storage failure never breaks resolution.
 
-const LS_KEY = "fitlog_fdc_cache_v1";
+import { crossCheck } from "../engines/fdcMatch.js";
+
+const LS_KEY = "fitlog_fdc_cache_v2";  // v2: cross-checked matches
 const TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30d
 
 function norm(q) { return String(q || "").toLowerCase().replace(/\s+/g, " ").trim(); }
@@ -35,6 +37,12 @@ function scaleFrom(per100, grams) {
 }
 
 // Build the resolved item in mealValidation's shape.
+// GATE 3 lives here: a DB match only prices the item if it AGREES with the AI's
+// own independent per-gram estimate. Wild disagreement (>2.5x) means one of the
+// two is badly wrong and we can't tell which — so we refuse to launder the DB
+// number into a "verified" one and fall back to the AI, flagged.
+// This is what the first eval run needed: it's the ONLY signal that catches a bad
+// FDC match, because a bad match is internally consistent (Atwater always passes).
 function resolvedItem(aiItem, per100, matched) {
   const grams = Number(aiItem.grams) > 0 ? Number(aiItem.grams) : null;
   const scaled = scaleFrom(per100, grams);
@@ -42,7 +50,9 @@ function resolvedItem(aiItem, per100, matched) {
     // DB hit but no grams — can't scale; keep AI macros, note the match for display.
     return { ...aiItem, source: "ai", fdcMatch: matched?.description || null };
   }
-  return {
+
+  const xc = crossCheck(per100, aiItem);
+  const grounded = {
     food: aiItem.food,
     grams,
     gramsRange: aiItem.gramsRange || [grams, grams],
@@ -56,6 +66,17 @@ function resolvedItem(aiItem, per100, matched) {
     fdcMatch: matched?.description || null,
     fdcId: matched?.fdcId || null,
   };
+  if (!xc.ok) {
+    // DB and AI disagree wildly. The upstream gates (unit / physics / name-overlap)
+    // already reject gross bad matches, so a surviving conflict is usually the AI
+    // over-estimating — and the AI carries the +bias. PREFER the DB value, but keep
+    // the conflict flag so the meal still escalates to the strong model.
+    return {
+      ...grounded,
+      fdcConflict: { match: matched?.description || null, dbPer100: xc.dbPer100, aiPer100: xc.aiPer100, ratio: xc.ratio },
+    };
+  }
+  return grounded;
 }
 
 // Fallback: keep the AI's own numbers, tagged as an estimate.
@@ -124,8 +145,9 @@ export async function resolveItems(aiItems, { fetchImpl = fetch } = {}) {
   }
 
   const resolved = out.filter(it => it.source === "usda").length;
+  const conflicts = out.filter(it => it.fdcConflict).length;
   return {
     items: out,
-    stats: { resolved, missed: out.length - resolved, total: out.length },
+    stats: { resolved, missed: out.length - resolved, conflicts, total: out.length },
   };
 }

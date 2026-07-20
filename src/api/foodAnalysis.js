@@ -32,6 +32,16 @@ and a tall pile look identical from above, so favour a ~45° view when reasoning
 For each item give grams AND a gramsRange [low, high] that honestly reflects your
 uncertainty (a tightly-visible item → narrow range; an ambiguous pile → wide range).`;
 
+const SCOPE_GUIDE = `SCOPE — what portion is actually in the frame? (a real failure mode):
+Report the food that IS PHOTOGRAPHED, not a typical single serving of that dish.
+- A full pan/pot/platter/sharing board → estimate the WHOLE thing, and say so.
+- A plated individual portion → estimate that plate only.
+- Packaging with food visible → only the food, not the package.
+- If a serving has been dished out AND the batch is still in frame, count BOTH.
+Do NOT default to "one serving" out of habit. A pan of curry that serves six is six
+servings of calories, and reporting it as one is a 6x error. State the scope you
+chose in the meal name (e.g. "Butter chicken — whole pan (~6 servings)").`;
+
 const HIDDEN_GUIDE = `HIDDEN INGREDIENTS (you will never be told about these, so infer them):
 Cooking oils, butter, dressings, and sugar in sauces are invisible but calorie-dense.
 Based on the dish type and visible cues (glossy/oily sheen, fried texture, visible
@@ -46,6 +56,8 @@ function identifySystemPrompt({ isImage, useWeb }) {
   return `You are a meticulous nutritionist. Your ONLY job on this pass is to IDENTIFY foods and ESTIMATE PORTIONS accurately. A database will handle final nutrition numbers, so nail the item names, the search terms, and the grams.
 
 ${isImage ? `LOOK CAREFULLY AT THE PHOTO. Enumerate EVERY item — mains, sides, drinks, condiments, garnishes. Note cooking method (fried/grilled/baked/raw), which changes calories a lot.\n\n` : ""}${REFERENCE_GUIDE}
+
+${SCOPE_GUIDE}
 
 ${HIDDEN_GUIDE}
 
@@ -69,8 +81,29 @@ Reply with ONLY this JSON (no prose, no markdown fence):
 }
 
 // Decide whether a reconciled meal needs the verify pass.
+//
+// THE FIRST EVAL RUN KILLED THE ORIGINAL TRIGGER. It fired 0% of the time, because
+// it only looked for INTERNAL inconsistency (Atwater / absurd totals / low
+// confidence) — and the real errors (over-portioning, wrong scope, bad DB matches)
+// are all internally CONSISTENT. Doubling the grams doubles every macro; Atwater
+// passes perfectly. So the pipeline never escalated and tiering bought nothing.
+//
+// The signal that DOES see those errors is DISAGREEMENT BETWEEN INDEPENDENT
+// SOURCES: the AI's per-gram estimate vs the USDA database's. When they conflict,
+// something is wrong and a stronger model is worth paying for.
 function needsVerify(rec) {
   if (!rec) return false;
+  // 1. AI vs DB conflict — the new primary trigger (see engines/fdcMatch crossCheck)
+  if (rec.items.some(it => it.fdcConflict)) return true;
+  // 2. Barely grounded: if most items missed the DB, we're running on AI guesses
+  const st = rec.fdcStats;
+  if (st && st.total >= 2 && st.resolved / st.total < 0.5) return true;
+  // 3. Wide portion uncertainty — the model itself is unsure how much food there is
+  if (rec.items.some(it => {
+    const [lo, hi] = it.gramsRange || [];
+    return lo > 0 && hi / lo >= 2;   // e.g. "somewhere between 100g and 250g"
+  })) return true;
+  // 4. The original internal checks — still worth keeping, just no longer alone
   if (rec.flags.some(f => f.code === "atwater" || f.code === "meal_high" || f.code === "item_high")) return true;
   if (rec.confidence === "low") return true;
   return false;
@@ -146,18 +179,21 @@ export async function analyzeFood({
     // If Haiku misjudged the plate, we want Sonnet's own eyes, not Sonnet reasoning
     // about Haiku's mistake. We hand over the flagged problem + prior items as a hint.
     const verifyUser = `${identUser}\n\nA faster model already tried and its numbers were flagged: ${problem}\nIts items were: ${JSON.stringify(rec._parsedItems)}\nRe-identify and re-portion carefully; fix what's wrong so the macros are physically consistent.`;
+    rec.escalated = true; // we CALLED the strong model — we paid, regardless of what we keep
     try {
       const rec2 = await identifyPass(
         { model: strongModel, system: verifySystemPrompt(), userText: verifyUser, imageBase64, imageMediaType, useWeb },
         d
       );
+      // If the strong pass parsed, USE IT — even (especially) if it surfaced more
+      // problems; that's when the stronger model is most worth the money.
       if (rec2) {
         rec2.tier = "strong";
         rec2.verified = true;
-        // Keep the strong pass only if it's at least as clean as the cheap one.
-        if (rec2.flags.length <= rec.flags.length) rec = rec2;
+        rec2.escalated = true;
+        rec = rec2;
       }
-    } catch { /* keep the cheap-tier result */ }
+    } catch { /* strong call failed — keep the cheap-tier result (still escalated) */ }
   }
 
   delete rec._parsedItems;

@@ -1,0 +1,109 @@
+{
+  "_AUDIT": [
+    "Built from the Chrome scrape of 2026-07. 25 items were claimed; 22 files arrived;",
+    "10 are usable. Everything below is VERIFIED truth (published nutrition or",
+    "gram-weighted recipe) — so `truth` is populated and the harness WILL compute",
+    "real MAPE and bias from these. This is your first real accuracy measurement.",
+    "",
+    "REJECTED (do not re-add without a real food photo):",
+    "  cfa-chickensandwich   → file is the Chick-fil-A LOGO (3840x2160)",
+    "  chobani-wholemilkplain→ file is the Chobani WORDMARK (3164x1684)",
+    "  questbar-ccookiedough → file is the ONETRUST COOKIE-BANNER LOGO (2042x280)",
+    "  cheerios-original     → file is an SVG (vector, not a photo)",
+    "  kindbar-darkchoc      → file is an SVG (vector, not a photo)",
+    "  quaker-instantoatmeal → file is the BOX, not the oatmeal",
+    "  clifbar-chocolatechip → 100x100 thumbnail, too small to analyse",
+    "  8 recipes never downloaded (bolognese, fried rice, chana masala, caesar,",
+    "    lentil lasagne, biryani, herby falafel, nduja pasta)",
+    "",
+    "RECIPE SCALING — the critical fix. BBC Good Food photographs the WHOLE DISH but",
+    "publishes nutrition PER SERVING. Truth below is scaled x servings so it matches",
+    "what the CAMERA SEES. The ingredient grams are already whole-batch, so these are",
+    "the only three items that unlock --oracle mode. Treat their truth as +/-15%:",
+    "we're assuming the photo shows the full batch, which is close but not exact.",
+    "",
+    "PORTION GRAMS: only Starbucks published a gram weight. The others are left null —",
+    "this only affects the portion-agreement metric, not accuracy. Fill them in if you",
+    "want portion diagnostics on the restaurant items.",
+    "",
+    "SPOT-CHECK BEFORE TRUSTING: I did not verify these numbers against the source",
+    "URLs myself (they weren't delivered with the images). Open 3-4 and confirm the",
+    "kcal/macros match. A scraper transcribing a nutrition table is exactly as",
+    "trustworthy as the last PDF was."
+  ],
+
+  "meals": [
+    {
+      "id": "bigmac-01", "tier": "published", "photo": "bigmac-01.jpg",
+      "name": "McDonald's Big Mac", "source": "mcdonalds.com",
+      "truth": { "calories": 580, "protein": 25, "carbs": 45, "fat": 34 },
+      "truthGrams": null, "photoMatchesPortion": true,
+      "_note": "Official product shot = exactly the item priced. Gold-standard case."
+    },
+    {
+      "id": "mcd-qpc-01", "tier": "published", "photo": "mcd-qpc-01.avif",
+      "name": "McDonald's Quarter Pounder with Cheese", "source": "mcdonalds.com",
+      "truth": { "calories": 520, "protein": 30, "carbs": 42, "fat": 26 },
+      "truthGrams": null, "photoMatchesPortion": true
+    },
+    {
+      "id": "mcd-filetofish-01", "tier": "published", "photo": "mcd-filetofish-01.avif",
+      "name": "McDonald's Filet-O-Fish", "source": "mcdonalds.com",
+      "truth": { "calories": 380, "protein": 16, "carbs": 38, "fat": 19 },
+      "truthGrams": null, "photoMatchesPortion": true,
+      "_note": "HARD CASE: battered/fried fish + tartar sauce — both hidden-fat sources."
+    },
+    {
+      "id": "mcd-eggmcmuffin-01", "tier": "published", "photo": "mcd-eggmcmuffin-01.avif",
+      "name": "McDonald's Egg McMuffin", "source": "mcdonalds.com",
+      "truth": { "calories": 310, "protein": 17, "carbs": 30, "fat": 13 },
+      "truthGrams": null, "photoMatchesPortion": true
+    },
+    {
+      "id": "mcd-mcnuggets4-01", "tier": "published", "photo": "mcd-mcnuggets4-01.avif",
+      "name": "McDonald's 4pc Chicken McNuggets", "source": "mcdonalds.com",
+      "truth": { "calories": 170, "protein": 9, "carbs": 10, "fat": 10 },
+      "truthGrams": null, "photoMismatch": true,
+      "_note": "EXCLUDED from scoring: the photo includes a dipping-sauce cup that is NOT in the 170 kcal. The pipeline will (correctly) count the sauce and look wrong. Keep for robustness only."
+    },
+    {
+      "id": "wendys-single-01", "tier": "published", "photo": "wendys-single-01.png",
+      "name": "Wendy's Single hamburger", "source": "wendys.com/en-gb",
+      "truth": { "calories": 524, "protein": 28, "carbs": 37, "fat": 29 },
+      "truthGrams": null, "photoMatchesPortion": true,
+      "_note": "UK site figures. US 'Dave's Single' differs — make sure the photo and the numbers are the same market."
+    },
+    {
+      "id": "sbux-baconGouda-01", "tier": "published", "photo": "sbux-baconGouda-01.jpeg",
+      "name": "Starbucks Bacon, Gouda & Egg Sandwich", "source": "starbucks.com",
+      "truth": { "calories": 360, "protein": 18, "carbs": 35, "fat": 18 },
+      "truthGrams": 120, "photoMatchesPortion": true,
+      "_note": "The only item with a published gram weight — so the only restaurant item that can score PORTION agreement."
+    },
+
+    {
+      "id": "onionbhajiboard-01", "tier": "recipe", "photo": "onionbhajiboard-01.jpeg",
+      "name": "Onion bhaji sharing board (WHOLE BOARD)", "source": "bbcgoodfoodme.com",
+      "truth": { "calories": 1410, "protein": 40, "carbs": 110, "fat": 80 },
+      "truthGrams": null, "servings": 10, "perServing": { "calories": 141, "protein": 4, "carbs": 11, "fat": 8 },
+      "photoMatchesPortion": true,
+      "_note": "SCALED x10 — photo shows the whole board, recipe publishes per-serving. HARD CASE: deep-fried bhajis (absorbed oil is invisible). Truth is +/-15%: assumes the photo is the full batch."
+    },
+    {
+      "id": "classicbutterchicken-01", "tier": "recipe", "photo": "classicbutterchicken-01.jpeg",
+      "name": "Classic butter chicken (WHOLE PAN)", "source": "bbcgoodfoodme.com",
+      "truth": { "calories": 3132, "protein": 192, "carbs": 78, "fat": 222 },
+      "truthGrams": null, "servings": 6, "perServing": { "calories": 522, "protein": 32, "carbs": 13, "fat": 37 },
+      "photoMatchesPortion": true,
+      "_note": "SCALED x6 — photo shows the whole pan. HARD CASE: 90g butter/ghee + cream, mostly invisible. Only partial ingredient grams (chicken given as counts), so oracle coverage is incomplete."
+    },
+    {
+      "id": "crispyporkbroccolinoodles-01", "tier": "recipe", "photo": "crispyporkbroccolinoodles-01.jpeg",
+      "name": "Crispy pork & broccoli noodles (WHOLE PAN + BOWL)", "source": "bbcgoodfoodme.com",
+      "truth": { "calories": 836, "protein": 42, "carbs": 92, "fat": 30 },
+      "truthGrams": null, "servings": 2, "perServing": { "calories": 418, "protein": 21, "carbs": 46, "fat": 15 },
+      "photoMatchesPortion": true,
+      "_note": "SCALED x2 — photo shows the pan PLUS a served bowl (together ~the full batch). CAVEAT: a bowl of chilli oil is visible in-frame but is NOT in the nutrition (recipe says 'a spoonful to serve', unquantified). Pipeline may count it and look high. Watch this one."
+    }
+  ]
+}

@@ -4,3 +4,10 @@ dist
 .env.local
 .DS_Store
 *.log
+
+.vercel
+eval/.fdc-cache.json
+eval/results.json
+eval/.env
+eval/meals-claimed/
+eval/EVAL_LOG.md

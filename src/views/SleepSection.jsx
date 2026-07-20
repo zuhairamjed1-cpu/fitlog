@@ -8,6 +8,63 @@ import { computeWeightTrend } from "../engines/weight";
 import { parseWorkout } from "../engines/workout";
 import { getTodayStr, formatShortDate, daysAgo } from "../lib/dates";
 import { haptic } from "../lib/fx";
+import { beginFitbitAuth, fetchFitbitSleep, fitbitProfile } from "../lib/fitbit";
+
+// ─── Fitbit connect + sleep import ──────────────────────────────────────────
+function FitbitCard({ data, goals, addEntry, onSaveGoals }) {
+  const tok = goals.fitbit || null;
+  const [clientId, setClientId] = useState(goals.fitbit?.clientId || "");
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState("");
+
+  const connect = async () => {
+    const id = clientId.trim();
+    if (!id) return;
+    try { setBusy(true); await beginFitbitAuth(id); } // redirects away
+    catch { setStatus("Couldn't start Fitbit sign-in."); setBusy(false); }
+  };
+
+  const sync = async () => {
+    if (!tok) return;
+    setBusy(true); setStatus("");
+    try {
+      const entries = await fetchFitbitSleep(tok, t => onSaveGoals({ ...goals, fitbit: t }), 30);
+      const have = new Set((data.sleep || []).map(s => s.fitbitLogId).filter(Boolean));
+      const add = entries.filter(e => !have.has(e.fitbitLogId));
+      add.forEach(e => addEntry("sleep")(e));
+      setStatus(add.length ? `✓ Imported ${add.length} night${add.length === 1 ? "" : "s"}` : "Already up to date.");
+      haptic(10);
+    } catch (e) { setStatus("Sync failed — try reconnecting."); }
+    setBusy(false);
+  };
+
+  const disconnect = () => { onSaveGoals({ ...goals, fitbit: null }); setStatus(""); };
+
+  if (!tok) {
+    return (
+      <Card title="⌚ Fitbit" sub="Auto-import your sleep from Google Fitbit">
+        <ol className="muted small" style={{ margin: "0 0 12px", paddingLeft: 18, lineHeight: 1.6 }}>
+          <li>At <b>dev.fitbit.com</b> → Register an app (type: <b>Personal</b>, OAuth: <b>Client</b>).</li>
+          <li>Set the <b>Redirect URI</b> to exactly: <code style={{ wordBreak: "break-all" }}>{window.location.origin + window.location.pathname}</code></li>
+          <li>Paste the <b>OAuth Client ID</b> below and connect.</li>
+        </ol>
+        <input placeholder="Fitbit OAuth Client ID (e.g. 23ABCD)" value={clientId} onChange={e => setClientId(e.target.value)} />
+        <button className="btn full" style={{ marginTop: 10 }} onClick={connect} disabled={busy || !clientId.trim()}>
+          {busy ? <span className="spinner" /> : "Connect Fitbit"}
+        </button>
+        {status && <div className="err">{status}</div>}
+      </Card>
+    );
+  }
+
+  return (
+    <Card title="⌚ Fitbit" sub="Connected — sleep syncs from your device" action={<button className="link-btn" onClick={disconnect}>Disconnect</button>}>
+      <button className="btn full" onClick={sync} disabled={busy}>{busy ? <><span className="spinner" />Syncing…</> : "↻ Sync sleep now"}</button>
+      {status && <p className="muted small" style={{ marginTop: 8 }}>{status}</p>}
+      <p className="muted small" style={{ marginTop: 8, lineHeight: 1.5 }}>Pulls the last 30 nights from Fitbit (main sleep, deduped). Your existing sleep analytics run off it automatically.</p>
+    </Card>
+  );
+}
 
 // ─── SLEEP FORM ──
 export function SleepForm({ onAdd, recent }) {
@@ -283,11 +340,13 @@ export function SleepSection({ data, goals, addEntry, onSaveGoals }) {
   }
 
   const log = <SleepForm onAdd={addEntry("sleep")} recent={data.sleep} />;
+  const fitbit = <FitbitCard data={data} goals={goals} addEntry={addEntry} onSaveGoals={onSaveGoals} />;
 
   if (!sleep) {
     return (
       <div className="stack">
         {log}
+        {fitbit}
         <Card title="Sleep intelligence">
           <Empty icon="◐" title="Log a few nights to wake this up" hint="Once you've logged sleep for several nights, this section learns your personal sleep need and starts reading how sleep is shaping your training, weight, and mood." />
         </Card>
@@ -306,6 +365,7 @@ export function SleepSection({ data, goals, addEntry, onSaveGoals }) {
   return (
     <div className="stack">
       {log}
+      {fitbit}
 
       <SleepScoreCard data={data} need={sleep.need.hours} />
 

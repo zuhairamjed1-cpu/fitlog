@@ -17,9 +17,13 @@ describe("resolveItems", () => {
         ],
       }),
     }));
+    // AI estimates must be PLAUSIBLE — the cross-check (fdcMatch.crossCheck) now
+    // refuses a DB match that disagrees with the AI by >2.5x, because that's the
+    // only signal that catches a bad FDC match (they're internally consistent, so
+    // Atwater can't see them). See the conflict test below.
     const ai = [
-      { food: "chicken", fdcQuery: "chicken breast grilled", grams: 200, gramsRange: [170, 230], calories: 999 },
-      { food: "rice", fdcQuery: "white rice cooked", grams: 150, gramsRange: [120, 180], calories: 999 },
+      { food: "chicken", fdcQuery: "chicken breast grilled", grams: 200, gramsRange: [170, 230], calories: 300 },
+      { food: "rice", fdcQuery: "white rice cooked", grams: 150, gramsRange: [120, 180], calories: 180 },
     ];
     const { items, stats } = await resolveItems(ai, { fetchImpl: fakeFetch });
     expect(stats.resolved).toBe(2);
@@ -27,6 +31,26 @@ describe("resolveItems", () => {
     expect(items[0].calories).toBe(330);
     expect(items[0].source).toBe("usda");
     expect(items[1].calories).toBe(195); // 130 * 150/100
+  });
+
+  it("on an AI-vs-DB conflict, PREFERS the DB value but flags it (FIX2)", async () => {
+    // FDC returned 533 kcal/100g for pickle slices vs the AI's ~17 kcal/100g. Post-FIX2
+    // we prefer the DB number (the AI carries the over-count bias) but keep the conflict
+    // flag so the meal still escalates. (Tradeoff: this laundering re-inflates a genuine
+    // bad DB match like this pickle — see eval ablation B-vs-D.)
+    const fakeFetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ results: [
+        { source: "usda", per100: { cal: 533, protein: 0, carbs: 2, fat: 0 }, matched: { fdcId: 7, description: "Dill pickle slices" } },
+      ] }),
+    }));
+    const ai = [{ food: "pickles", fdcQuery: "dill pickle", grams: 30, calories: 5, protein: 0, carbs: 1, fat: 0 }];
+    const { items, stats } = await resolveItems(ai, { fetchImpl: fakeFetch });
+    expect(items[0].source).toBe("usda");      // prefers the DB value now
+    expect(items[0].calories).toBe(160);       // 533 * 30/100
+    expect(items[0].fdcConflict).toBeTruthy(); // still surfaced → still escalates
+    expect(items[0].fdcConflict.ratio).toBeGreaterThan(10);
+    expect(stats.conflicts).toBe(1);
   });
 
   it("falls back to the AI estimate on a DB miss", async () => {
