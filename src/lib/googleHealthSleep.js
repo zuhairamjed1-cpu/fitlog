@@ -57,6 +57,34 @@ export function normalizeSleep(dp) {
 
 const qualityFor = eff => eff == null ? "—" : eff >= 90 ? "Great" : eff >= 80 ? "Good" : eff >= 70 ? "Fair" : "Poor";
 
+// The four score components (mirrors derivedSleepScore) for the ring breakdown.
+export function sleepScoreParts(night) {
+  const t = night?.stageTotals; if (!t) return null;
+  const asleep = (t.DEEP || 0) + (t.REM || 0) + (t.LIGHT || 0);
+  if (!asleep) return null;
+  const eff = night.efficiency ?? (night.inBedHours ? (asleep / (night.inBedHours * 60)) * 100 : 0);
+  const clamp = (x, hi = 1) => Math.max(0, Math.min(hi, x));
+  return [
+    { key: "Efficiency", pts: +(clamp(eff / 100) * 50).toFixed(1), max: 50, color: "var(--gh-teal)" },
+    { key: "Deep", pts: +(clamp((t.DEEP / asleep) / 0.13) * 17.5).toFixed(1), max: 17.5, color: "var(--gh-deep)" },
+    { key: "REM", pts: +(clamp((t.REM / asleep) / 0.23) * 17.5).toFixed(1), max: 17.5, color: "var(--gh-rem)" },
+    { key: "Calm", pts: +(Math.max(0, 1 - (t.AWAKE / asleep) / 0.15) * 15).toFixed(1), max: 15, color: "var(--gh-good)" },
+  ];
+}
+
+// Stage segments as bedtime-relative offsets (minutes) for a hypnogram.
+// Returns { bedMin, total, segs:[{type,start,min}] } or null.
+export function hypnoSegments(night) {
+  const segs = (night?.stages || []).filter(s => s.min > 0 && s.start);
+  if (!segs.length) return null;
+  const t0 = Date.parse(segs[0].start);
+  if (Number.isNaN(t0)) return null;
+  const bedMin = (() => { const m = /^(\d{1,2}):(\d{2})/.exec(night.bedtime || ""); return m ? +m[1] * 60 + +m[2] : new Date(t0).getHours() * 60 + new Date(t0).getMinutes(); })();
+  const out = segs.map(s => ({ type: s.type, start: Math.round((Date.parse(s.start) - t0) / 60000), min: s.min }));
+  const total = out.reduce((mx, s) => Math.max(mx, s.start + s.min), 0);
+  return { bedMin, total, segs: out };
+}
+
 // Google Health has NO sleep score — compute one from stages + efficiency.
 // 0–100: efficiency (50%) + deep/REM adequacy (35%) + low restlessness (15%).
 export function derivedSleepScore({ totals, asleepMin, inBedMin, efficiency, awakeMin }) {

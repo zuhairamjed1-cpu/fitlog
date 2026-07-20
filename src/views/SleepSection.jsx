@@ -9,7 +9,12 @@ import { parseWorkout } from "../engines/workout";
 import { getTodayStr, formatShortDate, daysAgo } from "../lib/dates";
 import { haptic } from "../lib/fx";
 import { useGoogleHealth } from "../useGoogleHealth";
-import { normalizeSleep } from "../lib/googleHealthSleep";
+import { normalizeSleep, sleepScoreParts, hypnoSegments } from "../lib/googleHealthSleep";
+import { ringSVG, hypnoSVG, tstStripSVG, clockSVG, compositionSVG, miniBarSVG, hm, scoreColor } from "../lib/sleepViz";
+
+const Svg = ({ html, className, style }) => <div className={className} style={style} dangerouslySetInnerHTML={{ __html: html }} />;
+const parseHM = s => { const m = /^(\d{1,2}):(\d{2})/.exec(s || ""); return m ? +m[1] * 60 + +m[2] : null; };
+const CONF_PCT = { high: 85, moderate: 60, low: 35, set: 100 };
 
 // ─── Fitbit Air → Google Health connect + sleep import ──────────────────────
 const STAGE_COLORS = { Deep: "#4f6bff", REM: "#8b6cff", Light: "#4fb3bd", Awake: "#f9c97e", "Out of bed": "#6b7480" };
@@ -403,12 +408,73 @@ function mergeSleep(data) {
   return [...live, ...arch.filter(s => !seen.has(key(s)))];
 }
 
+// ─── ⌚ connect / sync bar (top of section) ─────────────────────────────────
+function SyncBar({ data, addEntry }) {
+  const { connected, needsReconnect, loading, connect, disconnect, fetchMetric } = useGoogleHealth();
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState("");
+
+  const importSleep = async (days = 30) => {
+    setBusy(true); setStatus("");
+    try {
+      const since = new Date(Date.now() - (days - 1) * 86400000).toISOString();
+      const { dataPoints = [] } = await fetchMetric("sleep", since);
+      const entries = dataPoints.map(normalizeSleep).filter(Boolean);
+      const have = new Set((data.sleep || []).map(s => s.ghId).filter(Boolean));
+      const add = entries.filter(e => !have.has(e.ghId));
+      add.forEach(e => addEntry("sleep")(e));
+      setStatus(add.length ? `✓ Imported ${add.length} night${add.length === 1 ? "" : "s"}` : "Up to date — open Google Health to force a device sync.");
+      haptic(10);
+    } catch (e) {
+      setStatus(e.message === "token_expired" || needsReconnect ? "Session expired — reconnect." : `Sync failed: ${e.message || "try again"}`);
+    }
+    setBusy(false);
+  };
+
+  useEffect(() => {
+    if (connected && (data.sleep || []).every(s => s.source !== "googlehealth")) importSleep(30);
+    // eslint-disable-next-line
+  }, [connected]);
+
+  if (loading) return <div className="topbar"><div className="crumbs">Goals · <b>Sleep</b></div><span className="sync">checking…</span></div>;
+
+  if (!connected) {
+    return (
+      <div className="card" style={{ padding: 16 }}>
+        <div className="eyebrow">⌚ Fitbit Air</div>
+        {needsReconnect && <div style={{ color: "var(--gh-red)", fontSize: 12, margin: "4px 0" }}>Session expired (weekly Testing-mode limit).</div>}
+        <p style={{ margin: "2px 0 12px", fontSize: 13, color: "#aab3bd", lineHeight: 1.5 }}>Sign in with the Google account your Fitbit Air syncs to. Tokens stay server-side.</p>
+        <button className="ghbtn" onClick={connect}>Connect Google Health</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="topbar">
+      <div className="crumbs">Goals · <b>Sleep</b></div>
+      <button className="sync tap" onClick={() => importSleep(30)} disabled={busy} title="Sync sleep from Fitbit">
+        <span className="dot" />{busy ? "syncing…" : "⌚ Fitbit Air"}
+        <span className="syncx" onClick={e => { e.stopPropagation(); disconnect(); }}>✕</span>
+      </button>
+      {status && <div className="syncstatus">{status}</div>}
+    </div>
+  );
+}
+
 export function SleepSection({ data, goals, addEntry, onSaveGoals }) {
   const merged = useMemo(() => mergeSleep(data), [data]);
   const mergedData = useMemo(() => ({ ...data, sleep: merged }), [data, merged]);
   const sleep = useMemo(() => computeSleep(mergedData, goals), [mergedData, goals]);
   const [editNeed, setEditNeed] = useState(false);
   const [needVal, setNeedVal] = useState(goals.profile?.sleepNeedH || "");
+
+  const gNights = useMemo(
+    () => (data.sleep || []).filter(s => s.source === "googlehealth" && s.stageTotals).sort((a, b) => a.date.localeCompare(b.date)),
+    [data.sleep]
+  );
+  const lastNight = gNights[gNights.length - 1] || null;
+  const recentRows = useMemo(() => [...merged].filter(s => s.date).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 8), [merged]);
+  const archivedN = (data.sleepArchive || []).length;
 
   function saveNeed() {
     const v = parseFloat(needVal);
@@ -417,99 +483,189 @@ export function SleepSection({ data, goals, addEntry, onSaveGoals }) {
     toast(v > 0 ? `Sleep need set to ${v}h` : "Back to auto-learned need");
   }
 
-  const fitbit = <GoogleHealthCard data={data} addEntry={addEntry} />;
-  const archivedN = (data.sleepArchive || []).length;
-  const archiveNote = archivedN > 0 && (
-    <p className="muted small" style={{ textAlign: "center", opacity: .7 }}>
-      {archivedN} manually-logged night{archivedN === 1 ? "" : "s"} included — stored separately from Fitbit, no stage data.
-    </p>
-  );
+  const bar = <SyncBar data={data} addEntry={addEntry} />;
 
   if (!sleep) {
     return (
-      <div className="stack">
-        {fitbit}
-        <Card title="Sleep intelligence">
-          <Empty icon="◐" title="Connect Google Health to wake this up" hint="Sleep is now sourced from your Fitbit Air via Google Health. Connect above and sync a few nights — this section then learns your personal sleep need and reads how sleep shapes training, weight, and mood." />
-        </Card>
-        {archiveNote}
+      <div className="sleepx">
+        {bar}
+        <div className="card"><Empty icon="◐" title="Connect & sync to wake this up" hint="Sleep comes from your Fitbit Air via Google Health. Connect above and sync a few nights — this dashboard then learns your sleep need and reads stages, debt, and rhythm." /></div>
       </div>
     );
   }
 
-  const q = sleep.quantity, r = sleep.regularity;
-  const nFree = sleep.need.nUnassisted ?? sleep.need.nGood;
-  const needSrc = sleep.need.source === "override" ? "you set this"
-    : sleep.need.source === "learned" ? `learned from ${nFree} alarm-free mornings`
-    : sleep.need.source === "learning" ? `learning from ${nFree} alarm-free morning${nFree === 1 ? "" : "s"} so far — still near the ${DEFAULT_SLEEP_NEED_H}h default`
-    : "provisional default — log more alarm-free nights to personalize";
+  const q = sleep.quantity, r = sleep.regularity, need = sleep.need.hours;
+
+  // hero
+  const st = lastNight?.stageTotals;
+  const parts = lastNight ? sleepScoreParts(lastNight) : null;
+  const hyp = lastNight ? hypnoSegments(lastNight) : null;
+  const score = lastNight?.derivedScore;
+  const avg14 = gNights.slice(-14).map(n => n.derivedScore).filter(v => v != null);
+  const scoreAvg = avg14.length ? Math.round(avg14.reduce((a, b) => a + b, 0) / avg14.length) : null;
+  const delta = score != null && scoreAvg != null ? score - scoreAvg : null;
+  const heroDate = lastNight ? new Date(lastNight.date + "T00:00").toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" }) : "";
+  const continuity = lastNight ? [
+    { k: "In bed", v: lastNight.inBedHours ? hm(lastNight.inBedHours * 60) : "—" },
+    { k: "Asleep", v: hm(lastNight.duration * 60) },
+    { k: "Efficiency", v: lastNight.efficiency != null ? lastNight.efficiency + "%" : "—" },
+    { k: "REM", v: hm(st?.REM || 0) },
+    { k: "WASO", v: hm(st?.AWAKE || 0) },
+  ] : [];
+
+  // need + debt
+  const debtH = sleep.debt?.debtH ?? 0;
+  const confPct = CONF_PCT[sleep.confidence] ?? 40;
+
+  // circadian
+  const bedMin = parseHM(r.bedTarget), wakeMin = parseHM(r.anchorWake);
+  const jlRaw = r.socialJetlag || 0;
+  const jetlagMin = Math.round(jlRaw < 6 ? jlRaw * 60 : jlRaw);
+  const showClock = bedMin != null && wakeMin != null;
+
+  // composition (google, last 14)
+  const comp = gNights.slice(-14).map(n => ({ D: n.stageTotals.DEEP, R: n.stageTotals.REM, L: n.stageTotals.LIGHT, A: n.stageTotals.AWAKE }));
+  const deepPct = comp.length ? Math.round(comp.reduce((a, s) => a + s.D, 0) / comp.reduce((a, s) => a + s.D + s.R + s.L + s.A, 0) * 100) : 0;
+
+  const stageChips = st ? [["Deep", st.DEEP, "var(--gh-deep)"], ["REM", st.REM, "var(--gh-rem)"], ["Light", st.LIGHT, "var(--gh-light)"], ["Awake", st.AWAKE, "var(--gh-awake)"]] : [];
 
   return (
-    <div className="stack">
-      {fitbit}
+    <div className="sleepx">
+      {bar}
 
-      <SleepScoreCard data={mergedData} need={sleep.need.hours} />
-
-      {/* NEED + CONFIDENCE */}
-      <Card>
-        <div className="sleep-need-row">
-          <div>
-            <div className="muted small">Your sleep need</div>
-            <div className="sleep-need-v">{sleep.need.hours}<span>h</span></div>
-            <div className="muted small" style={{ marginTop: 2 }}>{needSrc}</div>
+      {/* ===== HERO: LAST NIGHT ===== */}
+      {lastNight ? (
+        <section className="card hero">
+          <div className="eyebrow">Last night</div>
+          <div className="date">{heroDate}</div>
+          <div className="ringwrap">
+            <div className="ring">
+              {parts && <Svg html={ringSVG(parts)} />}
+              <div className="center">
+                <div className="score num">{score ?? "—"}</div>
+                <div className="cap">Sleep score</div>
+                {delta != null && delta !== 0 && <div className="delta" style={{ color: delta > 0 ? "var(--gh-good)" : "var(--gh-red)" }}>{delta > 0 ? "▲" : "▼"} {Math.abs(delta)} vs 14-night avg</div>}
+              </div>
+            </div>
+            {parts && (
+              <div className="breakdown">
+                {parts.map(p => (
+                  <div className="bd" key={p.key}>
+                    <span className="swatch" style={{ background: p.color }} />
+                    <span className="lbl">{p.key}</span>
+                    <span className="val num">{Math.round(p.pts)} <i>/ {p.max}</i></span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-          <div style={{ textAlign: "right" }}>
-            <div className="muted small">Confidence</div>
-            <div style={{ fontWeight: 600 }}>{sleep.confidence}</div>
-            <button className="link-btn" style={{ marginTop: 4 }} onClick={() => { setNeedVal(goals.profile?.sleepNeedH || ""); setEditNeed(e => !e); }}>{editNeed ? "Cancel" : "Set manually"}</button>
+
+          {hyp && <>
+            <hr className="divider" />
+            <div className="stages-head"><span className="t">Sleep stages</span><span className="clock">{lastNight.bedtime} → {lastNight.wakeTime}</span></div>
+            <Svg className="hypno" html={hypnoSVG(hyp)} />
+          </>}
+          {stageChips.length > 0 && (
+            <div className="stagechips">
+              {stageChips.map(([n, m, c]) => <span className="pill" key={n}><span className="swatch" style={{ background: c }} />{n} <b>{hm(m)}</b></span>)}
+            </div>
+          )}
+          {continuity.length > 0 && (
+            <div className="continuity">
+              {continuity.map(c => <div className="c" key={c.k}><div className="v num">{c.v}</div><div className="k">{c.k}</div></div>)}
+            </div>
+          )}
+        </section>
+      ) : (
+        <section className="card"><Empty icon="⌚" title="Synced — waiting on stage data" hint="Nights imported, but no sleep-stage detail yet. Once your Fitbit Air uploads staged sleep, the hero fills in." /></section>
+      )}
+
+      {/* ===== NEED + DEBT ===== */}
+      <section className="card nd">
+        <div className="nd-top">
+          <div className="block need">
+            <div className="k">Learned need</div>
+            <div className="big num">{need}<small>h</small></div>
+            <div className="conf"><span className="bar"><i style={{ width: confPct + "%" }} /></span><span className="txt">{sleep.confidence} confidence</span></div>
+            <button className="link-btn" style={{ marginTop: 6, fontSize: 12 }} onClick={() => { setNeedVal(goals.profile?.sleepNeedH || ""); setEditNeed(e => !e); }}>{editNeed ? "Cancel" : "Set manually"}</button>
+          </div>
+          <div className="block debt" style={{ textAlign: "right" }}>
+            <div className="k">Sleep debt · 14 nights</div>
+            <div className="big num">{debtH <= 0.1 ? "0" : "−" + debtH}<small>h</small></div>
+            <div className="sub">rolling deficit vs need</div>
           </div>
         </div>
         {editNeed && (
-          <div className="row" style={{ marginTop: 10 }}>
+          <div className="row" style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center" }}>
             <input type="number" step="0.5" inputMode="decimal" value={needVal} onChange={e => setNeedVal(e.target.value)} placeholder="e.g. 8" />
-            <span className="muted">h</span>
-            <button className="btn" onClick={saveNeed}>Save</button>
+            <span className="txt">h</span><button className="ghbtn" style={{ width: "auto", padding: "8px 14px" }} onClick={saveNeed}>Save</button>
           </div>
         )}
-      </Card>
+        <Svg className="tst" html={tstStripSVG(sleep.series.tst, need)} />
+        {sleep.debt?.paydownNights > 0 && (
+          <div className="plan"><span className="ic">↗</span><span className="tx"><b>+{sleep.debt.paydownExtraMin} min/night for {sleep.debt.paydownNights} night{sleep.debt.paydownNights === 1 ? "" : "s"}</b> clears the debt without oversleeping.</span></div>
+        )}
+      </section>
 
-      {/* SLEEP DEBT */}
-      <SleepDebtCard debt={sleep.debt} />
-
-      {/* BIGGEST LEVER */}
+      {/* ===== BIGGEST LEVER ===== */}
       {sleep.topLever && (
-        <Card title="Your biggest sleep lever" className="sleep-lever-card">
-          <p className="sleep-lever-text">{sleep.topLever.text}</p>
-        </Card>
-      )}
-
-      {/* CIRCADIAN ANCHOR */}
-      {r.anchorWake && (
-        <Card title="Circadian anchor" sub="The single most stabilizing habit is a fixed wake time">
-          <div className="sleep-anchor">
-            <div className="sleep-anchor-item"><span className="muted small">Anchor wake</span><span className="sleep-anchor-v">{r.anchorWake}</span></div>
-            <div className="sleep-anchor-arrow">←</div>
-            <div className="sleep-anchor-item"><span className="muted small">Target in bed by</span><span className="sleep-anchor-v">{r.bedTarget || "—"}</span></div>
-          </div>
-          <p className="muted small" style={{ marginTop: 4, lineHeight: 1.5 }}>Holding wake time within ~30 min every day — weekends included — anchors your body clock, which then pulls bedtime and sleep quality into line.</p>
-        </Card>
-      )}
-
-      {/* DURATION */}
-      <Card title="Duration" sub="vs your personal need" action={<StatusPill status={q.status} label={q.label} />}>
-        <div className="center-stack" style={{ marginBottom: 6 }}>
-          <div style={{ fontSize: 30, fontWeight: 700, lineHeight: 1 }}>{q.avgTST7 ?? "—"}<span className="muted" style={{ fontSize: 15, marginLeft: 4 }}>h avg asleep (7d)</span></div>
-          <div className="muted small">{q.debt7 > 0.5 ? `~${q.debt7}h short of your need this week` : q.debt7 < -0.5 ? `~${Math.abs(q.debt7)}h above need this week` : "On target this week"}</div>
+        <div className="lever" role="note">
+          <div className="ic">🎯</div>
+          <div><div className="eyebrow">Biggest lever</div><p>{sleep.topLever.text}</p></div>
         </div>
-        <MiniChart points={sleep.series.tst} showGoal={q.need} rollingAvg unit="h" />
-      </Card>
+      )}
 
-      {/* STAGE TRENDS — Google Health */}
-      <StageTrendCard nights={data.sleep} />
+      <div className="sectionlabel"><span>Patterns</span><span>Fitbit nights only</span></div>
 
-      {/* RECENT — collapsed at the very bottom */}
-      <RecentSleepDropdown sleep={merged} />
-      {archiveNote}
+      {/* ===== CIRCADIAN ===== */}
+      {showClock && (
+        <section className="card cd">
+          <div className="eyebrow">Circadian rhythm</div>
+          <div className="circ">
+            <Svg className="clockwrap" html={clockSVG({ bedMin, wakeMin, jetlagMin, bedSD: Math.round(r.midSD || 30) })} />
+            <div className="facts">
+              <div className="fact"><div className="k">Anchor wake</div><div className="v num">{r.anchorWake}</div></div>
+              <div className="fact"><div className="k">Bed target</div><div className="v num">{r.bedTarget || "—"}</div></div>
+              <div className="fact jet"><div className="k">Social jetlag</div><div className="v num">{jetlagMin}m</div></div>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* ===== STAGE COMPOSITION ===== */}
+      {comp.length >= 3 && (
+        <section className="card cp comp">
+          <div className="lead">
+            <div><div className="eyebrow">Stage composition</div><h2>Last {comp.length} nights</h2></div>
+            <span className="pill num">Deep <b style={{ marginLeft: 4, color: "var(--gh-text)" }}>{deepPct}%</b></span>
+          </div>
+          <Svg html={compositionSVG(comp)} />
+          <div className="complegend">
+            {[["Deep", "var(--gh-deep)"], ["Light", "var(--gh-light)"], ["REM", "var(--gh-rem)"], ["Awake", "var(--gh-awake)"]].map(([n, c]) => <span className="pill" key={n}><span className="swatch" style={{ background: c }} />{n}</span>)}
+          </div>
+        </section>
+      )}
+
+      {/* ===== RECENT + ARCHIVE ===== */}
+      <section className="card rc">
+        <div className="lead" style={{ marginBottom: 4 }}><div><div className="eyebrow">History</div><h2>Recent nights</h2></div></div>
+        {recentRows.map(s => {
+          const isG = s.source === "googlehealth";
+          const t = s.stageTotals;
+          return (
+            <div className={`row ${isG ? "" : "archived"}`} key={s.id || s.date}>
+              <div className="tag">{isG ? "⌚" : "✎"}</div>
+              <div className="when"><div className="d num">{formatShortDate(s.date)}</div></div>
+              <div className="mini">{isG && t ? <Svg html={miniBarSVG({ D: t.DEEP, R: t.REM, L: t.LIGHT, A: t.AWAKE })} /> : <span className="arch">no stage data</span>}</div>
+              <div className="dur num">{s.duration != null ? hm(s.duration * 60) : "—"}</div>
+              {isG && s.derivedScore != null
+                ? <div className="sc num" style={{ color: scoreColor(s.derivedScore), borderColor: scoreColor(s.derivedScore) + "33", background: scoreColor(s.derivedScore) + "12" }}>{s.derivedScore}</div>
+                : <div className="sc num" style={{ color: "var(--gh-muted)", fontSize: 11, fontWeight: 600 }}>{s.quality || "—"}</div>}
+            </div>
+          );
+        })}
+        {archivedN > 0 && <div className="archnote">✎ {archivedN} legacy night{archivedN === 1 ? "" : "s"} logged manually before Fitbit — shown without stage data.</div>}
+      </section>
     </div>
   );
 }
