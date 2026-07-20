@@ -67,7 +67,7 @@ function GoogleHealthCard({ data, addEntry }) {
   const importSleep = async (days = 30) => {
     setBusy(true); setStatus("");
     try {
-      const since = new Date(Date.now() - (days - 1) * 86400000).toISOString().slice(0, 10);
+      const since = new Date(Date.now() - (days - 1) * 86400000).toISOString(); // full RFC3339 — Google filter needs a timestamp, not a date
       const { dataPoints = [] } = await fetchMetric("sleep", since);
       const entries = dataPoints.map(normalizeSleep).filter(Boolean);
       const have = new Set((data.sleep || []).map(s => s.ghId).filter(Boolean));

@@ -15,16 +15,17 @@ const minutes = ms => Math.round((ms || 0) / 60000);
 export function normalizeSleep(dp) {
   const s = dp.sleep || dp; // point may be wrapped under `sleep`
   const interval = s.interval || {};
-  const startT = interval.civilStartTime || interval.civil_start_time || s.startTime;
-  const endT = interval.civilEndTime || interval.civil_end_time || s.endTime;
-  const date = (endT || "").slice(0, 10);
+  const startT = interval.startTime || interval.start_time || interval.civilStartTime || s.startTime;
+  const endT = interval.endTime || interval.end_time || interval.civilEndTime || s.endTime;
+  const date = (endT || startT || "").slice(0, 10);
   if (!date) return null;
 
-  const rawSegs = s.stages || s.segments || s.stageSegments || [];
+  const rawSegs = s.stages || s.stage || s.segments || s.stageSegments || [];
   const stages = rawSegs.map(seg => {
-    const type = (seg.type || seg.stage || seg.stageType || "").toUpperCase();
-    const a = seg.interval?.civilStartTime || seg.interval?.civil_start_time || seg.startTime || seg.start;
-    const b = seg.interval?.civilEndTime || seg.interval?.civil_end_time || seg.endTime || seg.end;
+    const type = (seg.type || seg.stage || seg.level || seg.stageType || "").toUpperCase();
+    const si = seg.interval || {};
+    const a = si.startTime || si.start_time || si.civilStartTime || seg.startTime || seg.start;
+    const b = si.endTime || si.end_time || si.civilEndTime || seg.endTime || seg.end;
     const dur = toMs(b) != null && toMs(a) != null ? toMs(b) - toMs(a) : (seg.durationMillis || 0);
     return { type, label: STAGE_LABEL[type] || type, start: a, end: b, min: minutes(dur) };
   }).filter(x => x.type);

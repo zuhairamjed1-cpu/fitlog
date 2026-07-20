@@ -45,7 +45,7 @@ const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 // The two daily-* fields are best-guesses — if you get empty results, verify
 // the exact filter field at https://developers.google.com/health/endpoints.
 const METRICS = {
-  sleep:        { dataType: 'sleep',                        filterField: 'sleep.interval.civil_end_time',                        dateOnly: true },
+  sleep:        { dataType: 'sleep',                        filterField: 'sleep.interval.end_time' },
   'heart-rate': { dataType: 'heart-rate',                   filterField: 'heart_rate.sample_time.physical_time',                 maxWindowDays: 14 },
   hrv:          { dataType: 'heart-rate-variability',       filterField: 'heart_rate_variability.sample_time.physical_time' },
   'daily-hrv':  { dataType: 'daily-heart-rate-variability', filterField: 'daily_heart_rate_variability.sample_time.physical_time', verify: true },
@@ -272,6 +272,9 @@ async function handleData(req, res) {
   try {
     const accessToken = await getAccessToken(user.id);
     const dataPoints = await queryMetric(accessToken, metric, since, until);
+    // TEMP DIAGNOSTIC: log the filter + first point so we can lock the schema.
+    console.log(`GH_DATA metric=${metric} count=${dataPoints.length} filter=${buildFilter(METRICS[metric].filterField, since, until, METRICS[metric].dateOnly)}`);
+    if (dataPoints[0]) console.log(`GH_SAMPLE ${JSON.stringify(dataPoints[0]).slice(0, 1800)}`);
     res.status(200).json({ metric, count: dataPoints.length, dataPoints });
   } catch (e) {
     if (e instanceof NeedsReconnect) {
