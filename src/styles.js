@@ -1826,4 +1826,112 @@ input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
   .sleepx .circ .facts{flex-direction:row;flex-wrap:wrap;width:100%}
   .sleepx .circ .facts .fact{flex:1 1 40%}
 }
+
+/* ═══════════ NUTRITION DASHBOARD (Goals › Nutrition) — scoped under .nutx ═══════════ */
+.nutx{
+  --nut-accent:#4fb3bd; --nut-teal:#6ee7f7; --nut-good:#5fcf80; --nut-amber:#f9c97e; --nut-red:#f47e6e;
+  --nut-text:#eef2f6; --nut-muted:#6b7480; --nut-hair:#232c38;
+  --nut-protein:#f9c97e; --nut-carb:#4fb3bd; --nut-fat:#8b6cff;
+  --nut-card-top:#151b23; --nut-card-bot:#0f141b;
+  --nut-shadow:0 18px 40px -22px rgba(0,0,0,.9), 0 1px 0 rgba(255,255,255,.02) inset;
+  --nut-mono:"SF Mono",ui-monospace,"JetBrains Mono","Roboto Mono",Menlo,Consolas,monospace;
+  color:var(--nut-text);
+}
+.nutx .eyebrow{font-family:var(--nut-mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--nut-muted);margin:0}
+.nutx .num{font-variant-numeric:tabular-nums}
+.nutx .mono{font-family:var(--nut-mono);font-variant-numeric:tabular-nums}
+.nutx .card{position:relative;background:linear-gradient(180deg,var(--nut-card-top),var(--nut-card-bot));border:1px solid var(--nut-hair);border-radius:22px;box-shadow:var(--nut-shadow);padding:18px;margin-bottom:14px;overflow:hidden}
+.nutx .card::before{content:"";position:absolute;inset:0 0 auto 0;height:1px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.06),transparent)}
+.nutx .card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;gap:10px}
+.nutx .pill{font-family:var(--nut-mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;padding:3px 8px;border-radius:999px;border:1px solid var(--nut-hair);color:var(--nut-muted);display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.nutx .pill.good{color:var(--nut-good);border-color:rgba(95,207,128,.3);background:rgba(95,207,128,.07)}
+.nutx .pill.amber{color:var(--nut-amber);border-color:rgba(249,201,126,.28);background:rgba(249,201,126,.06)}
+.nutx .seg{display:inline-flex;border:1px solid var(--nut-hair);border-radius:999px;overflow:hidden;background:rgba(255,255,255,.02)}
+.nutx .seg button{font-family:var(--nut-mono);font-size:11px;color:var(--nut-muted);background:transparent;border:0;padding:5px 11px;cursor:pointer;letter-spacing:.02em}
+.nutx .seg button.on{color:#04252a;background:var(--nut-accent);font-weight:600}
+.nutx svg{display:block;width:100%;height:auto}
+/* hero */
+.nutx .energy .maintrow{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin-bottom:4px}
+.nutx .energy .big{font-size:38px;font-weight:640;letter-spacing:-.025em;line-height:.95}
+.nutx .energy .big u{font-size:15px;color:var(--nut-muted);text-decoration:none;font-weight:500;margin-left:3px}
+.nutx .energy .maintlbl{font-family:var(--nut-mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--nut-muted);margin-bottom:6px}
+.nutx .energy .intent{text-align:right}
+.nutx .energy .intent .b{font-size:15px;font-weight:600}
+.nutx .energy .intent .s{font-family:var(--nut-mono);font-size:10px;color:var(--nut-muted);margin-top:2px}
+.nutx .energy .subrow{display:flex;gap:16px;flex-wrap:wrap;margin:12px 0 14px;font-family:var(--nut-mono);font-size:11px;color:var(--nut-muted)}
+.nutx .energy .subrow b{color:var(--nut-text);font-weight:600}
+.nutx .ledger-legend{display:flex;gap:13px;flex-wrap:wrap;margin-top:10px;font-family:var(--nut-mono);font-size:10px;color:var(--nut-muted)}
+.nutx .ledger-legend .li{display:flex;align-items:center;gap:6px}
+.nutx .ledger-legend .li i{width:10px;height:10px;border-radius:3px;display:inline-block}
+.nutx .ledger-legend .li .ln{width:14px;height:0;border-top:2px solid;display:inline-block}
+.nutx .reconcile{margin-top:13px;padding-top:13px;border-top:1px solid var(--nut-hair);font-family:var(--nut-mono);font-size:11px;line-height:1.55;color:var(--nut-muted)}
+.nutx .reconcile b{font-weight:600}.nutx .reconcile .ok{color:var(--nut-good)}.nutx .reconcile .warn{color:var(--nut-amber)}
+/* flag */
+.nutx .flag{display:flex;gap:13px;align-items:flex-start;background:linear-gradient(180deg,rgba(249,201,126,.10),rgba(249,201,126,.03));border:1px solid rgba(249,201,126,.30)}
+.nutx .flag .ic{flex:0 0 auto;width:34px;height:34px;border-radius:11px;display:grid;place-items:center;background:rgba(249,201,126,.14);border:1px solid rgba(249,201,126,.32)}
+.nutx .flag .k{font-family:var(--nut-mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--nut-amber);margin-bottom:5px}
+.nutx .flag .t{font-size:14px;font-weight:500;letter-spacing:-.01em;margin:0;line-height:1.5}
+.nutx .flag .t b{color:var(--nut-amber);font-weight:640}
+.nutx .flag .why{font-family:var(--nut-mono);font-size:10.5px;color:var(--nut-muted);margin-top:8px;line-height:1.5}
+/* today */
+.nutx .today .toprow{display:flex;gap:18px;align-items:center}
+.nutx .ring-wrap{position:relative;width:126px;height:126px;flex:0 0 auto}
+.nutx .ring-wrap .mid{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.nutx .ring-wrap .mid b{font-size:30px;font-weight:640;letter-spacing:-.02em;line-height:1}
+.nutx .ring-wrap .mid small{font-family:var(--nut-mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--nut-muted);margin-top:3px}
+.nutx .ring-wrap .mid .eat{font-family:var(--nut-mono);font-size:9px;color:var(--nut-muted);margin-top:5px}
+.nutx .macros{flex:1;display:flex;flex-direction:column;gap:11px}
+.nutx .macro .l{display:flex;align-items:center;justify-content:space-between;font-family:var(--nut-mono);font-size:11px;margin-bottom:5px}
+.nutx .macro .l .nm{display:flex;align-items:center;gap:6px;color:var(--nut-muted)}
+.nutx .macro .l .nm i{width:8px;height:8px;border-radius:2px;display:inline-block}
+.nutx .macro .l .g{color:var(--nut-text)}.nutx .macro .l .g u{color:var(--nut-muted);text-decoration:none;font-size:9.5px}
+.nutx .macro .track{height:5px;border-radius:3px;background:rgba(255,255,255,.05);overflow:hidden}
+.nutx .macro .track span{display:block;height:100%;border-radius:3px;transform-origin:left}
+/* section tag */
+.nutx .section-tag{font-family:var(--nut-mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--nut-muted);margin:22px 6px 10px;display:flex;align-items:center;gap:9px}
+.nutx .section-tag::after{content:"";flex:1;height:1px;background:var(--nut-hair)}
+/* weight */
+.nutx .wt-head{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:12px}
+.nutx .wt-head .big{font-size:26px;font-weight:640;letter-spacing:-.02em}
+.nutx .wt-head .big u{font-size:13px;color:var(--nut-muted);text-decoration:none;font-weight:500}
+.nutx .wt-head .rate{text-align:right;font-family:var(--nut-mono);font-size:11px;color:var(--nut-muted)}
+.nutx .wt-head .rate b{display:block;font-size:16px;font-weight:600}
+.nutx .wt-legend{display:flex;gap:14px;margin-top:9px;font-family:var(--nut-mono);font-size:10px;color:var(--nut-muted)}
+.nutx .wt-legend .li{display:flex;align-items:center;gap:6px}.nutx .wt-legend .ln{height:0;display:inline-block}
+/* protein / heat */
+.nutx .pa-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.nutx .pa-foot{margin-top:11px;font-family:var(--nut-mono);font-size:10.5px;color:var(--nut-muted)}
+.nutx .pa-foot b{color:var(--nut-text)}
+.nutx .heat{display:grid;grid-template-columns:repeat(15,1fr);gap:5px;margin-top:2px}
+.nutx .heat .cell{aspect-ratio:1;border-radius:4px;background:var(--nut-hair)}
+.nutx .heat-legend{display:flex;gap:13px;margin-top:12px;font-family:var(--nut-mono);font-size:10px;color:var(--nut-muted);align-items:center;flex-wrap:wrap}
+.nutx .heat-legend .sw{width:11px;height:11px;border-radius:3px;display:inline-block;margin-right:5px;vertical-align:-1px}
+/* habits */
+.nutx .habits{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.nutx .water .wtop{display:flex;align-items:center;gap:14px}
+.nutx .water svg{width:44px;flex:0 0 auto}
+.nutx .water .info .big{font-size:24px;font-weight:640;letter-spacing:-.02em}
+.nutx .water .info .big u{font-size:12px;color:var(--nut-muted);text-decoration:none;font-weight:500}
+.nutx .water .info .s{font-family:var(--nut-mono);font-size:10px;color:var(--nut-muted);margin-top:3px}
+.nutx .water .info .s b{color:var(--nut-carb)}
+/* supplements */
+.nutx .supp-note{font-family:var(--nut-mono);font-size:10px;color:var(--nut-muted);margin:-4px 0 12px;line-height:1.5}
+.nutx .supp{padding:13px 0;border-top:1px solid var(--nut-hair)}
+.nutx .supp:first-of-type{border-top:0;padding-top:2px}
+.nutx .supp .top{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px;gap:8px}
+.nutx .supp .nm{font-size:13.5px;font-weight:560;letter-spacing:-.01em}
+.nutx .supp .nm u{font-family:var(--nut-mono);text-decoration:none;color:var(--nut-muted);font-size:10px;font-weight:400;margin-left:7px}
+.nutx .supp .streak{font-family:var(--nut-mono);font-size:10.5px;color:var(--nut-muted);white-space:nowrap}
+.nutx .supp .streak b{color:var(--nut-good);font-weight:600}
+.nutx .dots{display:flex;gap:4px}
+.nutx .dots i{flex:1;height:16px;border-radius:4px;background:var(--nut-hair)}
+.nutx .dots i.on{background:var(--nut-accent)}
+.nutx .dots i.today{box-shadow:0 0 0 2px rgba(110,231,247,.35)}
+/* empty */
+.nutx .connect{display:none}.nutx .connect.show{display:block}
+.nutx .connect .ic{width:62px;height:62px;border-radius:20px;margin:0 auto 16px;display:grid;place-items:center;background:rgba(79,179,189,.08);border:1px solid rgba(79,179,189,.25)}
+.nutx .connect h2{font-size:19px;font-weight:620;letter-spacing:-.01em;margin:0 0 8px;text-align:center}
+.nutx .connect p{font-size:13px;color:var(--nut-muted);margin:0 auto 20px;max-width:290px;line-height:1.55;text-align:center}
+.nutx .connect .fine{font-family:var(--nut-mono);font-size:10px;color:var(--nut-muted);margin-top:16px;text-align:center}
+@media (max-width:380px){ .nutx .habits{grid-template-columns:1fr} .nutx .today .toprow{flex-direction:column;align-items:flex-start} .nutx .macros{width:100%} }
 `;

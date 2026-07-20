@@ -14,7 +14,11 @@ import { getDayContext } from "../engines/dayContext";
 import { computeEnergyBalance } from "../engines/energy";
 import { estimateSleepNeed } from "../engines/sleep";
 import { parseWorkout, bestSet, e1rm } from "../engines/workout";
-import { formatShortDate, daysAgo } from "../lib/dates";
+import { formatShortDate, daysAgo, getTodayStr } from "../lib/dates";
+import { ledgerSVG, ringSVG as nutRingSVG, weightSVG, proteinSVG, waterColSVG, smooth as nutSmooth } from "../lib/nutritionViz";
+
+const NutSvg = ({ html, className, style }) => <div className={className} style={style} dangerouslySetInnerHTML={{ __html: html }} />;
+const KCAL_PER_KG = 7700;
 import { WeekPlannerCard } from "../components/WeekPlannerCard";
 import { UrgeTracker } from "../components/UrgeTracker";
 import { NicotineTab } from "./NicotineTab";
@@ -49,42 +53,240 @@ function RangeSeg({ range, setRange }) {
   );
 }
 
+const MACROS = [
+  { key: "protein", label: "Protein", color: "var(--nut-protein)", kcal: 4 },
+  { key: "carbs", label: "Carbs", color: "var(--nut-carb)", kcal: 4 },
+  { key: "fat", label: "Fat", color: "var(--nut-fat)", kcal: 9 },
+];
+const sgn = x => (x >= 0 ? "+" : "−") + Math.abs(x).toFixed(2);
+
 function NutritionTrends({ data, goals, addEntry, range, setRange, calPts, proteinPts, waterPts, series }) {
-  const calVals = calPts.map(p => p.value).filter(v => v != null);
-  const avgCal = calVals.length ? Math.round(calVals.reduce((a, b) => a + b, 0) / calVals.length) : null;
-  const proteinHits = proteinPts.filter(p => p.value != null && p.value >= goals.protein).length;
-  const proteinLogged = proteinPts.filter(p => p.value != null).length;
+  const en = useMemo(() => computeEnergyBalance(data, goals), [data, goals]);
+  const fmtN = n => Math.round(n).toLocaleString("en-US");
+
+  // per-day arrays over the selected range
+  const intake = calPts.map(p => (p.value != null ? p.value : 0));
+  const proteinArr = proteinPts.map(p => (p.value != null ? p.value : 0));
+  const today = getTodayStr();
+
+  // weight aligned to the range dates (carry-forward last known)
+  const wByDate = useMemo(() => {
+    const m = {}; (data.weight || []).forEach(w => { const v = w.kg ?? w.weight ?? w.weightKg; if (w.date && v != null) m[w.date] = +v; });
+    return m;
+  }, [data.weight]);
+  const weightRaw = useMemo(() => {
+    let last = null; const out = [];
+    for (const d of series) { if (wByDate[d] != null) last = wByDate[d]; out.push(last); }
+    // back-fill leading nulls with the first known value
+    const first = out.find(v => v != null);
+    return out.map(v => (v != null ? v : first));
+  }, [series, wByDate]);
+  const hasWeight = weightRaw.some(v => v != null);
+
+  // today's macros
+  const todayMac = useMemo(() => {
+    const t = { protein: 0, carbs: 0, fat: 0, calories: 0 };
+    (data.diet || []).filter(e => e.date === today && !e.cheat).forEach(e => {
+      t.protein += e.protein || 0; t.carbs += e.carbs || 0; t.fat += e.fat || 0; t.calories += e.calories || 0;
+    });
+    return t;
+  }, [data.diet, today]);
+  const eaten = Math.round(todayMac.calories || (todayMac.protein * 4 + todayMac.carbs * 4 + todayMac.fat * 9));
+  const calLeft = goals.calories - eaten;
+
+  // logging consistency (2 full / 1 partial / 0 missed)
+  const logging = calPts.map(p => (p.value == null ? 0 : p.value >= goals.calories * 0.6 ? 2 : 1));
+  const partialN = logging.filter(x => x === 1).length;
+
+  // supplements → per-name presence over the last 21 days
+  const supps = useMemo(() => {
+    const days = Array.from({ length: 21 }, (_, i) => daysAgo(20 - i));
+    const byName = {};
+    (data.supplements || []).forEach(s => { if (!s.name) return; (byName[s.name] ||= { name: s.name, dose: s.dose || "", set: new Set() }).set.add(s.date); });
+    return Object.values(byName).map(s => ({ name: s.name, dose: s.dose, log: days.map(d => (s.set.has(d) ? 1 : 0)) }));
+  }, [data.supplements]);
+
+  if (!en.ready) {
+    return (
+      <div className="nutx">
+        <div className="connect show">
+          <div className="card" style={{ padding: "34px 20px" }}>
+            <div className="ic"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="var(--nut-accent)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4" /></svg></div>
+            <h2>Log a few days to measure maintenance</h2>
+            <p>{en.reason}</p>
+            <div className="fine">{en.loggedDays || 0} of ~14 days logged · estimate unlocks soon</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const realDelta = en.realDelta;                       // meanIntake − tdee
+  const predictedRate = (realDelta * 7) / KCAL_PER_KG;  // kg/wk from logged deficit
+  const actualRate = en.weightRateKgWk;                 // kg/wk from the scale
+  const impliedIntake = en.tdee + (actualRate * KCAL_PER_KG) / 7;
+  const underLogGap = Math.max(0, Math.round(impliedIntake - en.meanIntake));
+  const predArr = weightRaw.length ? weightRaw.map((_, i) => (nutSmooth(weightRaw)[0] + (predictedRate / 7) * i)) : [];
+
+  const RangeSegHead = (
+    <div className="seg">
+      {[7, 14, 30].map(r => <button key={r} className={range === r ? "on" : ""} onClick={() => setRange(r)}>{r}d</button>)}
+    </div>
+  );
 
   return (
-    <>
-      <EnergyBalanceCard data={data} goals={goals} />
-
-      <RangeSeg range={range} setRange={setRange} />
-
-      <Card title="🍎 Calories">
-        <div className="trend-stats">
-          <div className="ts"><span className="ts-l">Average</span><span className="ts-v">{avgCal ?? "—"}</span></div>
-          <div className="ts"><span className="ts-l">Target</span><span className="ts-v muted">{goals.calories}</span></div>
+    <div className="nutx">
+      {/* HERO — ENERGY BALANCE */}
+      <section className="card energy">
+        <div className="card-head"><p className="eyebrow">Energy balance · measured</p>{RangeSegHead}</div>
+        <div className="maintrow">
+          <div>
+            <div className="maintlbl">Real maintenance</div>
+            <div className="big num">{fmtN(en.tdee)}<u> kcal</u></div>
+          </div>
+          <div className="intent">
+            <div className="b" style={{ textTransform: "capitalize" }}>{en.intent === "cut" ? "Cutting" : en.intent === "bulk" ? "Bulking" : "Maintaining"}</div>
+            <div className="s">target {fmtN(en.recommendedIntake)} kcal</div>
+          </div>
         </div>
-        <div style={{ position: "relative" }}><MiniChart points={calPts} showGoal={goals.calories} rollingAvg /><ExperimentBands dates={series} source="nutrition" experiments={data.experiments} /></div>
-      </Card>
-
-      <Card title="🥩 Protein">
-        <div className="trend-stats">
-          <div className="ts"><span className="ts-l">Target hit</span><span className={`ts-v ${proteinLogged && proteinHits >= proteinLogged * 0.7 ? "good" : "neutral"}`}>{proteinLogged ? `${proteinHits}/${proteinLogged} days` : "—"}</span></div>
+        <div className="subrow">
+          <span>logged intake <b>{fmtN(en.meanIntake)}</b></span>
+          <span>real {realDelta < 0 ? "deficit" : "surplus"} <b style={{ color: realDelta < 0 ? "var(--nut-good)" : "var(--nut-amber)" }}>{realDelta < 0 ? "−" : "+"}{fmtN(Math.abs(realDelta))}</b>/day</span>
+          <span><span className={`pill ${en.confidence === "High" ? "good" : "amber"}`} style={{ padding: "2px 7px" }}>{en.confidence} confidence</span></span>
         </div>
-        <div style={{ position: "relative" }}><MiniChart points={proteinPts} showGoal={goals.protein} unit="g" /><ExperimentBands dates={series} source="nutrition" experiments={data.experiments} /></div>
-      </Card>
-
-      <Card title="💧 Water">
-        <div className="trend-stats">
-          <div className="ts"><span className="ts-l">Daily target</span><span className="ts-v">{goals.waterGoalMl}ml</span></div>
+        <NutSvg html={ledgerSVG(intake, nutSmooth(hasWeight ? weightRaw : intake.map(() => en.tdee)), en.tdee)} />
+        <div className="ledger-legend">
+          <span className="li"><i style={{ background: "rgba(79,179,189,.5)" }} />intake</span>
+          <span className="li"><i style={{ background: "var(--nut-amber)" }} />over maintenance</span>
+          <span className="li"><span className="ln" style={{ borderColor: "var(--nut-teal)" }} />maintenance</span>
+          {hasWeight && <span className="li"><span className="ln" style={{ borderColor: "var(--nut-text)" }} />weight trend</span>}
         </div>
-        <div style={{ position: "relative" }}><MiniChart points={waterPts} showGoal={goals.waterGoalMl} unit="ml" /><ExperimentBands dates={series} source="water" experiments={data.experiments} /></div>
-      </Card>
+        <div className="reconcile">
+          Plan vs reality — logged deficit predicts <b>{sgn(predictedRate)} kg/wk</b>{hasWeight && <>, scale shows <b className="warn">{sgn(actualRate)}</b></>}.{" "}
+          {en.underLogging ? <span className="warn">Likely under-logging ~{underLogGap} kcal/day.</span> : en.plateau ? <span className="warn">Fat loss has stalled — adaptation or unlogged food.</span> : <span className="ok">On track.</span>}
+        </div>
+      </section>
+
+      {/* FLAG */}
+      {(en.underLogging || en.plateau) && (
+        <section className="card flag">
+          <div className="ic"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--nut-amber)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" /></svg></div>
+          <div className="body">
+            <div className="k">{en.underLogging ? "Under-logging likely" : "Plateau"}</div>
+            {en.underLogging
+              ? <><p className="t">The scale is dropping <b>slower than your logged deficit predicts</b> — you're likely eating ~<b>{underLogGap}</b> kcal/day more than recorded.</p><div className="why">Weigh oils, dressings and snacks, or trust measured maintenance over the log. Real intake ≈ {fmtN(impliedIntake)} kcal.</div></>
+              : <p className="t">Fat loss has stalled despite an apparent deficit — adaptation or unlogged food. A diet break or a small further cut restarts it.</p>}
+          </div>
+        </section>
+      )}
+
+      <div className="section-tag">Today</div>
+
+      {/* TODAY macro ring */}
+      <section className="card today">
+        <div className="toprow">
+          <div className="ring-wrap">
+            <NutSvg html={nutRingSVG(MACROS.map(m => ({ kcal: todayMac[m.key] * m.kcal, color: m.color })), goals.calories)} />
+            <div className="mid"><b className="num">{fmtN(Math.max(0, calLeft))}</b><small>kcal left</small><span className="eat">{fmtN(eaten)} / {fmtN(goals.calories)}</span></div>
+          </div>
+          <div className="macros">
+            {MACROS.map(m => {
+              const g = Math.round(todayMac[m.key]), goal = goals[m.key] || 1;
+              return (
+                <div className="macro" key={m.key}>
+                  <div className="l"><span className="nm"><i style={{ background: m.color }} />{m.label}</span><span className="g">{g}<u>/{goal}g</u></span></div>
+                  <div className="track"><span style={{ background: m.color, transform: `scaleX(${Math.min(g / goal, 1)})` }} /></div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+
+      <div className="section-tag">Patterns</div>
+
+      {/* WEIGHT TREND */}
+      {hasWeight && (
+        <section className="card">
+          <div className="wt-head">
+            <div>
+              <p className="eyebrow" style={{ marginBottom: 7 }}>Weight trend · {range} days</p>
+              <div className="big num">{weightRaw[weightRaw.length - 1]?.toFixed(1)}<u> kg</u></div>
+            </div>
+            <div className="rate">actual rate<b style={{ color: actualRate <= 0 ? "var(--nut-good)" : "var(--nut-amber)" }}>{sgn(actualRate)} kg/wk</b>predicted {sgn(predictedRate)}</div>
+          </div>
+          <NutSvg html={weightSVG(weightRaw, predArr)} />
+          <div className="wt-legend">
+            <span className="li"><span className="ln" style={{ borderTop: "2px solid var(--nut-text)", width: 15 }} />actual trend</span>
+            <span className="li"><span className="ln" style={{ borderTop: "2px dashed var(--nut-muted)", width: 15 }} />predicted</span>
+          </div>
+        </section>
+      )}
+
+      {/* PROTEIN ADHERENCE */}
+      <section className="card">
+        <div className="pa-head">
+          <p className="eyebrow">Protein adherence · {range} days</p>
+          <span className="pill" style={{ color: "var(--nut-protein)", borderColor: "rgba(249,201,126,.28)" }}>goal {goals.protein}g</span>
+        </div>
+        <NutSvg html={proteinSVG(proteinArr, goals.protein)} />
+        <div className="pa-foot">avg <b>{Math.round(nutSmooth(proteinArr, 30).length ? proteinArr.reduce((a, b) => a + b, 0) / (proteinArr.length || 1) : 0)}g</b> · <b>{Math.round(proteinArr.filter(g => g >= goals.protein).length / (proteinArr.length || 1) * 100)}%</b> of days hit goal · protein protects muscle while cutting</div>
+      </section>
+
+      {/* LOGGING CONSISTENCY */}
+      <section className="card">
+        <div className="pa-head"><p className="eyebrow">Logging consistency · {range} days</p><span className="pill amber">{partialN} partial days</span></div>
+        <div className="heat">
+          {logging.map((s, i) => <div key={i} className="cell" title={["missed", "partial", "full"][s]} style={{ background: s === 2 ? "var(--nut-good)" : s === 1 ? "rgba(249,201,126,.55)" : "var(--nut-hair)" }} />)}
+        </div>
+        <div className="heat-legend">
+          <span><span className="sw" style={{ background: "var(--nut-good)" }} />full</span>
+          <span><span className="sw" style={{ background: "rgba(249,201,126,.55)" }} />partial</span>
+          <span><span className="sw" style={{ background: "var(--nut-hair)" }} />missed</span>
+        </div>
+      </section>
+
+      <div className="section-tag">Habits</div>
+
+      <div className="habits">
+        <section className="card water">
+          <p className="eyebrow" style={{ marginBottom: 12 }}>Water</p>
+          <div className="wtop">
+            <NutSvg html={waterColSVG(waterPts[waterPts.length - 1]?.value || 0, goals.waterGoalMl)} />
+            <div className="info">
+              <div className="big num">{((waterPts[waterPts.length - 1]?.value || 0) / 1000).toFixed(1)}<u> L</u></div>
+              <div className="s">of <b>{(goals.waterGoalMl / 1000).toFixed(1)} L</b> goal</div>
+            </div>
+          </div>
+        </section>
+        <section className="card" style={{ display: "flex", flexDirection: "column", justifyContent: "center" }}>
+          <p className="eyebrow" style={{ marginBottom: 10 }}>This range</p>
+          <div className="num" style={{ fontSize: 26, fontWeight: 640, letterSpacing: "-.02em" }}>{logging.filter(x => x > 0).length}<span style={{ fontSize: 13, color: "var(--nut-muted)" }}>/{range}</span></div>
+          <div className="mono" style={{ fontSize: 10.5, color: "var(--nut-muted)", marginTop: 4 }}>days logged</div>
+          <div className="mono" style={{ fontSize: 10.5, color: "var(--nut-muted)", marginTop: 10 }}>avg <b style={{ color: "var(--nut-text)" }}>{fmtN(en.meanIntake)}</b> kcal</div>
+        </section>
+      </div>
+
+      {/* SUPPLEMENTS */}
+      {supps.length > 0 && (
+        <section className="card" style={{ marginTop: 14 }}>
+          <div className="pa-head" style={{ marginBottom: 6 }}><p className="eyebrow">Supplements</p></div>
+          <div className="supp-note">Every supplement you track gets its own streak.</div>
+          {supps.map(s => {
+            let streak = 0; for (let i = s.log.length - 1; i >= 0; i--) { if (s.log[i]) streak++; else break; }
+            const adher = Math.round(s.log.filter(x => x).length / s.log.length * 100);
+            return (
+              <div className="supp" key={s.name}>
+                <div className="top"><div className="nm">{s.name}{s.dose && <u> {s.dose}</u>}</div><div className="streak"><b>🔥 {streak}</b> day streak · {adher}%</div></div>
+                <div className="dots">{s.log.map((v, i) => <i key={i} className={`${v ? "on" : ""} ${i === s.log.length - 1 ? "today" : ""}`} />)}</div>
+              </div>
+            );
+          })}
+        </section>
+      )}
 
       <CreatineSaturationCard data={data} addEntry={addEntry} />
-    </>
+    </div>
   );
 }
 
