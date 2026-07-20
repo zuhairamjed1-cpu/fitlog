@@ -175,12 +175,12 @@ function SleepTrends({ data, goals, range, setRange, sleepPts, series }) {
 }
 
 const TREND_CATS = [
-  { key: "nutrition", label: "🍎 Nutrition" },
-  { key: "training", label: "💪 Training" },
-  { key: "sleep", label: "😴 Sleep" },
-  { key: "ejac", label: "🌊 Urges" },
-  { key: "nicotine", label: "🚬 Nicotine" },
-  { key: "skin", label: "✦ Skin" },
+  { key: "nutrition", icon: "🍎", label: "Nutrition" },
+  { key: "training", icon: "💪", label: "Training" },
+  { key: "sleep", icon: "😴", label: "Sleep" },
+  { key: "ejac", icon: "🌊", label: "Urges" },
+  { key: "nicotine", icon: "🚬", label: "Nicotine" },
+  { key: "skin", icon: "✦", label: "Skin" },
 ];
 
 function TrendsView({ data, goals, addEntry, deleteEntry, onSaveGoals, initialCat }) {
@@ -191,9 +191,11 @@ function TrendsView({ data, goals, addEntry, deleteEntry, onSaveGoals, initialCa
 
   return (
     <>
-      <div className="subtabs subtabs-nested">
+      <div className="subtabs subtabs-nested subtabs-emoji">
         {TREND_CATS.map(c => (
-          <button key={c.key} className={`subtab ${cat === c.key ? "active" : ""}`} onClick={() => setCat(c.key)}>{c.label}</button>
+          <button key={c.key} className={`subtab ${cat === c.key ? "active" : ""}`} onClick={() => setCat(c.key)} title={c.label} aria-label={c.label}>
+            <span className="subtab-emoji">{c.icon}</span><span className="subtab-name">{c.label}</span>
+          </button>
         ))}
       </div>
 

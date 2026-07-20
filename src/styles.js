@@ -1695,6 +1695,15 @@ input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
 .gp-risk-level { font-size: .74rem; text-transform: uppercase; letter-spacing: .03em; font-weight: 700; }
 .gp-report-body { white-space: pre-wrap; line-height: 1.6; font-size: .92rem; color: var(--text); }
 
+/* Goals sub-tabs: emoji-first, decongested on mobile */
+.subtabs-emoji .subtab { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.subtabs-emoji .subtab-emoji { font-size: 1.15rem; line-height: 1; }
+.subtabs-emoji .subtab-name { display: none; }
+@media (min-width: 560px) {
+  .subtabs-emoji .subtab-name { display: inline; }
+  .subtabs-emoji .subtab-emoji { font-size: 1rem; }
+}
+
 /* ═══════════ SLEEP DASHBOARD (Goals › Sleep) — scoped under .sleepx ═══════════ */
 .sleepx{
   --gh-text:#eef2f6; --gh-muted:#6b7480; --gh-hair:#232c38;
