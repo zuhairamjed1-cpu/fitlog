@@ -18,7 +18,6 @@ import { DietForm } from "./views/DietForm";
 import { STORAGE_KEY } from "./lib/keys";
 import { TABS, defaultData, defaultProfile, defaultStrategy, defaultGoals, fitnessGoals, mealTypes, sportsOptions, sleepQuality, intensityLevels, NIC_TYPES, NIC_CONTEXTS, NIC_QUICK, SPLIT_TYPES, defaultPlan, TYPE_DOT, TYPE_ICON, MODELS, loadModelPref, saveModelPref, currentModelId } from "./config";
 import { loadData, loadGoals, saveData, saveGoals, setCurrentUser, cloudSync, cloudPull, cloudPushNow, flushSync } from "./state/store";
-import { readGoogleHealthCallback, clearGoogleHealthCallback, exchangeGoogleHealthCode, fetchGoogleHealthSleep } from "./lib/googleHealth";
 import { haptic, SFX, soundEnabled, setSoundPref } from "./lib/fx";
 import { Ring, MacroDonut, MiniChart, Card, Empty, toast, ToastHost, ConfirmModal, useConfirm } from "./components/primitives";
 import { styles } from "./styles";
@@ -195,24 +194,16 @@ function AppShell({ session, syncing }) {
     cloudSync();
   }, [goals]);
 
-  // Google Health OAuth callback: exchange the code, store tokens, import sleep.
+  // Google Health OAuth is brokered server-side (api/google-health). The callback
+  // redirects back with ?gh=connected; the Sleep card's useGoogleHealth hook picks
+  // up connection status and the sleep import from there. Clean the marker param.
   useEffect(() => {
-    const cb = readGoogleHealthCallback();
-    if (!cb || cb.error) { if (cb?.error) clearGoogleHealthCallback(); return; }
-    (async () => {
-      try {
-        const tok = await exchangeGoogleHealthCode(cb.code);
-        setGoals(g => ({ ...g, googleHealth: { ...g.googleHealth, ...tok } }));
-        const entries = await fetchGoogleHealthSleep(tok, t => setGoals(g => ({ ...g, googleHealth: { ...g.googleHealth, ...t } })), 30);
-        setData(d => {
-          const have = new Set((d.sleep || []).map(s => s.ghId).filter(Boolean));
-          const add = entries.filter(e => !have.has(e.ghId));
-          return { ...d, sleep: [...(d.sleep || []), ...add] };
-        });
-      } catch (e) { /* surfaced in the Sleep card on next visit */ }
-      clearGoogleHealthCallback();
-    })();
-    // eslint-disable-next-line
+    const u = new URLSearchParams(window.location.search);
+    if (u.get("gh") || u.get("gh_error")) {
+      const url = new URL(window.location.href);
+      ["gh", "gh_error"].forEach(k => url.searchParams.delete(k));
+      window.history.replaceState({}, "", url.pathname + (url.search || "") + url.hash);
+    }
   }, []);
 
   // Goal Plan → Meal Log: the active phase is the single source of truth for

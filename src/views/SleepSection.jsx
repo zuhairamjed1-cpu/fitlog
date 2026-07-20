@@ -8,7 +8,8 @@ import { computeWeightTrend } from "../engines/weight";
 import { parseWorkout } from "../engines/workout";
 import { getTodayStr, formatShortDate, daysAgo } from "../lib/dates";
 import { haptic } from "../lib/fx";
-import { beginGoogleHealthAuth, fetchGoogleHealthSleep, googleClientId } from "../lib/googleHealth";
+import { useGoogleHealth } from "../useGoogleHealth";
+import { normalizeSleep } from "../lib/googleHealthSleep";
 
 // ─── Fitbit Air → Google Health connect + sleep import ──────────────────────
 const STAGE_COLORS = { Deep: "#4f6bff", REM: "#8b6cff", Light: "#4fb3bd", Awake: "#f9c97e", "Out of bed": "#6b7480" };
@@ -37,37 +38,38 @@ function StageBar({ totals }) {
   );
 }
 
-function GoogleHealthCard({ data, goals, addEntry, onSaveGoals }) {
-  const tok = goals.googleHealth?.accessToken ? goals.googleHealth : null;
-  const envClient = googleClientId(goals);
-  const [clientId, setClientId] = useState(goals.googleHealth?.clientId || "");
+function GoogleHealthCard({ data, addEntry }) {
+  const { connected, needsReconnect, loading, connect, disconnect, fetchMetric } = useGoogleHealth();
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
 
-  const connect = async () => {
-    const id = (envClient || clientId).trim();
-    if (!id) return;
-    // Stash the pasted client id so it survives the redirect round-trip.
-    if (!envClient) onSaveGoals({ ...goals, googleHealth: { ...goals.googleHealth, clientId: id } });
-    try { setBusy(true); await beginGoogleHealthAuth(id); }
-    catch { setStatus("Couldn't start Google sign-in."); setBusy(false); }
-  };
-
-  const sync = async () => {
-    if (!tok) return;
+  // Import last `days` nights of sleep, normalize, dedupe by ghId into data.sleep.
+  const importSleep = async (days = 30) => {
     setBusy(true); setStatus("");
     try {
-      const entries = await fetchGoogleHealthSleep(tok, t => onSaveGoals({ ...goals, googleHealth: { ...goals.googleHealth, ...t } }), 30);
+      const since = new Date(Date.now() - (days - 1) * 86400000).toISOString().slice(0, 10);
+      const { dataPoints = [] } = await fetchMetric("sleep", since);
+      const entries = dataPoints.map(normalizeSleep).filter(Boolean);
       const have = new Set((data.sleep || []).map(s => s.ghId).filter(Boolean));
       const add = entries.filter(e => !have.has(e.ghId));
       add.forEach(e => addEntry("sleep")(e));
-      setStatus(add.length ? `✓ Imported ${add.length} night${add.length === 1 ? "" : "s"}` : "Already up to date — device may need a sync (open the Google Health app).");
+      setStatus(add.length
+        ? `✓ Imported ${add.length} night${add.length === 1 ? "" : "s"}`
+        : "Already up to date — device may need a sync (open the Google Health app).");
       haptic(10);
-    } catch (e) { setStatus(`Sync failed: ${e.message || "try reconnecting"}`); }
+    } catch (e) {
+      setStatus(e.message === "token_expired" || needsReconnect
+        ? "Session expired (weekly Testing-mode limit) — reconnect."
+        : `Sync failed: ${e.message || "try again"}`);
+    }
     setBusy(false);
   };
 
-  const disconnect = () => { onSaveGoals({ ...goals, googleHealth: null }); setStatus(""); };
+  // Auto-import once when we land back connected (?gh=connected round-trip).
+  useEffect(() => {
+    if (connected && (data.sleep || []).every(s => s.source !== "googlehealth")) importSleep(30);
+    // eslint-disable-next-line
+  }, [connected]);
 
   // Most recent Google-Health night with stage data, for the mini breakdown.
   const lastNight = useMemo(
@@ -75,28 +77,25 @@ function GoogleHealthCard({ data, goals, addEntry, onSaveGoals }) {
     [data.sleep]
   );
 
-  if (!tok) {
+  if (loading) {
+    return <Card title="⌚ Fitbit Air" sub="Google Health"><p className="muted small"><span className="spinner" /> Checking connection…</p></Card>;
+  }
+
+  if (!connected) {
     return (
       <Card title="⌚ Fitbit Air" sub="Auto-import sleep stages via Google Health">
-        <ol className="muted small" style={{ margin: "0 0 12px", paddingLeft: 18, lineHeight: 1.6 }}>
-          <li>Google Cloud Console → OAuth <b>Web application</b> client (already set up).</li>
-          <li>Add this exact <b>Authorized redirect URI</b>: <code style={{ wordBreak: "break-all" }}>{window.location.origin + window.location.pathname}</code></li>
-          <li>Set <code>GOOGLE_CLIENT_ID</code> / <code>GOOGLE_CLIENT_SECRET</code> in Vercel env.{envClient ? "" : " Then paste the Client ID below."}</li>
-        </ol>
-        {!envClient && (
-          <input placeholder="Google OAuth Client ID (…apps.googleusercontent.com)" value={clientId} onChange={e => setClientId(e.target.value)} />
-        )}
-        <button className="btn full" style={{ marginTop: 10 }} onClick={connect} disabled={busy || (!envClient && !clientId.trim())}>
-          {busy ? <span className="spinner" /> : "Connect Google Health"}
-        </button>
-        {status && <div className="err">{status}</div>}
+        {needsReconnect && <div className="err" style={{ marginBottom: 10 }}>Session expired (weekly Testing-mode limit). Reconnect to keep syncing.</div>}
+        <p className="muted small" style={{ margin: "0 0 12px", lineHeight: 1.5 }}>
+          Sign in with the Google account your Fitbit Air syncs to. Tokens stay server-side — the app never sees them.
+        </p>
+        <button className="btn full" onClick={connect}>Connect Google Health</button>
       </Card>
     );
   }
 
   return (
     <Card title="⌚ Fitbit Air" sub="Connected via Google Health" action={<button className="link-btn" onClick={disconnect}>Disconnect</button>}>
-      <button className="btn full" onClick={sync} disabled={busy}>{busy ? <><span className="spinner" />Syncing…</> : "↻ Sync sleep now"}</button>
+      <button className="btn full" onClick={() => importSleep(30)} disabled={busy}>{busy ? <><span className="spinner" />Syncing…</> : "↻ Sync sleep now"}</button>
       {status && <p className="muted small" style={{ marginTop: 8 }}>{status}</p>}
       {lastNight && (
         <div style={{ marginTop: 12 }}>
@@ -387,7 +386,7 @@ export function SleepSection({ data, goals, addEntry, onSaveGoals }) {
   }
 
   const log = <SleepForm onAdd={addEntry("sleep")} recent={data.sleep} />;
-  const fitbit = <GoogleHealthCard data={data} goals={goals} addEntry={addEntry} onSaveGoals={onSaveGoals} />;
+  const fitbit = <GoogleHealthCard data={data} addEntry={addEntry} />;
 
   if (!sleep) {
     return (
