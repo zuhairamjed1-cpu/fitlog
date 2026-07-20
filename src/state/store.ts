@@ -6,8 +6,26 @@ import { supabase, hasSupabase } from "../supabase";
 import { defaultData, defaultGoals, defaultProfile, defaultStrategy } from "../config";
 import type { AppData, Goals } from "../types/models";
 
+// One-time, non-destructive: sleep is now sourced from Google Health. Move any
+// legacy (manually-logged) sleep entries out of the live `sleep` array into
+// `sleepArchive` so every engine + chart derives from Google data only. Old data
+// is preserved verbatim in the archive — nothing is deleted. Idempotent &
+// self-healing: re-runs safely on every load, deduping by id.
+export function migrateSleep(d: any): any {
+  if (!d || !Array.isArray(d.sleep)) return d;
+  const legacy = d.sleep.filter((s: any) => s && s.source !== "googlehealth");
+  if (legacy.length === 0 && Array.isArray(d.sleepArchive)) return d; // already clean
+  const google = d.sleep.filter((s: any) => s && s.source === "googlehealth");
+  const prev = Array.isArray(d.sleepArchive) ? d.sleepArchive : [];
+  const key = (s: any) => s.id ?? `${s.date}|${s.bedtime}`;
+  const seen = new Set(prev.map(key));
+  const archive = [...prev];
+  for (const s of legacy) if (!seen.has(key(s))) { seen.add(key(s)); archive.push(s); }
+  return { ...d, sleep: google, sleepArchive: archive };
+}
+
 export function loadData(): AppData {
-  try { const r = localStorage.getItem(STORAGE_KEY); const p = r ? JSON.parse(r) : defaultData; return { ...defaultData, ...p } as AppData; }
+  try { const r = localStorage.getItem(STORAGE_KEY); const p = r ? JSON.parse(r) : defaultData; return migrateSleep({ ...defaultData, ...p }) as AppData; }
   catch { return defaultData as AppData; }
 }
 export function loadGoals(): Goals {
@@ -71,7 +89,7 @@ export async function cloudPull(userId: string): Promise<boolean> {
     const c = merged[k], l = localData[k];
     if (Array.isArray(c) && c.length === 0 && Array.isArray(l) && l.length > 0) merged[k] = l;
   }
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(migrateSleep(merged)));
   localStorage.setItem(STORAGE_KEY + "_goals", JSON.stringify({ ...defaultGoals, ...(row.goals || {}) }));
   if (row.chat) localStorage.setItem(STORAGE_KEY + "_chat", JSON.stringify(row.chat));
   return true;

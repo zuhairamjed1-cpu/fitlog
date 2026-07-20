@@ -38,6 +38,26 @@ function StageBar({ totals }) {
   );
 }
 
+// Per-stage + efficiency trends over recent Google-Health nights.
+function StageTrendCard({ nights }) {
+  const withStages = (nights || []).filter(s => s.stageTotals).sort((a, b) => a.date.localeCompare(b.date)).slice(-14);
+  if (withStages.length < 3) return null;
+  const deep = withStages.map(s => +(s.stageTotals.DEEP / 60).toFixed(2));
+  const rem = withStages.map(s => +(s.stageTotals.REM / 60).toFixed(2));
+  const eff = withStages.map(s => s.efficiency ?? 0);
+  const avg = a => +(a.reduce((x, y) => x + y, 0) / a.length).toFixed(1);
+  return (
+    <Card title="Stage trends" sub={`last ${withStages.length} nights · from Google Health`}>
+      <div className="ss-shaped-h">DEEP · avg {avg(deep)}h</div>
+      <MiniChart points={deep} height={54} unit="h" />
+      <div className="ss-shaped-h" style={{ marginTop: 14 }}>REM · avg {avg(rem)}h</div>
+      <MiniChart points={rem} height={54} unit="h" />
+      <div className="ss-shaped-h" style={{ marginTop: 14 }}>EFFICIENCY · avg {Math.round(avg(eff))}%</div>
+      <MiniChart points={eff} height={54} unit="%" />
+    </Card>
+  );
+}
+
 function GoogleHealthCard({ data, addEntry }) {
   const { connected, needsReconnect, loading, connect, disconnect, fetchMetric } = useGoogleHealth();
   const [busy, setBusy] = useState(false);
@@ -385,18 +405,22 @@ export function SleepSection({ data, goals, addEntry, onSaveGoals }) {
     toast(v > 0 ? `Sleep need set to ${v}h` : "Back to auto-learned need");
   }
 
-  const log = <SleepForm onAdd={addEntry("sleep")} recent={data.sleep} />;
   const fitbit = <GoogleHealthCard data={data} addEntry={addEntry} />;
+  const archivedN = (data.sleepArchive || []).length;
+  const archiveNote = archivedN > 0 && (
+    <p className="muted small" style={{ textAlign: "center", opacity: .7 }}>
+      {archivedN} manually-logged night{archivedN === 1 ? "" : "s"} archived — kept, no longer counted.
+    </p>
+  );
 
   if (!sleep) {
     return (
       <div className="stack">
-        {log}
         {fitbit}
         <Card title="Sleep intelligence">
-          <Empty icon="◐" title="Log a few nights to wake this up" hint="Once you've logged sleep for several nights, this section learns your personal sleep need and starts reading how sleep is shaping your training, weight, and mood." />
+          <Empty icon="◐" title="Connect Google Health to wake this up" hint="Sleep is now sourced from your Fitbit Air via Google Health. Connect above and sync a few nights — this section then learns your personal sleep need and reads how sleep shapes training, weight, and mood." />
         </Card>
-        <SleepDebtCalculator />
+        {archiveNote}
       </div>
     );
   }
@@ -410,7 +434,6 @@ export function SleepSection({ data, goals, addEntry, onSaveGoals }) {
 
   return (
     <div className="stack">
-      {log}
       {fitbit}
 
       <SleepScoreCard data={data} need={sleep.need.hours} />
@@ -469,8 +492,12 @@ export function SleepSection({ data, goals, addEntry, onSaveGoals }) {
         <MiniChart points={sleep.series.tst} showGoal={q.need} rollingAvg unit="h" />
       </Card>
 
+      {/* STAGE TRENDS — Google Health */}
+      <StageTrendCard nights={data.sleep} />
+
       {/* RECENT — collapsed at the very bottom */}
       <RecentSleepDropdown sleep={data.sleep} />
+      {archiveNote}
     </div>
   );
 }

@@ -138,6 +138,15 @@ export interface SleepEntry extends BaseEntry {
   wakeMin?: number;             // mins awake in the night (optional detail)
   notes?: string;
   alarmUsed?: boolean;          // true/false only if the user tapped; omitted when untouched
+  // Google Health (Fitbit Air) fields — present when source === "googlehealth"
+  source?: string;
+  ghId?: string;
+  stages?: Array<{ type: string; label: string; start?: string; end?: string; min: number }>;
+  stageTotals?: { DEEP: number; REM: number; LIGHT: number; AWAKE: number; OUT_OF_BED: number };
+  efficiency?: number | null;
+  sleepType?: string;
+  derivedScore?: number | null;
+  inBedHours?: number;
 }
 
 export type NicotineType = "cigarette" | "vape" | "pouch";
@@ -267,6 +276,7 @@ export interface Experiment {
 /** Everything under the `fitlog_v5` localStorage key (see config.defaultData). */
 export interface AppData {
   sleep: SleepEntry[];
+  sleepArchive?: SleepEntry[];   // legacy manually-logged nights, archived (read-only)
   diet: DietEntry[];
   exercise: ExerciseEntry[];
   sports: SportsEntry[];
