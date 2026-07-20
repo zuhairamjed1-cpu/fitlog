@@ -551,9 +551,11 @@ export function SleepSection({ data, goals, addEntry, onSaveGoals }) {
               <div className="breakdown">
                 {parts.map(p => (
                   <div className="bd" key={p.key}>
-                    <span className="swatch" style={{ background: p.color }} />
-                    <span className="lbl">{p.key}</span>
-                    <span className="val num">{Math.round(p.pts)} <i>/ {p.max}</i></span>
+                    <div className="bd-top">
+                      <span className="lbl"><span className="swatch" style={{ background: p.color }} />{p.key}</span>
+                      <span className="val num">{Math.round(p.pts)}<i>/{p.max}</i></span>
+                    </div>
+                    <span className="bd-bar"><i style={{ width: Math.min(100, (p.pts / p.max) * 100) + "%", background: p.color }} /></span>
                   </div>
                 ))}
               </div>

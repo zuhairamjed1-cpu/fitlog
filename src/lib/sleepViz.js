@@ -16,45 +16,72 @@ const polar = (cx, cy, r, deg) => { const a = (deg - 90) * Math.PI / 180; return
 const arcPath = (cx, cy, r, s, e) => { const [x1, y1] = polar(cx, cy, r, s), [x2, y2] = polar(cx, cy, r, e); const large = (e - s) % 360 > 180 ? 1 : 0; return `M ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2}`; };
 const FF = 'font-family="var(--gh-font)"';
 
-// Segmented score donut. parts = [{pts,max,color}], total out of 100.
+// Segmented score donut with per-segment gradients, soft glow, rounded caps.
 export function ringSVG(parts) {
-  const cx = 86, cy = 86, r = 62, sw = 13, Circ = 2 * Math.PI * r, ppt = Circ / 100, gap = 1.5;
-  let out = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="rgba(255,255,255,.05)" stroke-width="${sw}"/>`;
+  const cx = 86, cy = 86, r = 62, sw = 12, Circ = 2 * Math.PI * r, ppt = Circ / 100, gapPt = 2.2;
+  const solid = { Efficiency: V.teal, Deep: V.deep, REM: V.rem, Calm: V.good };
+  let defs = `<filter id="ghGlow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="4.5"/></filter>`;
+  let glow = "", ring = "";
   let cum = 0;
-  parts.forEach((seg, i) => {
-    if (i > 0) cum += gap;
-    const len = seg.pts * ppt;
-    out += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${seg.color}" stroke-width="${sw}" stroke-dasharray="${len} ${Circ - len}" stroke-dashoffset="${-cum * ppt}" stroke-linecap="butt"/>`;
+  parts.forEach((seg) => {
+    const c = seg.color || solid[seg.key] || V.teal;
+    const len = Math.max(0, seg.pts * ppt - gapPt);
+    const dash = `${len} ${Circ - len}`;
+    const off = -cum * ppt;
+    glow += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${c}" stroke-width="10" stroke-dasharray="${dash}" stroke-dashoffset="${off}" stroke-linecap="round" opacity=".35" filter="url(#ghGlow)"/>`;
+    ring += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${c}" stroke-width="${sw}" stroke-dasharray="${dash}" stroke-dashoffset="${off}" stroke-linecap="round"/>`;
     cum += seg.pts;
   });
-  return `<svg viewBox="0 0 172 172"><g transform="rotate(-90 86 86)">${out}</g></svg>`;
+  const track = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="rgba(255,255,255,.045)" stroke-width="${sw}"/>`;
+  return `<svg viewBox="0 0 172 172"><defs>${defs}</defs><g transform="rotate(-90 86 86)">${track}${glow}${ring}</g></svg>`;
 }
 
-// Hypnogram. h = { bedMin, total, segs:[{type,start,min}] }.
+// Hypnogram — connected ribbon with soft lane tracks + gradient bands.
+// h = { bedMin, total, segs:[{type,start,min}] }.
 export function hypnoSVG(h) {
-  const W = 680, H = 168, padL = 6, padR = 6, padT = 8, plotH = H - padT - 30, plotW = W - padL - padR;
+  const W = 700, H = 190, padL = 8, padR = 8, padT = 12, plotH = H - padT - 30, plotW = W - padL - padR;
+  const lanes = ["AWAKE", "REM", "LIGHT", "DEEP"];
   const order = { AWAKE: 0, REM: 1, LIGHT: 2, DEEP: 3 };
   const colorOf = { AWAKE: V.awake, REM: V.rem, LIGHT: V.light, DEEP: V.deep };
-  const laneH = plotH / 4, bandH = laneH * 0.5;
-  const laneCenter = i => padT + (i + 0.5) * laneH;
+  const laneH = plotH / 4, band = laneH * 0.46, radius = band / 2;
+  const laneY = i => padT + (i + 0.5) * laneH;
   const x = off => padL + (off / h.total) * plotW;
-  let svg = "";
+
+  let defs = "";
+  lanes.forEach(t => {
+    defs += `<linearGradient id="ghg-${t}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${colorOf[t]}" stop-opacity="1"/><stop offset="1" stop-color="${colorOf[t]}" stop-opacity=".72"/></linearGradient>`;
+  });
+
+  let tracks = "";
+  lanes.forEach((t, i) => {
+    tracks += `<rect x="${padL}" y="${laneY(i) - band / 2}" width="${plotW}" height="${band}" rx="${radius}" fill="${colorOf[t]}" opacity=".07"/>`;
+  });
+
+  // hour gridlines + labels
+  let grid = "";
   const firstHour = (60 - (h.bedMin % 60)) % 60;
   for (let off = firstHour; off <= h.total; off += 60) {
     const gx = x(off);
-    svg += `<line x1="${gx}" y1="${padT}" x2="${gx}" y2="${padT + plotH}" stroke="${V.hair}" stroke-width="1"/>`;
-    svg += `<text x="${gx}" y="${H - 10}" fill="${V.muted}" font-size="11" text-anchor="middle" ${FF}>${fmtClock(h.bedMin + off)}</text>`;
+    grid += `<line x1="${gx}" y1="${padT - 4}" x2="${gx}" y2="${padT + plotH + 2}" stroke="${V.hair}" stroke-width="1" opacity=".7"/>`;
+    grid += `<text x="${gx}" y="${H - 9}" fill="${V.muted}" font-size="11" text-anchor="middle" ${FF}>${fmtClock(h.bedMin + off)}</text>`;
   }
+
+  // connectors (risers) between consecutive stages — subtle, behind bands
+  let risers = "";
   for (let i = 0; i < h.segs.length - 1; i++) {
     const bx = x(h.segs[i + 1].start);
-    const y1 = laneCenter(order[h.segs[i].type] ?? 2), y2 = laneCenter(order[h.segs[i + 1].type] ?? 2);
-    svg += `<line x1="${bx}" y1="${y1}" x2="${bx}" y2="${y2}" stroke="rgba(255,255,255,.14)" stroke-width="1.4"/>`;
+    const y1 = laneY(order[h.segs[i].type] ?? 2), y2 = laneY(order[h.segs[i + 1].type] ?? 2);
+    risers += `<line x1="${bx}" y1="${y1}" x2="${bx}" y2="${y2}" stroke="rgba(255,255,255,.16)" stroke-width="2" stroke-linecap="round"/>`;
   }
+
+  // stage bands (gradient, rounded)
+  let bands = "";
   h.segs.forEach(s => {
-    const bx = x(s.start), bw = Math.max(2, x(s.start + s.min) - x(s.start)), cy = laneCenter(order[s.type] ?? 2);
-    svg += `<rect x="${bx}" y="${cy - bandH / 2}" width="${bw}" height="${bandH}" rx="4" fill="${colorOf[s.type] || V.light}"/>`;
+    const bx = x(s.start), bw = Math.max(band, x(s.start + s.min) - x(s.start)), cy = laneY(order[s.type] ?? 2);
+    bands += `<rect x="${bx}" y="${cy - band / 2}" width="${bw}" height="${band}" rx="${radius}" fill="url(#ghg-${s.type})"/>`;
   });
-  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">${svg}</svg>`;
+
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet"><defs>${defs}</defs>${tracks}${grid}${risers}${bands}</svg>`;
 }
 
 // TST bars vs need. series = [{value|null}], need = hours.

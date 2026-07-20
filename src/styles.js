@@ -1736,25 +1736,31 @@ input, select, textarea { font-size: 16px; } /* prevents iOS zoom-on-focus */
 .sleepx .ring{position:relative;width:172px;height:172px}
 .sleepx .ring svg{width:172px;height:172px;display:block}
 .sleepx .ring .center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
-.sleepx .ring .score{font-size:46px;font-weight:700;letter-spacing:-.03em;line-height:1}
-.sleepx .ring .cap{font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--gh-muted);margin-top:5px}
-.sleepx .ring .delta{font-size:12px;margin-top:4px}
-.sleepx .breakdown{display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;margin-top:12px;width:100%}
-.sleepx .bd{display:flex;align-items:center;gap:9px}
-.sleepx .bd .swatch{width:10px;height:10px;border-radius:3px}
-.sleepx .bd .lbl{font-size:12.5px;color:#c3ccd6}
-.sleepx .bd .val{margin-left:auto;font-size:12.5px;color:var(--gh-text)}
-.sleepx .bd .val i{color:var(--gh-muted);font-style:normal;font-size:11px}
+.sleepx .ring .score{font-size:48px;font-weight:800;letter-spacing:-.04em;line-height:1;background:linear-gradient(180deg,#fff,#c8d2dc);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.sleepx .ring .cap{font-size:10px;letter-spacing:.22em;text-transform:uppercase;color:var(--gh-muted);margin-top:4px}
+.sleepx .ring .delta{font-size:11.5px;margin-top:7px;font-weight:600;padding:2px 8px;border-radius:999px;background:rgba(255,255,255,.05)}
+.sleepx .breakdown{display:grid;grid-template-columns:1fr 1fr;gap:12px 18px;margin-top:16px;width:100%}
+.sleepx .bd{display:flex;flex-direction:column;gap:6px}
+.sleepx .bd-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.sleepx .bd .swatch{width:9px;height:9px;border-radius:3px;margin-right:7px}
+.sleepx .bd .lbl{font-size:12.5px;color:#c3ccd6;display:flex;align-items:center;font-weight:500}
+.sleepx .bd .val{font-size:12px;color:var(--gh-text);font-weight:600}
+.sleepx .bd .val i{color:var(--gh-muted);font-style:normal;font-size:10.5px;margin-left:1px;font-weight:400}
+.sleepx .bd-bar{display:block;height:5px;border-radius:999px;background:rgba(255,255,255,.06);overflow:hidden}
+.sleepx .bd-bar i{display:block;height:100%;border-radius:999px;opacity:.9}
 .sleepx .stages-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px}
 .sleepx .stages-head .t{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--gh-muted)}
 .sleepx .stages-head .clock{font-size:12px;color:#aab3bd}
 .sleepx .hypno svg,.sleepx .comp svg,.sleepx .tst svg{width:100%;height:auto;display:block}
-.sleepx .stagechips{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}
-.sleepx .stagechips .pill b{color:var(--gh-text);font-weight:600}
-.sleepx .continuity{display:grid;grid-template-columns:repeat(5,1fr);gap:2px;margin-top:14px;border:1px solid var(--gh-hair);border-radius:14px;overflow:hidden}
-.sleepx .continuity .c{padding:11px 8px;text-align:center;background:rgba(255,255,255,.014)}
-.sleepx .continuity .c .v{font-size:15px;font-weight:600;letter-spacing:-.01em}
-.sleepx .continuity .c .k{font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--gh-muted);margin-top:3px}
+.sleepx .stagechips{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.sleepx .stagechips .pill{padding:6px 11px;border-color:transparent;background:rgba(255,255,255,.04)}
+.sleepx .stagechips .pill b{color:var(--gh-text);font-weight:700;margin-left:1px}
+.sleepx .continuity{display:grid;grid-template-columns:repeat(5,1fr);margin-top:16px;border:1px solid var(--gh-hair);border-radius:16px;overflow:hidden;background:rgba(255,255,255,.02)}
+.sleepx .continuity .c{padding:13px 6px;text-align:center;position:relative}
+.sleepx .continuity .c+.c::before{content:"";position:absolute;left:0;top:22%;bottom:22%;width:1px;background:var(--gh-hair)}
+.sleepx .continuity .c .v{font-size:16px;font-weight:700;letter-spacing:-.02em;color:var(--gh-text)}
+.sleepx .continuity .c .k{font-size:9px;letter-spacing:.11em;text-transform:uppercase;color:var(--gh-muted);margin-top:4px}
+.sleepx .hero .divider{margin:18px -20px}
 /* need+debt */
 .sleepx .nd-top{display:flex;gap:12px}
 .sleepx .nd-top .block{flex:1;min-width:0}
