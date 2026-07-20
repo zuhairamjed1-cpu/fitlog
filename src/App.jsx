@@ -18,7 +18,7 @@ import { DietForm } from "./views/DietForm";
 import { STORAGE_KEY } from "./lib/keys";
 import { TABS, defaultData, defaultProfile, defaultStrategy, defaultGoals, fitnessGoals, mealTypes, sportsOptions, sleepQuality, intensityLevels, NIC_TYPES, NIC_CONTEXTS, NIC_QUICK, SPLIT_TYPES, defaultPlan, TYPE_DOT, TYPE_ICON, MODELS, loadModelPref, saveModelPref, currentModelId } from "./config";
 import { loadData, loadGoals, saveData, saveGoals, setCurrentUser, cloudSync, cloudPull, cloudPushNow, flushSync } from "./state/store";
-import { readFitbitCallback, clearFitbitCallback, exchangeFitbitCode, fetchFitbitSleep } from "./lib/fitbit";
+import { readGoogleHealthCallback, clearGoogleHealthCallback, exchangeGoogleHealthCode, fetchGoogleHealthSleep } from "./lib/googleHealth";
 import { haptic, SFX, soundEnabled, setSoundPref } from "./lib/fx";
 import { Ring, MacroDonut, MiniChart, Card, Empty, toast, ToastHost, ConfirmModal, useConfirm } from "./components/primitives";
 import { styles } from "./styles";
@@ -195,22 +195,22 @@ function AppShell({ session, syncing }) {
     cloudSync();
   }, [goals]);
 
-  // Fitbit OAuth callback: exchange the code, store the token, import recent sleep.
+  // Google Health OAuth callback: exchange the code, store tokens, import sleep.
   useEffect(() => {
-    const cb = readFitbitCallback();
-    if (!cb || cb.error) { if (cb?.error) clearFitbitCallback(); return; }
+    const cb = readGoogleHealthCallback();
+    if (!cb || cb.error) { if (cb?.error) clearGoogleHealthCallback(); return; }
     (async () => {
       try {
-        const tok = await exchangeFitbitCode(cb.code);
-        setGoals(g => ({ ...g, fitbit: tok }));
-        const entries = await fetchFitbitSleep(tok, t => setGoals(g => ({ ...g, fitbit: t })), 30);
+        const tok = await exchangeGoogleHealthCode(cb.code);
+        setGoals(g => ({ ...g, googleHealth: { ...g.googleHealth, ...tok } }));
+        const entries = await fetchGoogleHealthSleep(tok, t => setGoals(g => ({ ...g, googleHealth: { ...g.googleHealth, ...t } })), 30);
         setData(d => {
-          const have = new Set((d.sleep || []).map(s => s.fitbitLogId).filter(Boolean));
-          const add = entries.filter(e => !have.has(e.fitbitLogId));
+          const have = new Set((d.sleep || []).map(s => s.ghId).filter(Boolean));
+          const add = entries.filter(e => !have.has(e.ghId));
           return { ...d, sleep: [...(d.sleep || []), ...add] };
         });
       } catch (e) { /* surfaced in the Sleep card on next visit */ }
-      clearFitbitCallback();
+      clearGoogleHealthCallback();
     })();
     // eslint-disable-next-line
   }, []);

@@ -8,49 +8,86 @@ import { computeWeightTrend } from "../engines/weight";
 import { parseWorkout } from "../engines/workout";
 import { getTodayStr, formatShortDate, daysAgo } from "../lib/dates";
 import { haptic } from "../lib/fx";
-import { beginFitbitAuth, fetchFitbitSleep, fitbitProfile } from "../lib/fitbit";
+import { beginGoogleHealthAuth, fetchGoogleHealthSleep, googleClientId } from "../lib/googleHealth";
 
-// ─── Fitbit connect + sleep import ──────────────────────────────────────────
-function FitbitCard({ data, goals, addEntry, onSaveGoals }) {
-  const tok = goals.fitbit || null;
-  const [clientId, setClientId] = useState(goals.fitbit?.clientId || "");
+// ─── Fitbit Air → Google Health connect + sleep import ──────────────────────
+const STAGE_COLORS = { Deep: "#4f6bff", REM: "#8b6cff", Light: "#4fb3bd", Awake: "#f9c97e", "Out of bed": "#6b7480" };
+
+// Stacked stage timeline for one night (Deep / REM / Light / Awake).
+function StageBar({ totals }) {
+  const order = ["Deep", "REM", "Light", "Awake"];
+  const map = { Deep: totals.DEEP, REM: totals.REM, Light: totals.LIGHT, Awake: totals.AWAKE };
+  const sum = order.reduce((a, k) => a + (map[k] || 0), 0) || 1;
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div style={{ display: "flex", height: 12, borderRadius: 6, overflow: "hidden" }}>
+        {order.map(k => (map[k] > 0 &&
+          <div key={k} title={`${k} ${map[k]}m`} style={{ width: `${(map[k] / sum) * 100}%`, background: STAGE_COLORS[k] }} />
+        ))}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 14px", marginTop: 8 }}>
+        {order.map(k => (map[k] > 0 &&
+          <span key={k} className="muted small" style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+            <i style={{ width: 8, height: 8, borderRadius: 2, background: STAGE_COLORS[k] }} />
+            {k} {Math.floor(map[k] / 60)}h {map[k] % 60}m
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function GoogleHealthCard({ data, goals, addEntry, onSaveGoals }) {
+  const tok = goals.googleHealth?.accessToken ? goals.googleHealth : null;
+  const envClient = googleClientId(goals);
+  const [clientId, setClientId] = useState(goals.googleHealth?.clientId || "");
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
 
   const connect = async () => {
-    const id = clientId.trim();
+    const id = (envClient || clientId).trim();
     if (!id) return;
-    try { setBusy(true); await beginFitbitAuth(id); } // redirects away
-    catch { setStatus("Couldn't start Fitbit sign-in."); setBusy(false); }
+    // Stash the pasted client id so it survives the redirect round-trip.
+    if (!envClient) onSaveGoals({ ...goals, googleHealth: { ...goals.googleHealth, clientId: id } });
+    try { setBusy(true); await beginGoogleHealthAuth(id); }
+    catch { setStatus("Couldn't start Google sign-in."); setBusy(false); }
   };
 
   const sync = async () => {
     if (!tok) return;
     setBusy(true); setStatus("");
     try {
-      const entries = await fetchFitbitSleep(tok, t => onSaveGoals({ ...goals, fitbit: t }), 30);
-      const have = new Set((data.sleep || []).map(s => s.fitbitLogId).filter(Boolean));
-      const add = entries.filter(e => !have.has(e.fitbitLogId));
+      const entries = await fetchGoogleHealthSleep(tok, t => onSaveGoals({ ...goals, googleHealth: { ...goals.googleHealth, ...t } }), 30);
+      const have = new Set((data.sleep || []).map(s => s.ghId).filter(Boolean));
+      const add = entries.filter(e => !have.has(e.ghId));
       add.forEach(e => addEntry("sleep")(e));
-      setStatus(add.length ? `✓ Imported ${add.length} night${add.length === 1 ? "" : "s"}` : "Already up to date.");
+      setStatus(add.length ? `✓ Imported ${add.length} night${add.length === 1 ? "" : "s"}` : "Already up to date — device may need a sync (open the Google Health app).");
       haptic(10);
-    } catch (e) { setStatus("Sync failed — try reconnecting."); }
+    } catch (e) { setStatus(`Sync failed: ${e.message || "try reconnecting"}`); }
     setBusy(false);
   };
 
-  const disconnect = () => { onSaveGoals({ ...goals, fitbit: null }); setStatus(""); };
+  const disconnect = () => { onSaveGoals({ ...goals, googleHealth: null }); setStatus(""); };
+
+  // Most recent Google-Health night with stage data, for the mini breakdown.
+  const lastNight = useMemo(
+    () => (data.sleep || []).filter(s => s.source === "googlehealth" && s.stageTotals).sort((a, b) => (a.date < b.date ? 1 : -1))[0],
+    [data.sleep]
+  );
 
   if (!tok) {
     return (
-      <Card title="⌚ Fitbit" sub="Auto-import your sleep from Google Fitbit">
+      <Card title="⌚ Fitbit Air" sub="Auto-import sleep stages via Google Health">
         <ol className="muted small" style={{ margin: "0 0 12px", paddingLeft: 18, lineHeight: 1.6 }}>
-          <li>At <b>dev.fitbit.com</b> → Register an app (type: <b>Personal</b>, OAuth: <b>Client</b>).</li>
-          <li>Set the <b>Redirect URI</b> to exactly: <code style={{ wordBreak: "break-all" }}>{window.location.origin + window.location.pathname}</code></li>
-          <li>Paste the <b>OAuth Client ID</b> below and connect.</li>
+          <li>Google Cloud Console → OAuth <b>Web application</b> client (already set up).</li>
+          <li>Add this exact <b>Authorized redirect URI</b>: <code style={{ wordBreak: "break-all" }}>{window.location.origin + window.location.pathname}</code></li>
+          <li>Set <code>GOOGLE_CLIENT_ID</code> / <code>GOOGLE_CLIENT_SECRET</code> in Vercel env.{envClient ? "" : " Then paste the Client ID below."}</li>
         </ol>
-        <input placeholder="Fitbit OAuth Client ID (e.g. 23ABCD)" value={clientId} onChange={e => setClientId(e.target.value)} />
-        <button className="btn full" style={{ marginTop: 10 }} onClick={connect} disabled={busy || !clientId.trim()}>
-          {busy ? <span className="spinner" /> : "Connect Fitbit"}
+        {!envClient && (
+          <input placeholder="Google OAuth Client ID (…apps.googleusercontent.com)" value={clientId} onChange={e => setClientId(e.target.value)} />
+        )}
+        <button className="btn full" style={{ marginTop: 10 }} onClick={connect} disabled={busy || (!envClient && !clientId.trim())}>
+          {busy ? <span className="spinner" /> : "Connect Google Health"}
         </button>
         {status && <div className="err">{status}</div>}
       </Card>
@@ -58,10 +95,20 @@ function FitbitCard({ data, goals, addEntry, onSaveGoals }) {
   }
 
   return (
-    <Card title="⌚ Fitbit" sub="Connected — sleep syncs from your device" action={<button className="link-btn" onClick={disconnect}>Disconnect</button>}>
+    <Card title="⌚ Fitbit Air" sub="Connected via Google Health" action={<button className="link-btn" onClick={disconnect}>Disconnect</button>}>
       <button className="btn full" onClick={sync} disabled={busy}>{busy ? <><span className="spinner" />Syncing…</> : "↻ Sync sleep now"}</button>
       {status && <p className="muted small" style={{ marginTop: 8 }}>{status}</p>}
-      <p className="muted small" style={{ marginTop: 8, lineHeight: 1.5 }}>Pulls the last 30 nights from Fitbit (main sleep, deduped). Your existing sleep analytics run off it automatically.</p>
+      {lastNight && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+            <span className="small" style={{ fontWeight: 600 }}>{formatShortDate(lastNight.date)} · {lastNight.duration}h asleep</span>
+            {lastNight.derivedScore != null && <span className="small" style={{ color: "#4fb3bd", fontWeight: 700 }}>Score {lastNight.derivedScore}</span>}
+          </div>
+          <StageBar totals={lastNight.stageTotals} />
+          <p className="muted small" style={{ marginTop: 6 }}>Efficiency {lastNight.efficiency ?? "—"}% · derived score (Google Health has no native sleep score).</p>
+        </div>
+      )}
+      <p className="muted small" style={{ marginTop: 10, lineHeight: 1.5 }}>Pulls the last 30 nights with stage segments, deduped. Empty result usually means the device hasn't synced yet — open the Google Health app.</p>
     </Card>
   );
 }
@@ -340,7 +387,7 @@ export function SleepSection({ data, goals, addEntry, onSaveGoals }) {
   }
 
   const log = <SleepForm onAdd={addEntry("sleep")} recent={data.sleep} />;
-  const fitbit = <FitbitCard data={data} goals={goals} addEntry={addEntry} onSaveGoals={onSaveGoals} />;
+  const fitbit = <GoogleHealthCard data={data} goals={goals} addEntry={addEntry} onSaveGoals={onSaveGoals} />;
 
   if (!sleep) {
     return (
