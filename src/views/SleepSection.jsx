@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { MiniChart, Card, Empty, toast } from "../components/primitives";
 import { StatusPill } from "../components/StatusPill";
 import { sleepQuality, DEFAULT_SLEEP_NEED_H } from "../config";
