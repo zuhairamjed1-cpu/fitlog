@@ -12,7 +12,6 @@ import { NicotineTab } from "../views/NicotineTab";
 import { PlanTab } from "../views/PlanTab";
 import { StoolTracker } from "../views/StoolTracker";
 import { SkinSection } from "../views/skin/SkinSection";
-import { SleepSection } from "../views/SleepSection";
 import { WorkoutScreen, SportsForm } from "../views/WorkoutScreen";
 
 // Private section: new ACT urge tracker on top, classic counter tucked in a
@@ -74,7 +73,6 @@ export function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, se
       case "exercise": return <WorkoutScreen data={data} goals={goals} addEntry={addEntry} onSaveGoals={onSaveGoals} />;
       case "sports": return <SportsForm onAdd={addEntry("sports")} recent={data.sports} />;
       case "plan": return <PlanTab data={data} goals={goals} onSaveGoals={onSaveGoals} />;
-      case "sleep": return <SleepSection data={data} goals={goals} addEntry={addEntry} onSaveGoals={onSaveGoals} />;
       case "nicotine": return <NicotineTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />;
       case "journal": return <JournalTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} setData={setData} />;
       case "skin": return <SkinSection data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} updateEntry={updateEntry} onSaveGoals={onSaveGoals} />;
