@@ -4,7 +4,20 @@
 import { STORAGE_KEY } from "../lib/keys";
 import { supabase, hasSupabase } from "../supabase";
 import { defaultData, defaultGoals, defaultProfile, defaultStrategy } from "../config";
+import { localHM } from "../lib/googleHealthSleep";
 import type { AppData, Goals } from "../types/models";
+
+// Re-derive a Google night's wall-clock bedtime/wakeTime from its stored stage
+// timestamps using the timezone-aware converter. Self-heals nights imported
+// before the localHM fix (which showed UTC hours, off by the tz offset).
+function reDeriveClock(s: any): any {
+  const segs = Array.isArray(s?.stages) ? s.stages.filter((x: any) => x?.start) : [];
+  if (!segs.length) return s;
+  const bed = localHM(segs[0].start);
+  const wake = localHM(segs[segs.length - 1].end || segs[segs.length - 1].start);
+  if (bed === s.bedtime && wake === s.wakeTime) return s;
+  return { ...s, bedtime: bed || s.bedtime, wakeTime: wake || s.wakeTime };
+}
 
 // One-time, non-destructive: sleep is now sourced from Google Health. Move any
 // legacy (manually-logged) sleep entries out of the live `sleep` array into
@@ -13,8 +26,12 @@ import type { AppData, Goals } from "../types/models";
 // self-healing: re-runs safely on every load, deduping by id.
 export function migrateSleep(d: any): any {
   if (!d || !Array.isArray(d.sleep)) return d;
+  // Self-heal wall-clock times on Google nights (timezone fix).
+  let sleepArr = d.sleep.map((s: any) => (s && s.source === "googlehealth" ? reDeriveClock(s) : s));
+  const changed = sleepArr.some((s: any, i: number) => s !== d.sleep[i]);
+  if (changed) d = { ...d, sleep: sleepArr };
   const legacy = d.sleep.filter((s: any) => s && s.source !== "googlehealth");
-  if (legacy.length === 0 && Array.isArray(d.sleepArchive)) return d; // already clean
+  if (legacy.length === 0 && Array.isArray(d.sleepArchive) && !changed) return d; // already clean
   const google = d.sleep.filter((s: any) => s && s.source === "googlehealth");
   const prev = Array.isArray(d.sleepArchive) ? d.sleepArchive : [];
   const key = (s: any) => s.id ?? `${s.date}|${s.bedtime}`;

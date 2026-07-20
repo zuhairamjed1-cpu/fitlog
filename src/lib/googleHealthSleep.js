@@ -8,7 +8,22 @@
 // adjust the picks below — a wrong path yields empty stages, not an error.
 
 const STAGE_LABEL = { AWAKE: "Awake", DEEP: "Deep", REM: "REM", LIGHT: "Light", OUT_OF_BED: "Out of bed" };
-const hhmm = t => { const m = /T(\d{2}):(\d{2})/.exec(t || ""); return m ? `${m[1]}:${m[2]}` : ""; };
+
+// Local wall-clock "HH:MM" from a Google timestamp.
+//  - Civil time (no timezone suffix) is already wall-clock → read the literal hour.
+//  - An instant (…Z or ±hh:mm offset) is converted to the viewer's local time,
+//    matching what the Fitbit app shows. Slicing the literal hour off a UTC
+//    instant was the bug: it showed the UTC hour, off by the tz offset, and
+//    mixing civil + instant fields across nights inflated "social jetlag".
+export const localHM = t => {
+  if (!t) return "";
+  const hasTZ = /(Z|[+-]\d{2}:?\d{2})$/.test(t);
+  if (!hasTZ) { const m = /T(\d{2}):(\d{2})/.exec(t); if (m) return `${m[1]}:${m[2]}`; }
+  const d = new Date(t);
+  if (!Number.isNaN(d.getTime())) return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  const m = /T(\d{2}):(\d{2})/.exec(t); return m ? `${m[1]}:${m[2]}` : "";
+};
+const hhmm = localHM;
 const toMs = t => { const d = t ? Date.parse(t) : NaN; return Number.isNaN(d) ? null : d; };
 const minutes = ms => Math.round((ms || 0) / 60000);
 
@@ -79,7 +94,9 @@ export function hypnoSegments(night) {
   if (!segs.length) return null;
   const t0 = Date.parse(segs[0].start);
   if (Number.isNaN(t0)) return null;
-  const bedMin = (() => { const m = /^(\d{1,2}):(\d{2})/.exec(night.bedtime || ""); return m ? +m[1] * 60 + +m[2] : new Date(t0).getHours() * 60 + new Date(t0).getMinutes(); })();
+  // Derive the x-axis start from the segment timestamps directly (same local
+  // basis as everything else) so hour labels line up with bedtime/wake.
+  const bedMin = (() => { const m = /^(\d{1,2}):(\d{2})/.exec(localHM(segs[0].start)); return m ? +m[1] * 60 + +m[2] : 0; })();
   const out = segs.map(s => ({ type: s.type, start: Math.round((Date.parse(s.start) - t0) / 60000), min: s.min }));
   const total = out.reduce((mx, s) => Math.max(mx, s.start + s.min), 0);
   return { bedMin, total, segs: out };
