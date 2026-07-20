@@ -41,7 +41,6 @@ export function LogOverlay({ data, goals, addEntry, deleteEntry, onSaveGoals, se
     { title: "Daily", items: [
       { key: "diet", label: "Meal", icon: "◉", color: "#f9c97e" },
       { key: "exercise", label: "Workout", icon: "◆", color: "#f47e6e" },
-      { key: "sleep", label: "Sleep", icon: "◐", color: "#6ee7f7" },
     ] },
     { title: "Nutrition", items: [
       { key: "water", label: "Water", icon: "◊", color: "#5cc8df" },

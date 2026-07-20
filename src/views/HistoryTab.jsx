@@ -18,6 +18,7 @@ import { formatShortDate, daysAgo } from "../lib/dates";
 import { WeekPlannerCard } from "../components/WeekPlannerCard";
 import { UrgeTracker } from "../components/UrgeTracker";
 import { NicotineTab } from "./NicotineTab";
+import { SleepSection } from "./SleepSection";
 import { SkinSection } from "./skin/SkinSection";
 
 
@@ -198,7 +199,7 @@ function TrendsView({ data, goals, addEntry, deleteEntry, onSaveGoals, initialCa
 
       {cat === "nutrition" && <NutritionTrends data={data} goals={goals} addEntry={addEntry} range={range} setRange={setRange} calPts={calPts} proteinPts={proteinPts} waterPts={waterPts} series={series} />}
       {cat === "training" && <TrainingTrends data={data} goals={goals} range={range} setRange={setRange} workoutPts={workoutPts} onSaveGoals={onSaveGoals} series={series} />}
-      {cat === "sleep" && <SleepTrends data={data} goals={goals} range={range} setRange={setRange} sleepPts={sleepPts} series={series} />}
+      {cat === "sleep" && <SleepSection data={data} goals={goals} addEntry={addEntry} onSaveGoals={onSaveGoals} />}
       {cat === "ejac" && <UrgeTracker data={data} addEntry={addEntry} deleteEntry={deleteEntry} />}
       {cat === "nicotine" && <NicotineTab data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} />}
       {cat === "skin" && <SkinSection data={data} goals={goals} addEntry={addEntry} deleteEntry={deleteEntry} onSaveGoals={onSaveGoals} />}
