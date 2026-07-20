@@ -313,7 +313,7 @@ function RecentSleepDropdown({ sleep }) {
         <div className="list" style={{ marginTop: 12 }}>
           {nights.map(s => (
             <div key={s.id} className="list-row">
-              <span className="list-main">{s.duration}h · {s.quality}</span>
+              <span className="list-main">{s.duration}h · {s.quality}{s.source === "googlehealth" ? " · ⌚" : " · ✎"}</span>
               <span className="muted small">{formatShortDate(s.date)}</span>
             </div>
           ))}
@@ -393,8 +393,20 @@ function SleepDebtCalculator() {
 // ─── SLEEP SECTION (the smartest section: log + full intelligence dashboard) ──
 
 
+// Read-time union of live Google nights + archived manual nights (storage stays
+// split). Feeds the intelligence + duration/score/debt charts so manual history
+// still shows; stage-only charts keep using data.sleep (manual nights lack stages).
+function mergeSleep(data) {
+  const live = data.sleep || [], arch = data.sleepArchive || [];
+  const key = s => s.id ?? `${s.date}|${s.bedtime}`;
+  const seen = new Set(live.map(key));
+  return [...live, ...arch.filter(s => !seen.has(key(s)))];
+}
+
 export function SleepSection({ data, goals, addEntry, onSaveGoals }) {
-  const sleep = useMemo(() => computeSleep(data, goals), [data, goals]);
+  const merged = useMemo(() => mergeSleep(data), [data]);
+  const mergedData = useMemo(() => ({ ...data, sleep: merged }), [data, merged]);
+  const sleep = useMemo(() => computeSleep(mergedData, goals), [mergedData, goals]);
   const [editNeed, setEditNeed] = useState(false);
   const [needVal, setNeedVal] = useState(goals.profile?.sleepNeedH || "");
 
@@ -409,7 +421,7 @@ export function SleepSection({ data, goals, addEntry, onSaveGoals }) {
   const archivedN = (data.sleepArchive || []).length;
   const archiveNote = archivedN > 0 && (
     <p className="muted small" style={{ textAlign: "center", opacity: .7 }}>
-      {archivedN} manually-logged night{archivedN === 1 ? "" : "s"} archived — kept, no longer counted.
+      {archivedN} manually-logged night{archivedN === 1 ? "" : "s"} included — stored separately from Fitbit, no stage data.
     </p>
   );
 
@@ -436,7 +448,7 @@ export function SleepSection({ data, goals, addEntry, onSaveGoals }) {
     <div className="stack">
       {fitbit}
 
-      <SleepScoreCard data={data} need={sleep.need.hours} />
+      <SleepScoreCard data={mergedData} need={sleep.need.hours} />
 
       {/* NEED + CONFIDENCE */}
       <Card>
@@ -496,7 +508,7 @@ export function SleepSection({ data, goals, addEntry, onSaveGoals }) {
       <StageTrendCard nights={data.sleep} />
 
       {/* RECENT — collapsed at the very bottom */}
-      <RecentSleepDropdown sleep={data.sleep} />
+      <RecentSleepDropdown sleep={merged} />
       {archiveNote}
     </div>
   );
