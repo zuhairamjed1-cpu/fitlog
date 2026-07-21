@@ -26,6 +26,10 @@ const POST_TARGET = { carbsG: 48, proteinG: 50, fatG: 5 }; // TODO: confirm agai
 // — stops a "snack" being crammed 10 min before training. Leftover budget
 // redistributes to the remaining meals. TODO: confirm against spec.
 export const MIN_VIABLE_FLEXIBLE_SLOT_GAP_MINUTES = 30;
+// Clearance kept between a flexible meal and the gym + its pre/post floors. Set
+// just above the "tight" threshold so a nudged meal never re-trips that badge —
+// meals are spaced out of the training window rather than merely flagged.
+export const MEAL_FLOOR_BUFFER_MINUTES = 50;
 // A slot within this of bedtime trips the sleep-proximity flag (§11.3); a
 // trailing meal this close compresses rather than colliding with sleep (§11.5).
 export const SLEEP_PROXIMITY_MINUTES = 120;
@@ -114,6 +118,33 @@ export function buildTimeline({ dayKey, totals, sessions = [], wakeMin = 420, sl
   const lastPost = floors.filter(f => f.mealName === "Post-workout").reduce((mx, f) => Math.max(mx, f.plannedMin), -Infinity);
   const lastMeal = flex[flex.length - 1];
   if (lastMeal && lastPost > -Infinity && lastPost + 45 > lastMeal.plannedMin) lastMeal.plannedMin = clamp(lastPost + 45, lastMeal.plannedMin, winEnd);
+
+  // ── 2b. collision avoidance: keep every flexible meal clear of the gym + its
+  //        pre/post floors. Build a padded forbidden zone per session and nudge
+  //        any meal that lands inside to the nearest clear edge (was: only a
+  //        "tight" badge). This is why Lunch no longer collides with training.
+  {
+    const BUF = MEAL_FLOOR_BUFFER_MINUTES;
+    let zones = sessions.map(s => {
+      const start = timeToMin(s.time);
+      const dur = s.durationMin || (SESSION_TYPES[s.type] || {}).defMin || 60;
+      return { lo: (start - 45) - BUF, hi: (start + dur + 15) + BUF }; // pre floor..post floor, padded
+    }).sort((a, b) => a.lo - b.lo)
+      .reduce((acc, z) => { const last = acc[acc.length - 1]; if (last && z.lo <= last.hi) last.hi = Math.max(last.hi, z.hi); else acc.push({ ...z }); return acc; }, []);
+    const clearOf = m => { for (const z of zones) if (m > z.lo && m < z.hi) m = (m - z.lo <= z.hi - m) ? z.lo : z.hi; return clamp(m, winStart, winEnd); };
+    if (zones.length) {
+      flex.forEach(s => { s.plannedMin = clearOf(s.plannedMin); });
+      // re-order + re-space after nudging (meals may have stacked on one edge)
+      flex.sort((a, b) => a.plannedMin - b.plannedMin);
+      for (let i = 1; i < flex.length; i++) {
+        if (flex[i].plannedMin < flex[i - 1].plannedMin + MIN_VIABLE_FLEXIBLE_SLOT_GAP_MINUTES) {
+          let m = clearOf(clamp(flex[i - 1].plannedMin + MIN_VIABLE_FLEXIBLE_SLOT_GAP_MINUTES, winStart, winEnd));
+          if (m < flex[i - 1].plannedMin) m = flex[i - 1].plannedMin; // never invert order
+          flex[i].plannedMin = m;
+        }
+      }
+    }
+  }
 
   // ── 3. mark logged. Entries carrying a meal `label` are AGGREGATED by that
   //       label into the matching slot (all "Lunch" entries → the Lunch slot,
