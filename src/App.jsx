@@ -16,6 +16,7 @@ import { WorkoutScreen, WorkoutAnalysis, V3MusclePrioCard, ExerciseForm, SportsF
 import { PlanTab } from "./views/PlanTab";
 import { DietForm } from "./views/DietForm";
 import { STORAGE_KEY } from "./lib/keys";
+import { isTimed, decorateWithTime, nowHHMM, addMinutesHHMM } from "./lib/activityTime";
 import { TABS, defaultData, defaultProfile, defaultStrategy, defaultGoals, fitnessGoals, mealTypes, sportsOptions, sleepQuality, intensityLevels, NIC_TYPES, NIC_CONTEXTS, NIC_QUICK, SPLIT_TYPES, defaultPlan, TYPE_DOT, TYPE_ICON, MODELS, loadModelPref, saveModelPref, currentModelId } from "./config";
 import { loadData, loadGoals, saveData, saveGoals, setCurrentUser, cloudSync, cloudPull, cloudPushNow, flushSync } from "./state/store";
 import { haptic, SFX, soundEnabled, setSoundPref } from "./lib/fx";
@@ -172,9 +173,6 @@ export default function FitnessTracker() {
 // (navTo) and stored state don't churn when a tab is renamed.
 const TAB_LABEL = { Insights: "Goals" };
 
-const nowHHMM = () => { const d = new Date(); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
-const addMinutesHHMM = (t, add) => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ""); if (!m) return ""; const tot = (+m[1] * 60 + +m[2] + add + 1440) % 1440; return `${String(Math.floor(tot / 60)).padStart(2, "0")}:${String(tot % 60).padStart(2, "0")}`; };
-
 function AppShell({ session, syncing }) {
   const [activeTab, setActiveTab] = useState("Home");
   const [logOpen, setLogOpen] = useState(false);
@@ -224,10 +222,9 @@ function AppShell({ session, syncing }) {
 
   // Meals, workouts, and sports get a "from/to time" prompt before they're saved
   // so every activity carries a real time range (timeStart/timeEnd/durationMin).
-  const TIMED_TYPES = new Set(["diet", "exercise", "sports"]);
   const [timePrompt, setTimePrompt] = useState(null); // { type, entry }
   const commit = (type, entry) => setData(d => ({ ...d, [type]: [entry, ...(d[type] || [])] }));
-  const addEntry = type => entry => { if (TIMED_TYPES.has(type)) setTimePrompt({ type, entry }); else commit(type, entry); };
+  const addEntry = type => entry => { if (isTimed(type)) setTimePrompt({ type, entry }); else commit(type, entry); };
   const deleteEntry = type => id => setData(d => ({ ...d, [type]: (d[type] || []).filter(e => e.id !== id) }));
   const clearAll = () => {
     setData(defaultData);
@@ -297,7 +294,7 @@ function AppShell({ session, syncing }) {
           kind={timePrompt?.type}
           defaultStart={timePrompt?.entry?.time || nowHHMM()}
           defaultEnd={addMinutesHHMM(timePrompt?.entry?.time || nowHHMM(), 45)}
-          onSave={({ timeStart, timeEnd, durationMin }) => { const { type, entry } = timePrompt; commit(type, { ...entry, time: timeStart, timeStart, timeEnd, durationMin }); setTimePrompt(null); }}
+          onSave={({ timeStart, timeEnd }) => { const { type, entry } = timePrompt; commit(type, decorateWithTime(entry, { timeStart, timeEnd })); setTimePrompt(null); }}
           onSkip={() => { commit(timePrompt.type, timePrompt.entry); setTimePrompt(null); }}
         />
 

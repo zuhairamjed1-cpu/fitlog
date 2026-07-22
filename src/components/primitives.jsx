@@ -5,6 +5,7 @@
 import { useState, useEffect, useId } from "react";
 import { formatShortDate } from "../lib/dates";
 import { haptic, SFX } from "../lib/fx";
+import { rangeDurationMin, isValidRange } from "../lib/activityTime";
 
 const RING_GRADS = {
   calories: ["#ffd79a", "#f9c97e", "#f47e6e"],
@@ -245,10 +246,8 @@ export function TimeRangeModal({ open, kind = "activity", defaultStart = "", def
   const [end, setEnd] = useState(defaultEnd);
   useEffect(() => { if (open) { setStart(defaultStart); setEnd(defaultEnd); } }, [open, defaultStart, defaultEnd]);
   if (!open) return null;
-  const toMin = t => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ""); return m ? +m[1] * 60 + +m[2] : null; };
-  const s = toMin(start), e = toMin(end);
-  let dur = s != null && e != null ? e - s : null;
-  if (dur != null && dur < 0) dur += 1440; // crossed midnight
+  const dur = rangeDurationMin(start, end);
+  const valid = isValidRange(start, end);
   const label = kind === "diet" ? "meal" : kind === "exercise" ? "workout" : kind === "sports" ? "sport" : "activity";
   return (
     <div className="modal-overlay" onClick={() => onSkip?.()}>
@@ -265,7 +264,7 @@ export function TimeRangeModal({ open, kind = "activity", defaultStart = "", def
         <p className="muted small" style={{ minHeight: 16 }}>{dur != null ? `${Math.floor(dur / 60) ? Math.floor(dur / 60) + "h " : ""}${dur % 60}m` : " "}</p>
         <div className="modal-actions">
           <button className="btn-ghost flex" onClick={() => onSkip?.()}>Skip</button>
-          <button className="btn flex" disabled={s == null || e == null} onClick={() => onSave?.({ timeStart: start, timeEnd: end, durationMin: dur })}>Save</button>
+          <button className="btn flex" disabled={!valid} onClick={() => onSave?.({ timeStart: start, timeEnd: end, durationMin: dur })}>Save</button>
         </div>
       </div>
     </div>
