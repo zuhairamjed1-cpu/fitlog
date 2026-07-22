@@ -237,6 +237,41 @@ export function ConfirmModal({ open, title, body, confirmLabel = "Confirm", dang
   );
 }
 
+// Asks "from what time to what time did you do this?" when logging a meal,
+// workout, or sport. onSave({ timeStart, timeEnd, durationMin }); onSkip logs
+// the entry without a time range.
+export function TimeRangeModal({ open, kind = "activity", defaultStart = "", defaultEnd = "", onSave, onSkip }) {
+  const [start, setStart] = useState(defaultStart);
+  const [end, setEnd] = useState(defaultEnd);
+  useEffect(() => { if (open) { setStart(defaultStart); setEnd(defaultEnd); } }, [open, defaultStart, defaultEnd]);
+  if (!open) return null;
+  const toMin = t => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ""); return m ? +m[1] * 60 + +m[2] : null; };
+  const s = toMin(start), e = toMin(end);
+  let dur = s != null && e != null ? e - s : null;
+  if (dur != null && dur < 0) dur += 1440; // crossed midnight
+  const label = kind === "diet" ? "meal" : kind === "exercise" ? "workout" : kind === "sports" ? "sport" : "activity";
+  return (
+    <div className="modal-overlay" onClick={() => onSkip?.()}>
+      <div className="modal" onClick={ev => ev.stopPropagation()}>
+        <h3 className="modal-title">When was this {label}?</h3>
+        <p className="modal-body">From what time to what time did you do it?</p>
+        <div style={{ display: "flex", gap: 12, alignItems: "flex-end", margin: "6px 0 4px" }}>
+          <label style={{ flex: 1 }}><span className="muted small" style={{ display: "block", marginBottom: 4 }}>Start</span>
+            <input type="time" value={start} onChange={ev => setStart(ev.target.value)} style={{ width: "100%" }} /></label>
+          <span className="muted" style={{ paddingBottom: 10 }}>→</span>
+          <label style={{ flex: 1 }}><span className="muted small" style={{ display: "block", marginBottom: 4 }}>End</span>
+            <input type="time" value={end} onChange={ev => setEnd(ev.target.value)} style={{ width: "100%" }} /></label>
+        </div>
+        <p className="muted small" style={{ minHeight: 16 }}>{dur != null ? `${Math.floor(dur / 60) ? Math.floor(dur / 60) + "h " : ""}${dur % 60}m` : " "}</p>
+        <div className="modal-actions">
+          <button className="btn-ghost flex" onClick={() => onSkip?.()}>Skip</button>
+          <button className="btn flex" disabled={s == null || e == null} onClick={() => onSave?.({ timeStart: start, timeEnd: end, durationMin: dur })}>Save</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Hook for confirm flow
 export function useConfirm() {
   const [state, setState] = useState({ open: false });
